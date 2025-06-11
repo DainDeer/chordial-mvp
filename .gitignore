@@ -1,0 +1,7 @@
+# poetry stuff
+__pycache__/
+*.pyc
+*.pyo
+.env
+.cache/
+.poetry/

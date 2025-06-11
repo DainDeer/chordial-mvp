@@ -1,0 +1,24 @@
+[project]
+name = "chordial-mvp"
+version = "0.1.0"
+description = "an always-on ai companion who pings you with care"
+authors = [
+    {name = "DainDeer",email = "jalarison@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "discord-py (>=2.5.2,<3.0.0)",
+    "openai (>=1.86.0,<2.0.0)",
+    "python-dotenv (>=1.1.0,<2.0.0)"
+]
+
+[tool.poetry]
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+pytest = "^8.4.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
