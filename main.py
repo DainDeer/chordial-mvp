@@ -1,53 +1,62 @@
-import discord
-from discord.ext import tasks, commands
-import os
-from dotenv import load_dotenv
-from datetime import datetime
+import asyncio
+import logging
+from config import Config
+from src.services.chat_service import ChatService
+from src.core.conversation_manager import ConversationManager
 
-# Load environment variables
-load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
+# setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Define the bot's intents
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-
-# Create a bot instance
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# the user id of the person you want to dm
-# to get your user id, right-click your name in discord and select "copy user id".
-# you might need to enable developer mode in your discord settings under advanced.
-TARGET_USER_ID = 267136853159706638 # TODO: dynamically ask in the server for the user id
-
-@bot.event
-async def on_ready():
-    """
-    this function is called when the bot is ready and connected to discord.
-    """
-    print(f'{bot.user} has connected to discord!')
-    # start the scheduled message task
-    send_scheduled_dm.start()
-
-@tasks.loop(minutes=5) # you can change the interval to seconds, minutes, etc.
-async def send_scheduled_dm():
-    """
-    this is the task that sends a dm on a schedule.
-    """
-    await bot.wait_until_ready()
+async def main():
+    """main entry point for chordial"""
+    logger.info("starting chordial...")
     
-    # fetch the user object using their id
-    user = await bot.fetch_user(TARGET_USER_ID)
+    # initialize core services
+    conversation_manager = ConversationManager()
     
-    if user:
-        try:
-            # here you'll generate your message with an ai model later
-            message_to_send = f"hello! this is your scheduled message from chordial. the current time is :{datetime.now()}✨"
-            await user.send(message_to_send)
-            print(f"sent scheduled dm to user {user.name}")
-        except discord.Forbidden:
-            print(f"could not send dm to {user.name}. they might have dms disabled.")
+    # initialize ai provider
+    ai_provider = None
+    if Config.OPENAI_API_KEY:
+        from src.ai.openai_provider import OpenAIProvider
+        ai_provider = OpenAIProvider()
+        if await ai_provider.is_available():
+            logger.info("openai provider initialized successfully")
+        else:
+            logger.warning("openai provider configured but not available")
+    
+    # create chat service
+    chat_service = ChatService(
+        ai_provider=ai_provider,
+        conversation_manager=conversation_manager
+    )
+    
+    # initialize interfaces
+    interfaces = []
+    
+    if Config.ENABLE_DISCORD:
+        from src.interfaces.discord.bot import DiscordInterface
+        discord_interface = DiscordInterface(chat_service)
+        interfaces.append(discord_interface)
+        logger.info("discord interface enabled")
+    
+    # start all interfaces
+    tasks = []
+    for interface in interfaces:
+        task = asyncio.create_task(interface.start())
+        tasks.append(task)
+    
+    try:
+        # keep running until interrupted
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logger.info("shutting down chordial...")
+        # stop all interfaces
+        for interface in interfaces:
+            await interface.stop()
 
-# run the bot
-bot.run(TOKEN)
+if __name__ == "__main__":
+    asyncio.run(main())
