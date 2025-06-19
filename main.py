@@ -3,6 +3,8 @@ import logging
 from config import Config
 from src.services.chat_service import ChatService
 from src.core.conversation_manager import ConversationManager
+from src.core.user_manager import UserManager
+from src.database.database import init_db
 
 # setup logging
 logging.basicConfig(
@@ -15,8 +17,12 @@ async def main():
     """main entry point for chordial"""
     logger.info("starting chordial...")
     
+    # initialize database
+    init_db()
+    
     # initialize core services
     conversation_manager = ConversationManager()
+    user_manager = UserManager()
     
     # initialize ai provider
     ai_provider = None
@@ -31,7 +37,8 @@ async def main():
     # create chat service
     chat_service = ChatService(
         ai_provider=ai_provider,
-        conversation_manager=conversation_manager
+        conversation_manager=conversation_manager,
+        user_manager=user_manager
     )
     
     # initialize interfaces
