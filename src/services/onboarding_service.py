@@ -16,9 +16,9 @@ class OnboardingService:
         """get the initial welcome message"""
         return """hey there! welcome to chordial! 🎵 
         
-        i'm your new ai companion, here to help with productivity, reminders, and just being a friendly presence.
+i'm your new ai companion, here to help with productivity, reminders, and just being a friendly presence.
 
-        first things first - what would you like me to call you? just type your preferred name!"""
+first things first - what would you like me to call you? just type your preferred name!"""
     
     async def handle_onboarding_response(self, user_id: str, platform: str, platform_user_id: str, response: str) -> str:
         """handle responses during onboarding"""
@@ -35,20 +35,19 @@ class OnboardingService:
             })
             
             # move to next state (could expand this later)
-            self.onboarding_states[state_key] = "complete"
+            del self.onboarding_states[state_key]  # remove from onboarding!
             
             return f"""nice to meet you, {preferred_name}! 💕
             
-            i'll remember that and use it when we chat. 
+i'll remember that and use it when we chat. 
 
-            i'm here to help you stay productive and check in on you throughout the day. i'll send you gentle reminders and be here whenever you want to talk.
+i'm here to help you stay productive and check in on you throughout the day. i'll send you gentle reminders and be here whenever you want to talk.
 
-            feel free to message me anytime - whether you need help with something, want to chat, or just need a friendly check-in!
+feel free to message me anytime - whether you need help with something, want to chat, or just need a friendly check-in!
 
-            ready to get started? just say hi or ask me anything! ✨"""
+ready to get started? just say hi or ask me anything! ✨"""
         
-        # onboarding complete
-        del self.onboarding_states[state_key]
+        # shouldn't get here but just in case
         return None
     
     def is_user_onboarding(self, platform: str, platform_user_id: str) -> bool:
