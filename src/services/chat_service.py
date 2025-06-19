@@ -75,7 +75,7 @@ class ChatService:
         """process an incoming message and generate a response"""
         try:
             # prepare for interaction and handle onboarding
-            user_id, should_continue, response = await self._prepare_for_interaction(
+            user_uuid, should_continue, response = await self._prepare_for_interaction(
                 platform=unified_message.platform,
                 user_id=unified_message.user_id,
                 content=unified_message.content,
@@ -88,7 +88,7 @@ class ChatService:
             
             # normal message processing
             conversation = await self.conversation_manager.get_or_create(
-                unified_message.user_id,
+                user_uuid,
                 unified_message.platform
             )
             
@@ -120,7 +120,7 @@ class ChatService:
         """generate a scheduled message for a user"""
         try:
             # prepare for interaction
-            user_id, should_continue, response = await self._prepare_for_interaction(
+            user_uuid, should_continue, response = await self._prepare_for_interaction(
                 platform=platform,
                 user_id=user_id,
                 content=None  # no content for scheduled messages
@@ -137,7 +137,7 @@ class ChatService:
             
             # get conversation history
             conversation = await self.conversation_manager.get_or_create(
-                user_id,
+                user_uuid,
                 platform
             )
             
