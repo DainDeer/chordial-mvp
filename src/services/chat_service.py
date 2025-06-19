@@ -3,6 +3,7 @@ import logging
 
 from src.adapters.message_adapter import UnifiedMessage
 from src.core.conversation_manager import ConversationManager
+from src.core.temporal_context import TemporalContext
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,11 @@ class ChatService:
             
             # generate response using ai provider
             if self.ai_provider:
+                temporal_context = TemporalContext()
                 response = await self.ai_provider.generate_response(
                     conversation.get_history(),
-                    unified_message.content
+                    unified_message.content,
+                    temporal_context=temporal_context
                 )
                 
                 # add ai response to conversation history
@@ -52,18 +55,25 @@ class ChatService:
             
             # get user's conversation history
             conversation = await self.conversation_manager.get_or_create(user_id, platform)
-            
+
             # create a prompt for generating a check-in message
-            system_prompt = """you are chordial, a friendly ai assistant that checks in on users periodically.
-            you only use lowercase letters.
+            temporal_context = TemporalContext()
+            context_details = temporal_context.get_detailed_context()
+            
+            system_prompt = f"""you are chordial, a friendly ai assistant that checks in on users periodically.
             based on the conversation history, generate a natural, contextual check-in message.
             keep it brief and friendly. you might ask about their progress on something they mentioned,
-            share a relevant tip, or just say hello in a personalized way."""
+            share a relevant tip, or just say hello in a personalized way.
+            
+            current time context: it's {context_details['time_of_day']} on a {context_details['day_type']}.
+            be naturally aware of the time without always mentioning it directly.
+            use lowercase only."""
             
             # generate the scheduled message
             response = await self.ai_provider.generate_response(
                 conversation.get_history(),
                 system_prompt=system_prompt,
+                temporal_context=temporal_context,
                 is_scheduled=True
             )
             
