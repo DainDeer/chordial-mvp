@@ -98,3 +98,15 @@ class UserManager:
             if user:
                 return user.preferred_name is None
             return True
+    
+    async def get_users_with_scheduled_messages(self, platform: str) -> list[str]:
+        """get all platform user ids who have scheduled messages enabled"""
+        with get_db() as db:
+            # query for active users on this platform
+            identities = db.query(PlatformIdentity).join(User).filter(
+                PlatformIdentity.platform == platform,
+                User.is_active == True,
+                User.preferred_name != None  # only users who completed onboarding
+            ).all()
+            
+            return [identity.platform_user_id for identity in identities]

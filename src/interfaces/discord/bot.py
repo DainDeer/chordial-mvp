@@ -98,22 +98,33 @@ class DiscordInterface(BaseInterface):
     
     @tasks.loop(minutes=Config.DM_INTERVAL_MINUTES)
     async def send_scheduled_dm(self):
-        """Send scheduled DMs"""
+        """Send scheduled DMs to opted-in users"""
         await self.bot.wait_until_ready()
         
-        # For now, using the hardcoded user ID
-        # Later this will come from a database of users who opted in
-        user_id = str(Config.DISCORD_TARGET_USER_ID)
+        # Get all users who should receive scheduled messages
+        # For now, we'll use a simple list approach
+        # Later this will query the database for users with scheduled messages enabled
+        scheduled_users = await self._get_scheduled_message_users()
         
-        # Generate message through chat service
-        # For now, we'll use a simple message
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for user_id in scheduled_users:
+            try:
+                # Generate message through chat service
+                message = await self.chat_service.generate_scheduled_message(user_id, "discord")
+                
+                if message:
+                    await self.send_message(user_id, message)
+                    logger.info(f"Sent scheduled message to user {user_id}")
+            except Exception as e:
+                logger.error(f"Error sending scheduled message to {user_id}: {e}")
+    
+    async def _get_scheduled_message_users(self) -> list[str]:
+        """Get list of users who should receive scheduled messages"""
+        # Check if we have user manager available through chat service
+        if hasattr(self.chat_service, 'user_manager'):
+            return await self.chat_service.user_manager.get_users_with_scheduled_messages("discord")
         
-        # In the future, this will call the AI to generate a contextual message
-        message = await self.chat_service.generate_scheduled_message(user_id, "discord")
+        # Fallback to config for MVP
+        if Config.DISCORD_TARGET_USER_ID:
+            return [str(Config.DISCORD_TARGET_USER_ID)]
         
-        # Fallback to simple message if service isn't ready yet
-        if not message:
-            message = f"Hello! This is your scheduled message from Chordial. The current time is: {current_time} ✨"
-        
-        await self.send_message(user_id, message)
+        return []
