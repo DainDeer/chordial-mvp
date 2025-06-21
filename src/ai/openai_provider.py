@@ -60,10 +60,6 @@ class OpenAIProvider(BaseAIProvider):
             
             # add conversation history
             messages.extend(conversation_history)
-            
-            # add current message if not a scheduled message
-            if current_message and not is_scheduled:
-                messages.append({"role": "user", "content": current_message})
 
             # make api call
             logger.info("sending to openai api:")
