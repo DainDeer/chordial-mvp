@@ -71,8 +71,9 @@ class ConversationHistory(Base):
     role = Column(String)  # 'user' or 'assistant'
     content = Column(String)
     
-    # temporal context stored as json
-    temporal_context = Column(JSON)
+    # context stored as json - includes temporal context and message metadata
+    # example: {"time_of_day": "morning", "message_type": "scheduled", ...}
+    context = Column(JSON)
     
     created_at = Column(DateTime, default=datetime.now)
     

@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass, field
 from src.core.temporal_context import TemporalContext
@@ -13,13 +13,18 @@ class Message:
     role: str  # "user" or "assistant"
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
-    temporal_context: Optional[Dict[str, str]] = None
+    context: Optional[Dict[str, Any]] = None
+    message_type: str = "conversation"  # "conversation" or "scheduled"
 
     def __post_init__(self):
-        # generate temporal context if not provided
-        if self.temporal_context is None:
-            context = TemporalContext()
-            self.temporal_context = context.get_detailed_context()
+        # generate context if not provided
+        if self.context is None:
+            temporal = TemporalContext()
+            self.context = temporal.get_detailed_context()
+        
+        # ensure message_type is in context
+        if 'message_type' not in self.context:
+            self.context['message_type'] = self.message_type
 
 @dataclass
 class Conversation:
@@ -46,19 +51,21 @@ class Conversation:
             
             # convert to Message objects
             for msg in history:
+                message_type = msg.context.get('message_type', 'conversation') if msg.context else 'conversation'
                 self.messages.append(Message(
                     role=msg.role,
                     content=msg.content,
                     timestamp=msg.created_at,
-                    temporal_context=msg.temporal_context
+                    context=msg.context,
+                    message_type=message_type
                 ))
             
             if self.messages:
                 logger.info(f"loaded {len(self.messages)} messages from database for user {self.user_id}")
     
-    def add_message(self, role: str, content: str):
+    def add_message(self, role: str, content: str, message_type: str = "conversation"):
         """add a message to the conversation and save to database"""
-        msg = Message(role=role, content=content)
+        msg = Message(role=role, content=content, message_type=message_type)
         self.messages.append(msg)
         
         # save to database
@@ -68,11 +75,11 @@ class Conversation:
                 platform=self.platform,
                 role=role,
                 content=content,
-                temporal_context=msg.temporal_context
+                context=msg.context
             )
             db.add(db_msg)
             db.commit()
-            logger.debug(f"saved {role} message to database for user {self.user_id}")
+            logger.debug(f"saved {role} message ({message_type}) to database for user {self.user_id}")
     
     def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Dict[str, str]]:
         """get conversation history in format suitable for ai providers"""
@@ -83,10 +90,10 @@ class Conversation:
         for i, msg in enumerate(recent_messages):
             if include_temporal and i == 0:
                 # for the first message in history, add a system note about when the conversation started
-                if msg.temporal_context:
+                if msg.context:
                     context_note = {
                         "role": "system",
-                        "content": f"conversation context: this exchange started during {msg.temporal_context['time_of_day']} on {msg.temporal_context['day_of_week']}"
+                        "content": f"conversation context: this exchange started during {msg.context.get('time_of_day', 'unknown')} on {msg.context.get('day_of_week', 'unknown')}"
                     }
                     history.append(context_note)
             
@@ -109,9 +116,10 @@ class Conversation:
                         minutes = int(time_diff.total_seconds() / 60)
                         time_note = f"[{minutes} minutes later]"
                     
+                    next_context = next_msg.context or {}
                     history.append({
                         "role": "system",
-                        "content": f"{time_note} now it's {next_msg.temporal_context['time_of_day']} on {next_msg.temporal_context['day_of_week']}"
+                        "content": f"{time_note} now it's {next_context.get('time_of_day', 'unknown')} on {next_context.get('day_of_week', 'unknown')}"
                     })
         
         return history

@@ -150,6 +150,8 @@ class ChatService:
             you speak in lowercase, and use soft, expressive language—like a cozy friend checking in. 
             you're never judgmental, and you respond naturally to both emotional tone and time of day. 
             your style is casual, kind, and a little whimsical. use the current time to gently guide your tone and questions.
+
+            this is a scheduled message, so generate a natural,contextual check-in message.
             
             current time context: it's {context_details['time_of_day']} on a {context_details['day_type']}.
             be naturally aware of the time without always mentioning it directly.
@@ -163,8 +165,8 @@ class ChatService:
                 is_scheduled=True
             )
             
-            # don't add scheduled messages to history unless user responds
-            # this prevents cluttering the conversation with one-sided check-ins
+            # add to history with scheduled type
+            conversation.add_message("assistant", response, message_type="scheduled")
             
             return response
             
