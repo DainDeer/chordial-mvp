@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime
@@ -5,6 +6,7 @@ import logging
 
 from ..base import BaseInterface
 from config import Config
+from src.utilities.string_utils import chunk_message
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +58,25 @@ class DiscordInterface(BaseInterface):
         await self.bot.close()
     
     async def send_message(self, platform_user_id: str, content: str, **kwargs) -> bool:
-        """Send a message to a Discord user"""
+        """Send a message to a Discord user, splitting if needed"""
         try:
             user = await self.bot.fetch_user(int(platform_user_id))
-            if user:
-                await user.send(content)
-                logger.info(f"Sent DM to user {user.name}")
-                return True
+            if not user:
+                return False
+            
+            # chunk the message if it's too long
+            chunks = chunk_message(content)
+        
+            # send each chunk
+            for i, chunk in enumerate(chunks):
+                await user.send(chunk)
+                # small delay between chunks to avoid rate limiting
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(0.5)
+        
+            logger.info(f"Sent DM to user {user.name} ({len(chunks)} chunk{'s' if len(chunks) > 1 else ''})")
+            return True
+        
         except discord.Forbidden:
             logger.error(f"Could not send DM to user {platform_user_id}. They might have DMs disabled.")
         except Exception as e:
