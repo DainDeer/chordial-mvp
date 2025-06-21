@@ -16,7 +16,7 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///chordial.db")
     
     # scheduler
-    DM_INTERVAL_MINUTES = int(os.getenv("DM_INTERVAL_MINUTES", "5"))
+    DM_INTERVAL_MINUTES = int(os.getenv("DM_INTERVAL_MINUTES", "60"))
     
     # features
     ENABLE_DISCORD = os.getenv("ENABLE_DISCORD", "true").lower() == "true"
