@@ -28,7 +28,7 @@ class Message:
 
 @dataclass
 class Conversation:
-    user_id: str
+    user_uuid: str  # internal chordial user ID
     platform: str
     messages: List[Message] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
@@ -42,7 +42,7 @@ class Conversation:
         with get_db() as db:
             # get the last 50 messages for this user
             history = db.query(ConversationHistory).filter(
-                ConversationHistory.user_id == self.user_id,
+                ConversationHistory.user_uuid == self.user_uuid,
                 ConversationHistory.platform == self.platform
             ).order_by(ConversationHistory.created_at.desc()).limit(50).all()
             
@@ -61,7 +61,7 @@ class Conversation:
                 ))
             
             if self.messages:
-                logger.info(f"loaded {len(self.messages)} messages from database for user {self.user_id}")
+                logger.info(f"loaded {len(self.messages)} messages from database for user {self.user_uuid}")
     
     def add_message(self, role: str, content: str, message_type: str = "conversation"):
         """add a message to the conversation and save to database"""
@@ -71,7 +71,7 @@ class Conversation:
         # save to database
         with get_db() as db:
             db_msg = ConversationHistory(
-                user_id=self.user_id,
+                user_uuid=self.user_uuid,
                 platform=self.platform,
                 role=role,
                 content=content,
@@ -79,7 +79,7 @@ class Conversation:
             )
             db.add(db_msg)
             db.commit()
-            logger.debug(f"saved {role} message ({message_type}) to database for user {self.user_id}")
+            logger.debug(f"saved {role} message ({message_type}) to database for user {self.user_uuid}")
     
     def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Dict[str, str]]:
         """get conversation history in format suitable for ai providers"""
@@ -133,17 +133,17 @@ class ConversationManager:
         self.max_messages_in_memory = 100  # keep last 100 messages in memory
         self.max_messages_in_database = 1000  # keep last 1000 in database
     
-    def _get_key(self, user_id: str, platform: str) -> str:
+    def _get_key(self, user_uuid: str, platform: str) -> str:
         """generate a unique key for storing conversations"""
-        return f"{platform}:{user_id}"
+        return f"{platform}:{user_uuid}"
     
-    async def get_or_create(self, user_id: str, platform: str) -> Conversation:
+    async def get_or_create(self, user_uuid: str, platform: str) -> Conversation:
         """get existing conversation or create a new one"""
-        key = self._get_key(user_id, platform)
+        key = self._get_key(user_uuid, platform)
         
         if key not in self._conversations:
             self._conversations[key] = Conversation(
-                user_id=user_id,
+                user_uuid=user_uuid,
                 platform=platform
             )
         
@@ -155,31 +155,31 @@ class ConversationManager:
         
         return conv
     
-    async def clear_conversation(self, user_id: str, platform: str):
+    async def clear_conversation(self, user_uuid: str, platform: str):
         """clear a user's conversation history"""
-        key = self._get_key(user_id, platform)
+        key = self._get_key(user_uuid, platform)
         if key in self._conversations:
             del self._conversations[key]
         
         # also clear from database
         with get_db() as db:
             db.query(ConversationHistory).filter(
-                ConversationHistory.user_id == user_id,
+                ConversationHistory.user_uuid == user_uuid,
                 ConversationHistory.platform == platform
             ).delete()
             db.commit()
-            logger.info(f"cleared conversation history for user {user_id} on {platform}")
+            logger.info(f"cleared conversation history for user {user_uuid} on {platform}")
     
     async def cleanup_old_messages(self):
         """cleanup old messages from database (run this periodically)"""
         with get_db() as db:
             # for each user, keep only the most recent N messages
-            users = db.query(ConversationHistory.user_id).distinct().all()
+            users = db.query(ConversationHistory.user_uuid).distinct().all()
             
-            for (user_id,) in users:
+            for (user_uuid,) in users:
                 # get all messages for this user, ordered by date
                 messages = db.query(ConversationHistory).filter(
-                    ConversationHistory.user_id == user_id
+                    ConversationHistory.user_uuid == user_uuid
                 ).order_by(ConversationHistory.created_at.desc()).all()
                 
                 # delete messages beyond the limit

@@ -55,16 +55,16 @@ class DiscordInterface(BaseInterface):
             self.scheduled_dm_task.cancel()
         await self.bot.close()
     
-    async def send_message(self, user_id: str, content: str, **kwargs) -> bool:
+    async def send_message(self, platform_user_id: str, content: str, **kwargs) -> bool:
         """Send a message to a Discord user"""
         try:
-            user = await self.bot.fetch_user(int(user_id))
+            user = await self.bot.fetch_user(int(platform_user_id))
             if user:
                 await user.send(content)
                 logger.info(f"Sent DM to user {user.name}")
                 return True
         except discord.Forbidden:
-            logger.error(f"Could not send DM to user {user_id}. They might have DMs disabled.")
+            logger.error(f"Could not send DM to user {platform_user_id}. They might have DMs disabled.")
         except Exception as e:
             logger.error(f"Error sending message: {e}")
         return False
@@ -76,7 +76,7 @@ class DiscordInterface(BaseInterface):
         
         unified_msg = UnifiedMessage(
             content=message.content,
-            user_id=str(message.author.id),
+            platform_user_id=str(message.author.id),
             platform="discord",
             platform_message_id=str(message.id),
             metadata={

@@ -20,7 +20,7 @@ i'm your new ai companion, here to help with productivity, reminders, and just b
 
 first things first - what would you like me to call you? just type your preferred name!"""
     
-    async def handle_onboarding_response(self, user_id: str, platform: str, platform_user_id: str, response: str) -> str:
+    async def handle_onboarding_response(self, user_uuid: str, platform: str, platform_user_id: str, response: str) -> str:
         """handle responses during onboarding"""
         state_key = f"{platform}:{platform_user_id}"
         current_state = self.onboarding_states.get(state_key, "name")
@@ -30,7 +30,7 @@ first things first - what would you like me to call you? just type your preferre
             preferred_name = response.strip()
             
             # update user preferences
-            await self.user_manager.update_user_preferences(user_id, {
+            await self.user_manager.update_user_preferences(user_uuid, {
                 'preferred_name': preferred_name
             })
             

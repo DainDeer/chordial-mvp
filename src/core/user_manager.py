@@ -21,16 +21,16 @@ class UserManager:
             
             if identity:
                 # make sure we load the user relationship
-                if identity.user_id:
-                    user = db.query(User).filter(User.id == identity.user_id).first()
+                if identity.user_uuid:
+                    user = db.query(User).filter(User.uuid == identity.user_uuid).first()
                     if user:
-                        logger.info(f"found existing user {user.id} with name '{user.preferred_name}'")
-                        return user.id
+                        logger.info(f"found existing user {user.uuid} with name '{user.preferred_name}'")
+                        return user.uuid
                     else:
-                        logger.error(f"identity has user_id {identity.user_id} but user not found!")
+                        logger.error(f"identity has user_id {identity.user_uuid} but user not found!")
                         # fall through to create new user
                 else:
-                    logger.error(f"identity exists but has no user_id!")
+                    logger.error(f"identity exists but has no user_uuid!")
             
             # create new user
             new_user = User()
@@ -39,7 +39,7 @@ class UserManager:
             
             # create platform identity with proper user relationship
             new_identity = PlatformIdentity(
-                user_id=new_user.id,
+                user_uuid=new_user.uuid,
                 user=new_user,  # set the relationship directly
                 platform=platform,
                 platform_user_id=platform_user_id,
@@ -48,10 +48,10 @@ class UserManager:
             db.add(new_identity)
             
             db.commit()
-            user_id = new_user.id  # grab the id before session closes
-            logger.info(f"created new user {user_id} for {platform}:{platform_user_id}")
+            user_uuid = new_user.uuid  # grab the id before session closes
+            logger.info(f"created new user {user_uuid} for {platform}:{platform_user_id}")
             
-            return user_id
+            return user_uuid
     
     async def is_new_user(self, platform: str, platform_user_id: str) -> bool:
         """check if this is a new user (no identity exists yet)"""
@@ -66,13 +66,13 @@ class UserManager:
             logger.info(f"user {platform}:{platform_user_id} is {'new' if is_new else 'existing'}")
             return is_new
     
-    async def update_user_preferences(self, user_id: str, preferences: Dict[str, Any]):
+    async def update_user_preferences(self, user_uuid: str, preferences: Dict[str, Any]):
         """update user preferences"""
         with get_db() as db:
-            user = db.query(User).filter(User.id == user_id).first()
+            user = db.query(User).filter(User.uuid == user_uuid).first()
             
             if not user:
-                logger.error(f"user {user_id} not found")
+                logger.error(f"user {user_uuid} not found")
                 return
             
             # update allowed fields
@@ -89,12 +89,12 @@ class UserManager:
                 user.bot_personality = preferences['bot_personality']
             
             db.commit()
-            logger.info(f"updated preferences for user {user_id}")
+            logger.info(f"updated preferences for user {user_uuid}")
     
-    async def needs_onboarding(self, user_id: str) -> bool:
+    async def needs_onboarding(self, user_uuid: str) -> bool:
         """check if user needs to complete onboarding (hasn't set preferred name)"""
         with get_db() as db:
-            user = db.query(User).filter(User.id == user_id).first()
+            user = db.query(User).filter(User.uuid == user_uuid).first()
             if user:
                 return user.preferred_name is None
             return True

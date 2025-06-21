@@ -21,7 +21,7 @@ class ChatService:
     async def _prepare_for_interaction(
         self, 
         platform: str, 
-        user_id: str, 
+        platform_user_id: str, 
         content: Optional[str] = None,
         username: Optional[str] = None
     ) -> Tuple[str, bool, Optional[str]]:
@@ -29,23 +29,23 @@ class ChatService:
         helper function to handle user creation and onboarding flow.
         
         returns a tuple containing:
-        - the user id (string)
+        - the user uuid (string)
         - whether the interaction should continue (True) or stop due to onboarding (False)
         - an optional response message (e.g., welcome message or onboarding response)
         """
         # check if this is a brand new user
-        is_new = await self.user_manager.is_new_user(platform, user_id)
+        is_new = await self.user_manager.is_new_user(platform, platform_user_id)
         
         # get or create user (returns user id string)
         user_uuid = await self.user_manager.get_or_create_user(
             platform,
-            user_id,
+            platform_user_id,
             username
         )
         
         # handle brand new users
         if is_new:
-            self.onboarding_service.start_onboarding(platform, user_id)
+            self.onboarding_service.start_onboarding(platform, platform_user_id)
             # return welcome message
             return user_uuid, False, self.onboarding_service.get_welcome_message()
         
@@ -53,19 +53,19 @@ class ChatService:
         needs_onboarding = await self.user_manager.needs_onboarding(user_uuid)
         
         # check if user is in onboarding flow
-        if self.onboarding_service.is_user_onboarding(platform, user_id) or needs_onboarding:
+        if self.onboarding_service.is_user_onboarding(platform, platform_user_id) or needs_onboarding:
             if content is not None:
                 # process onboarding response
                 response = await self.onboarding_service.handle_onboarding_response(
                     user_uuid,
                     platform,
-                    user_id,
+                    platform_user_id,
                     content
                 )
                 return user_uuid, False, response
             else:
                 # scheduled message during onboarding - skip
-                logger.info(f"skipping interaction for {user_id} - in onboarding but no content to process")
+                logger.info(f"skipping interaction for {username} - in onboarding but no content to process")
                 return user_uuid, False, None
         
         # user is fully onboarded, continue with normal flow
@@ -77,7 +77,7 @@ class ChatService:
             # prepare for interaction and handle onboarding
             user_uuid, should_continue, response = await self._prepare_for_interaction(
                 platform=unified_message.platform,
-                user_id=unified_message.user_id,
+                platform_user_id=unified_message.platform_user_id,
                 content=unified_message.content,
                 username=unified_message.metadata.get('username')
             )
@@ -116,13 +116,13 @@ class ChatService:
             logger.error(f"error processing message: {e}")
             return "sorry, i encountered an error processing your message."
     
-    async def generate_scheduled_message(self, user_id: str, platform: str) -> Optional[str]:
+    async def generate_scheduled_message(self, platform_user_id: str, platform: str) -> Optional[str]:
         """generate a scheduled message for a user"""
         try:
             # prepare for interaction
             user_uuid, should_continue, response = await self._prepare_for_interaction(
                 platform=platform,
-                user_id=user_id,
+                platform_user_id=platform_user_id,
                 content=None  # no content for scheduled messages
             )
             

@@ -11,7 +11,7 @@ class User(Base):
     __tablename__ = 'users'
     
     # primary key is a uuid so we're not tied to any platform's id system
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    uuid = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     
     # what the user wants to be called
     preferred_name = Column(String, nullable=True)
@@ -29,6 +29,9 @@ class User(Base):
     
     # personality preferences
     bot_personality = Column(String, default='friendly')  # friendly, professional, cheerful, etc
+
+    # TODO: make preferences generic? or have schedule_preferences and preferences both json
+    # preferences can hold personality but also other user customizations for bot behavior
     
     # is the user actively using the bot
     is_active = Column(Boolean, default=True)
@@ -43,7 +46,7 @@ class PlatformIdentity(Base):
     __tablename__ = 'platform_identities'
     
     id = Column(Integer, primary_key=True)
-    user_id = Column(String, ForeignKey('users.id'))
+    user_uuid = Column(String, ForeignKey('users.uuid')) # internal chordial uuid
     platform = Column(String)  # 'discord', 'telegram', 'web', etc
     platform_user_id = Column(String)  # their id on that platform
     platform_username = Column(String, nullable=True)  # their username if available
@@ -64,7 +67,7 @@ class ConversationHistory(Base):
     __tablename__ = 'conversation_history'
     
     id = Column(Integer, primary_key=True)
-    user_id = Column(String, ForeignKey('users.id'))
+    user_uuid = Column(String, ForeignKey('users.uuid')) # this is the user UUID, not platform ID!
     platform = Column(String)
     
     # message data

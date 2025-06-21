@@ -6,7 +6,7 @@ from datetime import datetime
 class UnifiedMessage:
     """platform-agnostic message format"""
     content: str
-    user_id: str
+    platform_user_id: str
     platform: str
     platform_message_id: str
     attachments: Optional[List[Dict]] = None

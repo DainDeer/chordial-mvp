@@ -18,7 +18,7 @@ class BaseInterface(ABC):
         pass
     
     @abstractmethod
-    async def send_message(self, user_id: str, content: str, **kwargs) -> bool:
+    async def send_message(self, platform_user_id: str, content: str, **kwargs) -> bool:
         """send a message to a user"""
         pass
     
