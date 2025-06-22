@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -82,6 +82,37 @@ class ConversationHistory(Base):
     
     # relationships
     user = relationship("User", back_populates="conversations")
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class CompressedMessage(Base):
+    """stores compressed versions of messages for efficient context"""
+    __tablename__ = 'compressed_messages'
+    
+    id = Column(Integer, primary_key=True)
+    conversation_history_id = Column(Integer, ForeignKey('conversation_history.id'))
+    user_uuid = Column(String, ForeignKey('users.uuid'))
+    platform = Column(String)
+    
+    # original message info
+    role = Column(String)  # 'user' or 'assistant'
+    original_length = Column(Integer)  # character count of original
+    
+    # compressed version
+    compressed_content = Column(String)
+    compressed_length = Column(Integer)  # character count after compression
+    compression_ratio = Column(Float)  # how much we compressed (0.3 = 70% reduction)
+    
+    # metadata
+    created_at = Column(DateTime, default=datetime.now)
+    model_used = Column(String, default='gpt-3.5-turbo')
+    
+    # relationships
+    original_message = relationship("ConversationHistory")
+    user = relationship("User")
     
     __table_args__ = (
         {'sqlite_autoincrement': True}

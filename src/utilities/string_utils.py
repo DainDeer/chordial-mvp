@@ -1,6 +1,6 @@
 from typing import List
 
-def chunk_message(self, content: str, max_length: int = 2000) -> List[str]:
+def chunk_message(content: str, max_length: int = 2000) -> List[str]:
     """intelligently chunk a message into discord-sized pieces"""
     if len(content) <= max_length:
         return [content]
@@ -57,7 +57,7 @@ def chunk_message(self, content: str, max_length: int = 2000) -> List[str]:
     
     return chunks
 
-def split_into_sentences(self, text: str) -> List[str]:
+def split_into_sentences(text: str) -> List[str]:
     """simple sentence splitter"""
     # this is a basic implementation - you might want something more sophisticated
     import re

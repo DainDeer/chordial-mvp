@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from src.core.temporal_context import TemporalContext
 from src.database.database import get_db
 from src.database.models import ConversationHistory
+from src.services.compressor_service import CompressorService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -78,8 +79,65 @@ class Conversation:
                 context=msg.context
             )
             db.add(db_msg)
+            db.flush()  # flush to get the id
+
+            # store the message id for later compression
+            msg.db_id = db_msg.id
+
             db.commit()
             logger.debug(f"saved {role} message ({message_type}) to database for user {self.user_uuid}")
+
+
+    # Add a separate method to compress existing messages
+    async def compress_last_message(self):
+        """compress the last message that was added"""
+        from src.services.compressor_service import CompressorService
+        
+        if not self.messages:
+            return
+        
+        last_msg = self.messages[-1]
+        if not hasattr(last_msg, 'db_id'):
+            logger.warning("last message has no db_id, skipping compression")
+            return
+        
+        compressor = CompressorService()
+        compressed_content = await compressor.compress_message(last_msg.content, last_msg.role)
+        
+        # store compressed version
+        await compressor.store_compressed_message(
+            conversation_history_id=last_msg.db_id,
+            user_uuid=self.user_uuid,
+            platform=self.platform,
+            role=last_msg.role,
+            original_content=last_msg.content,
+            compressed_content=compressed_content
+        )
+
+    async def get_compressed_conversation_history(
+        self, 
+        limit: int = 10,
+        include_temporal: bool = True
+    ) -> List[Dict[str, str]]:
+        """get conversation history using compressed messages"""
+        
+        compressor = CompressorService()
+        compressed_history = await compressor.get_compressed_history(
+            self.user_uuid,
+            self.platform,
+            limit=limit
+        )
+        
+        # add temporal context if needed
+        if include_temporal and compressed_history:
+            temporal = TemporalContext()
+            context_note = {
+                "role": "system",
+                "content": f"Current context: {temporal.get_context_string()}"
+            }
+            compressed_history.insert(0, context_note)
+        
+        return compressed_history
     
     def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Dict[str, str]]:
         """get conversation history in format suitable for ai providers"""

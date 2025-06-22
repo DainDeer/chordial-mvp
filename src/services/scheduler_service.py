@@ -150,7 +150,7 @@ class SchedulerService:
     async def run_scheduling_loop(self, platforms: List[str], message_callback):
         """main scheduling loop that checks all users across platforms"""
         self._running = True
-        check_interval = 60  # check every minute
+        check_interval = 60*5  # check every 5 minutes
         
         while self._running:
             try:

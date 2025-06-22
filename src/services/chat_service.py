@@ -91,21 +91,38 @@ class ChatService:
                 user_uuid,
                 unified_message.platform
             )
+
+            # get compressed history for conversation context to send to advanced model
+            compressed_history = await conversation.get_compressed_conversation_history(
+                limit=15,  # can include more messages since they're compressed!
+                include_temporal=True
+            )
+
+            # TODO: format history to be more ai readable
             
-            # add user message to history
+            # add user message to history. this writes convo message to both convo tables
             conversation.add_message("user", unified_message.content)
+
+            # compress it (async)
+            await conversation.compress_last_message()
+
+            # hacky add user message to the compressed convo
+            compressed_history.append({"role": "user", "content": unified_message.content})
             
             # generate response using ai provider
             if self.ai_provider:
                 temporal_context = TemporalContext()
                 response = await self.ai_provider.generate_response(
-                    conversation.get_history(),
-                    unified_message.content,
+                    conversation_history=compressed_history,
+                    current_message=unified_message.content,
                     temporal_context=temporal_context
                 )
                 
                 # add assistant response to history
                 conversation.add_message("assistant", response)
+
+                # compress it (async)
+                await conversation.compress_last_message()
                 
                 return response
             else:
@@ -159,7 +176,10 @@ class ChatService:
             
             # generate the scheduled message
             response = await self.ai_provider.generate_response(
-                conversation.get_history(),
+                conversation_history=await conversation.get_compressed_conversation_history(
+                    limit=15,
+                    include_temporal=True
+                ),
                 system_prompt=system_prompt,
                 temporal_context=temporal_context,
                 is_scheduled=True
@@ -167,6 +187,9 @@ class ChatService:
             
             # add to history with scheduled type
             conversation.add_message("assistant", response, message_type="scheduled")
+
+            # compress it (async)
+            await conversation.compress_last_message()
             
             return response
             
