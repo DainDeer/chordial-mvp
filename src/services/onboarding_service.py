@@ -20,7 +20,7 @@ i'm your new ai companion, here to help with productivity, reminders, and just b
 
 first things first - what would you like me to call you? just type your preferred name!"""
     
-    async def handle_onboarding_response(self, user_uuid: str, platform: str, platform_user_id: str, response: str) -> str:
+    async def handle_onboarding_response(self, user_uuid: str, platform: str, platform_user_id: str, response: str) -> tuple[str,str]:
         """handle responses during onboarding"""
         state_key = f"{platform}:{platform_user_id}"
         current_state = self.onboarding_states.get(state_key, "name")
@@ -37,7 +37,7 @@ first things first - what would you like me to call you? just type your preferre
             # move to next state (could expand this later)
             del self.onboarding_states[state_key]  # remove from onboarding!
             
-            return f"""nice to meet you, {preferred_name}! 💕
+            return preferred_name, f"""nice to meet you, {preferred_name}! 💕
             
 i'll remember that and use it when we chat. 
 

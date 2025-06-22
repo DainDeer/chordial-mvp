@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 class UserManager:
     """manages user data across platforms"""
     
-    async def get_or_create_user(self, platform: str, platform_user_id: str, platform_username: Optional[str] = None) -> str:
-        """get existing user or create new one, returns user id"""
+    async def get_or_create_user(self, platform: str, platform_user_id: str, platform_username: Optional[str] = None) -> tuple[str,str]:
+        """get existing user or create new one, returns (user_uuid,user_name)"""
         with get_db() as db:
             # check if platform identity exists
             identity = db.query(PlatformIdentity).filter(
@@ -25,7 +25,7 @@ class UserManager:
                     user = db.query(User).filter(User.uuid == identity.user_uuid).first()
                     if user:
                         logger.info(f"found existing user {user.uuid} with name '{user.preferred_name}'")
-                        return user.uuid
+                        return user.uuid, user.preferred_name
                     else:
                         logger.error(f"identity has user_id {identity.user_uuid} but user not found!")
                         # fall through to create new user
@@ -51,7 +51,7 @@ class UserManager:
             user_uuid = new_user.uuid  # grab the id before session closes
             logger.info(f"created new user {user_uuid} for {platform}:{platform_user_id}")
             
-            return user_uuid
+            return user_uuid, None
     
     async def is_new_user(self, platform: str, platform_user_id: str) -> bool:
         """check if this is a new user (no identity exists yet)"""

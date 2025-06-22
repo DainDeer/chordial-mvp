@@ -1,11 +1,10 @@
 from openai import AsyncOpenAI
 from openai.resources.models import AsyncModels
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 import logging
 import json
 
 from .base import BaseAIProvider
-from src.core.temporal_context import TemporalContext
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -26,25 +25,19 @@ class OpenAIProvider(BaseAIProvider):
         conversation_history: List[Dict[str, str]], 
         current_message: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        temporal_context: Optional[TemporalContext] = None,
+        context: Optional[Dict[str, Any]] = None,
         is_scheduled: bool = False,
         **kwargs
     ) -> str:
         """generate a response using openai's api"""
         try:
             messages = []
-
-            # get temporal context if not provided
-            if temporal_context is None:
-                temporal_context = self.get_temporal_context()
             
             # add system prompt
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             else:
                 # default system prompt with temporal awareness
-                context_info = temporal_context.get_context_string()
-                special_context = temporal_context.get_special_context()
 
                 default_prompt = f"""you are chordial, a warm, emotionally attuned ai assistant and companion. 
             you help users with productivity, personal goals, and offer encouragement in gentle, playful ways. 
@@ -52,10 +45,14 @@ class OpenAIProvider(BaseAIProvider):
             you're never judgmental, and you respond naturally to both emotional tone and time of day. 
             your style is casual, kind, and a little whimsical. use the current time to gently guide your tone and questions.
                 
-                current context: {context_info}
-                {special_context if special_context else ""}
+                current context: {context["temporal_string"]}
+                {context["special_context"]}
                 
-                use this temporal awareness naturally in your responses when relevant, but don't always mention the time."""
+                use this temporal awareness naturally in your responses when relevant, but don't always mention the time.
+                
+                you are replying to a message from {context["user_name"]}
+                ignore the tone in the message history!! these are summarized messages, only use them for context!!
+                generate a very lively and caring message"""
                 messages.append({"role": "system", "content": default_prompt})
             
             # add conversation history
