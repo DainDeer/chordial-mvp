@@ -124,29 +124,6 @@ class SchedulerService:
         
         return message
     
-    async def get_users_for_scheduling(self, platform: str) -> List[tuple[str, str]]:
-        """get list of (user_uuid, platform_user_id) tuples for users who might need scheduled messages"""
-        platform_user_ids = await self.user_manager.get_users_with_scheduled_messages(platform)
-        
-        # we need to map platform user ids back to our internal user ids
-        # this is a bit inefficient but works for now
-        user_mappings = []
-        with get_db() as db:
-            # TODO can't we just do this all in one query inside the get_users_with_scheduled_messages in user_manager.py?
-            # the platform identity table even has the uuid on it so it should be easy
-            # that also removed this loop where it queries the database a bunch of times.
-            # and also this code runs every minute D:
-            for platform_user_id in platform_user_ids:
-                identity = db.query(PlatformIdentity).filter(
-                    PlatformIdentity.platform == platform,
-                    PlatformIdentity.platform_user_id == platform_user_id
-                ).first()
-                
-                if identity and identity.user_uuid:
-                    user_mappings.append((identity.user_uuid, platform_user_id))
-        
-        return user_mappings
-    
     async def run_scheduling_loop(self, platforms: List[str], message_callback):
         """main scheduling loop that checks all users across platforms"""
         self._running = True
@@ -155,7 +132,7 @@ class SchedulerService:
         while self._running:
             try:
                 for platform in platforms:
-                    user_mappings = await self.get_users_for_scheduling(platform)
+                    user_mappings = await self.user_manager.get_users_with_scheduled_messages(platform)
                     
                     for user_uuid, platform_user_id in user_mappings:
                         message = await self.send_scheduled_message(user_uuid, platform, platform_user_id)

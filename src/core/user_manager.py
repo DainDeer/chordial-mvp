@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 from sqlalchemy.orm import Session
 
@@ -99,8 +99,8 @@ class UserManager:
                 return user.preferred_name is None
             return True
     
-    async def get_users_with_scheduled_messages(self, platform: str) -> list[str]:
-        """get all platform user ids who have scheduled messages enabled"""
+    async def get_users_with_scheduled_messages(self, platform: str) -> List[tuple[str, str]]:
+        """get list of (user_uuid, platform_user_id) tuples for users who have scheduled messages enabled"""
         with get_db() as db:
             # query for active users on this platform
             identities = db.query(PlatformIdentity).join(User).filter(
@@ -109,4 +109,4 @@ class UserManager:
                 User.preferred_name != None  # only users who completed onboarding
             ).all()
             
-            return [identity.platform_user_id for identity in identities]
+            return [(identity.user_uuid, identity.platform_user_id) for identity in identities]
