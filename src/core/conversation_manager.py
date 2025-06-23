@@ -14,18 +14,8 @@ class Message:
     role: str  # "user" or "assistant"
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
-    context: Optional[Dict[str, Any]] = None
     message_type: str = "conversation"  # "conversation" or "scheduled"
 
-    def __post_init__(self):
-        # generate context if not provided
-        if self.context is None:
-            temporal = TemporalContext()
-            self.context = temporal.get_detailed_context()
-        
-        # ensure message_type is in context
-        if 'message_type' not in self.context:
-            self.context['message_type'] = self.message_type
 
 @dataclass
 class Conversation:
@@ -52,13 +42,11 @@ class Conversation:
             
             # convert to Message objects
             for msg in history:
-                message_type = msg.context.get('message_type', 'conversation') if msg.context else 'conversation'
                 self.messages.append(Message(
                     role=msg.role,
                     content=msg.content,
                     timestamp=msg.created_at,
-                    context=msg.context,
-                    message_type=message_type
+                    message_type=msg.message_type
                 ))
             
             if self.messages:
@@ -76,7 +64,7 @@ class Conversation:
                 platform=self.platform,
                 role=role,
                 content=content,
-                context=msg.context
+                message_type=message_type
             )
             db.add(db_msg)
             db.flush()  # flush to get the id
@@ -130,10 +118,9 @@ class Conversation:
         
         # add temporal context if needed
         if include_temporal and compressed_history:
-            temporal = TemporalContext()
             context_note = {
                 "role": "system",
-                "content": f"Current context: {temporal.get_context_string()}"
+                "content": f"Current context: {TemporalContext.get_context_string(datetime.now())}"
             }
             compressed_history.insert(0, context_note)
         
@@ -148,12 +135,12 @@ class Conversation:
         for i, msg in enumerate(recent_messages):
             if include_temporal and i == 0:
                 # for the first message in history, add a system note about when the conversation started
-                if msg.context:
-                    context_note = {
-                        "role": "system",
-                        "content": f"conversation context: this exchange started during {msg.context.get('time_of_day', 'unknown')} on {msg.context.get('day_of_week', 'unknown')}"
-                    }
-                    history.append(context_note)
+                temporal_context = TemporalContext.get_detailed_context(msg.timestamp)
+                context_note = {
+                    "role": "system",
+                    "content": f"conversation context: this exchange started during {temporal_context['time_of_day']} on {temporal_context['day_of_week']}"
+                }
+                history.append(context_note)
             
             # add the actual message
             history.append({"role": msg.role, "content": msg.content})
@@ -174,10 +161,10 @@ class Conversation:
                         minutes = int(time_diff.total_seconds() / 60)
                         time_note = f"[{minutes} minutes later]"
                     
-                    next_context = next_msg.context or {}
+                    next_context = TemporalContext.get_detailed_context(next_msg.timestamp)
                     history.append({
                         "role": "system",
-                        "content": f"{time_note} now it's {next_context.get('time_of_day', 'unknown')} on {next_context.get('day_of_week', 'unknown')}"
+                        "content": f"{time_note} now it's {next_context['time_of_day']} on {next_context['day_of_week']}"
                     })
         
         return history

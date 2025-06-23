@@ -53,8 +53,7 @@ class SchedulerService:
             ).order_by(ConversationHistory.created_at.desc()).first()
             
             if last_message:
-                message_type = last_message.context.get('message_type', 'conversation') if last_message.context else 'conversation'
-                return last_message.role, last_message.created_at, message_type
+                return last_message.role, last_message.created_at, last_message.message_type
             return None, None, None
     
     def _is_quiet_hours(self) -> bool:
