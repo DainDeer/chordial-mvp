@@ -77,7 +77,8 @@ your style is casual, kind, and a little whimsical."""
         messages.extend(conversation_history)
         
         # add current message if provided
-        messages.append({"role": "user", "content": f"{user_name} (now):{current_message}"})
+        if current_message:
+            messages.append({"role": "user", "content": f"{user_name} (now):{current_message}"})
         
         # log the prompt
         self._log_prompt(user_name, "conversation", messages)
@@ -184,6 +185,7 @@ for this scheduled message:
                 formatted_content = TemporalContext.format_message_with_temporal_context(
                     content=msg["content"],
                     role=msg["role"],
+                    message_type=msg["message_type"],
                     timestamp=timestamp,
                     user_name=user_name,
                     now=now

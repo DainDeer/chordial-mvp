@@ -136,6 +136,7 @@ class TemporalContext:
     def format_message_with_temporal_context(
         content: str, 
         role: str, 
+        message_type: str,
         timestamp: datetime, 
         user_name: str = None,
         now: datetime = None
@@ -154,5 +155,8 @@ class TemporalContext:
         else:
             name = "chordial"
         
-        # combine into the final format
-        return f"{name} ({time_string}): {content}"
+        # combine into the final format based on message_type
+        if message_type == "summary":
+            return f"{name} (SUMMARY from {time_string}): {content}"
+        else:
+            return f"{name} ({time_string}): {content}"

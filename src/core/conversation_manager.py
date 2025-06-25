@@ -3,7 +3,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from src.core.temporal_context import TemporalContext
 from src.database.database import get_db
-from src.database.models import ConversationHistory
+from src.database.models import ConversationHistory, CompressedMessage
 from src.services.compressor_service import CompressorService
 import logging
 
@@ -127,46 +127,124 @@ use this temporal awareness naturally in your response when relevant, but don't 
         
         return compressed_history
     
-    def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Dict[str, str]]:
-        """get conversation history in format suitable for ai providers"""
-        # return the last n messages
-        recent_messages = self.messages[-max_messages:]
-        history = []
+    async def get_hybrid_conversation_history(
+    self, 
+    limit: int = 20,
+    full_message_count: int = 5,
+    include_temporal: bool = True
+) -> List[Dict[str, str]]:
+        """
+        get conversation history using a mix of full and compressed messages.
         
-        for i, msg in enumerate(recent_messages):
-            if include_temporal and i == 0:
-                # for the first message in history, add a system note about when the conversation started
-                temporal_context = TemporalContext.get_detailed_context(msg.timestamp)
+        args:
+            limit: total number of messages to return
+            full_message_count: number of most recent messages to keep uncompressed
+            include_temporal: whether to add temporal context
+        
+        returns:
+            list of messages with most recent N as full, older as compressed
+        """
+        
+        with get_db() as db:
+            # first, get the most recent messages (we'll keep some full)
+            recent_messages = db.query(ConversationHistory).filter(
+                ConversationHistory.user_uuid == self.user_uuid,
+                ConversationHistory.platform == self.platform
+            ).order_by(ConversationHistory.created_at.desc()).limit(limit).all()
+            
+            # reverse to get chronological order
+            recent_messages.reverse()
+            
+            if not recent_messages:
+                return []
+            
+            history = []
+            
+            # split into full and compressed portions
+            if len(recent_messages) <= full_message_count:
+                # all messages will be full
+                for msg in recent_messages:
+                    history.append({
+                        "role": msg.role,
+                        "content": msg.content,
+                        "message_type": "raw",
+                        "timestamp": msg.created_at
+                    })
+            else:
+                # older messages (to be compressed)
+                older_messages = recent_messages[:-full_message_count]
+                # most recent messages (keep full)
+                newest_messages = recent_messages[-full_message_count:]
+                
+                # get compressed versions of older messages
+                older_msg_ids = [msg.id for msg in older_messages]
+                
+                compressed_messages = db.query(CompressedMessage).filter(
+                    CompressedMessage.conversation_history_id.in_(older_msg_ids)
+                ).all()
+                
+                # create a mapping for easy lookup
+                compressed_map = {cm.conversation_history_id: cm for cm in compressed_messages}
+                
+                # add older messages (compressed if available, otherwise full)
+                for msg in older_messages:
+                    if msg.id in compressed_map:
+                        # use compressed version
+                        history.append({
+                            "role": msg.role,
+                            "content": compressed_map[msg.id].compressed_content,
+                            "message_type": "summary",
+                            "timestamp": msg.created_at
+                        })
+                    else:
+                        # fallback to full if no compressed version exists yet
+                        logger.warning(f"no compressed version for message {msg.id}, using full")
+                        history.append({
+                            "role": msg.role,
+                            "content": msg.content,
+                            "message_type": "raw",
+                            "timestamp": msg.created_at
+                        })
+                
+                # add newest messages (always full)
+                for msg in newest_messages:
+                    history.append({
+                        "role": msg.role,
+                        "content": msg.content,
+                        "message_type": "raw",
+                        "timestamp": msg.created_at
+                    })
+            
+            # add temporal context if needed
+            if include_temporal and history:
                 context_note = {
                     "role": "system",
-                    "content": f"conversation context: this exchange started during {temporal_context['time_of_day']} on {temporal_context['day_of_week']}"
+                    "content": f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+    use this temporal awareness naturally in your response when relevant, but don't always mention the time."""
                 }
                 history.append(context_note)
             
-            # add the actual message
+            return history
+
+    def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Dict[str, str]]:
+        """
+        simple method to get uncompressed conversation history.
+        mainly for debugging or when compression isn't needed.
+        """
+        recent_messages = self.messages[-max_messages:]
+        history = []
+        
+        for msg in recent_messages:
             history.append({"role": msg.role, "content": msg.content})
-            
-            # add temporal context between messages if significant time passed
-            if include_temporal and i < len(recent_messages) - 1:
-                next_msg = recent_messages[i + 1]
-                time_diff = next_msg.timestamp - msg.timestamp
-                
-                # if more than 30 minutes passed, note it
-                if time_diff.total_seconds() > 1800:
-                    hours_passed = time_diff.total_seconds() / 3600
-                    if hours_passed >= 24:
-                        time_note = f"[{int(hours_passed / 24)} days later]"
-                    elif hours_passed >= 1:
-                        time_note = f"[{int(hours_passed)} hours later]"
-                    else:
-                        minutes = int(time_diff.total_seconds() / 60)
-                        time_note = f"[{minutes} minutes later]"
-                    
-                    next_context = TemporalContext.get_detailed_context(next_msg.timestamp)
-                    history.append({
-                        "role": "system",
-                        "content": f"{time_note} now it's {next_context['time_of_day']} on {next_context['day_of_week']}"
-                    })
+        
+        # add temporal context if needed
+        if include_temporal and history:
+            context_note = {
+                "role": "system",
+                "content": f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+    use this temporal awareness naturally in your response when relevant, but don't always mention the time."""
+            }
+            history.append(context_note)
         
         return history
 

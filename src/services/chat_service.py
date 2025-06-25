@@ -13,12 +13,14 @@ logger = logging.getLogger(__name__)
 class ChatService:
     """main service for handling chat interactions across all platforms"""
     
-    def __init__(self, ai_provider=None, conversation_manager=None, user_manager=None):
+    def __init__(self, ai_provider=None, conversation_manager=None, user_manager=None, full_message_count=5, total_message_count=20):
         self.ai_provider = ai_provider
         self.conversation_manager = conversation_manager or ConversationManager()
         self.user_manager = user_manager or UserManager()
         self.onboarding_service = OnboardingService(self.user_manager)
-        self.prompt_service = PromptService()  # add our new prompt service!
+        self.prompt_service = PromptService()
+        self.full_message_count = full_message_count
+        self.total_message_count = total_message_count
     
     async def _prepare_for_interaction(
         self,
@@ -97,21 +99,22 @@ class ChatService:
                 unified_message.platform
             )
 
-            # get compressed history for conversation context
-            compressed_history = await conversation.get_compressed_conversation_history(
-                limit=15,  # can include more messages since they're compressed!
-                include_temporal=True
-            )
-            
-            # add user message to history
+            # add user message to history FIRST
             conversation.add_message("user", unified_message.content)
 
             # compress it (async)
             await conversation.compress_last_message()
 
+            # NOW get hybrid history (which will include our just-added message)
+            hybrid_history = await conversation.get_hybrid_conversation_history(
+                limit=self.total_message_count,  # total messages
+                full_message_count=self.full_message_count,  # N most recent as full
+                include_temporal=True
+            )
+
             # add temporal context to the compressed history
             compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
-                conversation_history=compressed_history,
+                conversation_history=hybrid_history,
                 user_name=user_name,
                 include_temporal=True
             )
