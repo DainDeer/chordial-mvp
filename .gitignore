@@ -6,3 +6,5 @@ __pycache__/
 .cache/
 .poetry/
 chordial.db
+prompt_logs/
+*.log

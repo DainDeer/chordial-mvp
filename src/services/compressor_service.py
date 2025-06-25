@@ -127,6 +127,7 @@ Try to compress this to 50-75 words maximum while keeping essential information.
                 history.append({
                     "role": msg.role,
                     "content": msg.compressed_content,
+                    "timestamp": msg.created_at
                 })
             # TODO: add time logic call here?
             return history

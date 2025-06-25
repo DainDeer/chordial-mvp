@@ -76,9 +76,8 @@ your style is casual, kind, and a little whimsical."""
         # add conversation history
         messages.extend(conversation_history)
         
-        # add current message if provided (though it should already be in history)
-        if current_message and (not conversation_history or conversation_history[-1]["content"] != current_message):
-            messages.append({"role": "user", "content": current_message})
+        # add current message if provided
+        messages.append({"role": "user", "content": f"{user_name} (now):{current_message}"})
         
         # log the prompt
         self._log_prompt(user_name, "conversation", messages)
@@ -150,18 +149,60 @@ for this scheduled message:
         return messages
 
     def add_temporal_context_to_history(
-        self,
-        conversation_history: List[Dict[str, str]],
-        include_temporal: bool = True
-    ) -> List[Dict[str, str]]:
-        """add temporal context markers to conversation history if needed"""
+    self,
+    conversation_history: List[Dict[str, str]],
+    user_name: Optional[str] = None,
+    include_temporal: bool = True
+) -> List[Dict[str, str]]:
+        """add temporal context markers to conversation history"""
         
         if not include_temporal or not conversation_history:
             return conversation_history
         
-        # this is handled in conversation_manager already, but we could enhance it here
-        # for now, just pass through
-        return conversation_history
+        # we need timestamps for each message to add temporal context
+        # assuming compressed messages have timestamps stored somewhere
+        # for now, let's update the conversation history with temporal context
+        
+        from src.core.temporal_context import TemporalContext
+        from datetime import datetime
+        
+        updated_history = []
+        now = datetime.now()
+        
+        for msg in conversation_history:
+            # skip system messages
+            if msg.get("role") == "system":
+                updated_history.append(msg)
+                continue
+                
+            # get the timestamp - this assumes messages have a timestamp field
+            # if not available, we'll need to handle this differently
+            timestamp = msg.get("timestamp")
+            
+            if timestamp and isinstance(timestamp, datetime):
+                # format the content with temporal context
+                formatted_content = TemporalContext.format_message_with_temporal_context(
+                    content=msg["content"],
+                    role=msg["role"],
+                    timestamp=timestamp,
+                    user_name=user_name,
+                    now=now
+                )
+                
+                # create updated message with temporal context
+                updated_msg = {
+                    "role": msg["role"],
+                    "content": formatted_content
+                }
+            else:
+                # if no timestamp available, keep original message
+                # log a warning for debugging
+                logger.debug(f"no timestamp available for {msg.get('role')} message")
+                updated_msg = msg
+                
+            updated_history.append(updated_msg)
+        
+        return updated_history
     
     def _log_prompt(
         self,

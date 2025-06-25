@@ -109,9 +109,12 @@ class ChatService:
             # compress it (async)
             await conversation.compress_last_message()
 
-            # add user message to the compressed convo for this request
-            # TODO: this should be updated in the future if we dont send only compressed messages + user message
-            compressed_history.append({"role": "user", "content": unified_message.content})
+            # add temporal context to the compressed history
+            compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
+                conversation_history=compressed_history,
+                user_name=user_name,
+                include_temporal=True
+            )
             
             # generate response using ai provider
             if self.ai_provider:
@@ -122,7 +125,7 @@ class ChatService:
                 
                 # use prompt service to build the messages
                 messages = self.prompt_service.build_conversation_prompt(
-                    conversation_history=compressed_history,
+                    conversation_history=compressed_history_with_time,
                     current_message=unified_message.content,
                     user_name=user_name,
                     context=context
@@ -176,13 +179,23 @@ class ChatService:
                 user_preferred_name=user_name,
                 message_type="scheduled"
             )
+
+            # get compressed history
+            compressed_history = await conversation.get_compressed_conversation_history(
+                limit=15,
+                include_temporal=True
+            )
+
+            # add temporal context to the compressed history
+            compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
+                conversation_history=compressed_history,
+                user_name=user_name,
+                include_temporal=True
+            )
             
             # use prompt service to build scheduled message prompt
             messages = self.prompt_service.build_scheduled_message_prompt(
-                conversation_history=await conversation.get_compressed_conversation_history(
-                    limit=15,
-                    include_temporal=True
-                ),
+                conversation_history=compressed_history_with_time,
                 user_name=user_name,
                 context=context
             )
