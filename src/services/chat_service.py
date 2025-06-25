@@ -176,6 +176,12 @@ class ChatService:
                 user_uuid,
                 platform
             )
+
+            hybrid_history = await conversation.get_hybrid_conversation_history(
+                limit=self.total_message_count,  # total messages
+                full_message_count=self.full_message_count,  # N most recent as full
+                include_temporal=True
+            )
             
             # build context
             context = ContextBuilder.build_message_context(
@@ -183,15 +189,10 @@ class ChatService:
                 message_type="scheduled"
             )
 
-            # get compressed history
-            compressed_history = await conversation.get_compressed_conversation_history(
-                limit=15,
-                include_temporal=True
-            )
 
             # add temporal context to the compressed history
             compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
-                conversation_history=compressed_history,
+                conversation_history=hybrid_history,
                 user_name=user_name,
                 include_temporal=True
             )
