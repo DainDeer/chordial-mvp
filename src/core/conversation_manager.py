@@ -120,9 +120,10 @@ class Conversation:
         if include_temporal and compressed_history:
             context_note = {
                 "role": "system",
-                "content": f"Current context: {TemporalContext.get_context_string(datetime.now())}"
+                "content": f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+use this temporal awareness naturally in your response when relevant, but don't always mention the time."""
             }
-            compressed_history.insert(0, context_note)
+            compressed_history.append(context_note)
         
         return compressed_history
     

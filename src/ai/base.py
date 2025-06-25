@@ -7,13 +7,10 @@ class BaseAIProvider(ABC):
     @abstractmethod
     async def generate_response(
         self, 
-        conversation_history: List[Dict[str, str]], 
-        current_message: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        **kwargs
+        messages: List[Dict[str, str]],  # simplified: just the message list
+        **kwargs  # for any provider-specific options
     ) -> str:
-        """generate a response based on conversation history"""
+        """generate a response based on the provided messages"""
         pass
     
     @abstractmethod

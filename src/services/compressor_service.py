@@ -5,6 +5,7 @@ from datetime import datetime
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
 from src.ai.openai_provider import OpenAIProvider
+from src.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
@@ -29,38 +30,40 @@ class CompressorService:
             return content
         
         try:
-            # different prompts for user vs assistant messages
+            # use prompt service for consistent prompt construction
+            prompt_service = PromptService()
+            
+            # different compression instructions for user vs assistant
             if role == "user":
-                system_prompt = """You are a message compressor. Compress the user's message to its essential meaning.
+                compression_instructions = """You are a message compressor. Compress the user's message to its essential meaning.
 Keep: intentions, questions, emotional tone, specific requests
 Remove: filler words, repetition, unnecessary details
-Output only the compressed message, no explanation."""
+Output only the compressed message, no explanation.
+
+Try to compress this to 30-50 words maximum while keeping the core meaning."""
                 
-                user_prompt = f"Try to compress this to 30-50 words maximum while keeping the core meaning:\n\n{content}"
-            
             else:  # assistant message
-                system_prompt = """You are a message compressor. Compress this AI assistant response to its key points.
+                compression_instructions = """You are a message compressor. Compress this AI assistant response to its key points.
 Keep: main advice/information, commitments, important context
 Remove: pleasantries, repetition, examples (unless critical)
 Maintain the assistant's helpful tone but be very concise.
-Output only the compressed message, no explanation."""
-                
-                user_prompt = f"Try to compress this to 50-75 words maximum while keeping essential information:\n\n{content}"
+Output only the compressed message, no explanation.
+
+Try to compress this to 50-75 words maximum while keeping essential information."""
             
-            compressed = await self.compressor.generate_response(
-                conversation_history=[{"role": "user", "content": user_prompt}],
-                system_prompt=system_prompt
+            # build prompt using our service
+            messages = prompt_service.build_custom_prompt(
+                system_instructions=compression_instructions,
+                user_message=content
             )
+            
+            # use the compressor model
+            compressed = await self.compressor.generate_response(messages)
             
             # make sure we actually compressed it
             if len(compressed) >= len(content) * 0.8:
-                # if compression failed, try a more aggressive approach
-                logger.warning(f"compression failed to reduce size significantly, trying aggressive mode")
-                #aggressive_prompt = f"Summarize in 20 words or less: {content}"
-                #compressed = await self.compressor.generate_response(
-                #    conversation_history=[{"role": "user", "content": aggressive_prompt}],
-                #    system_prompt="Create an ultra-concise summary. Be extremely brief."
-                #)
+                logger.warning(f"compression failed to reduce size significantly")
+                # could try more aggressive compression here if needed
             
             return compressed.strip()
             
@@ -68,7 +71,7 @@ Output only the compressed message, no explanation."""
             logger.error(f"error compressing message: {e}")
             # fallback: just truncate
             return content[:200] + "..." if len(content) > 200 else content
-    
+        
     async def store_compressed_message(
         self,
         conversation_history_id: int,

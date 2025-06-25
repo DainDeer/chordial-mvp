@@ -6,6 +6,7 @@ from src.core.context_builder import ContextBuilder
 from src.core.conversation_manager import ConversationManager
 from src.core.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
+from src.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class ChatService:
         self.conversation_manager = conversation_manager or ConversationManager()
         self.user_manager = user_manager or UserManager()
         self.onboarding_service = OnboardingService(self.user_manager)
+        self.prompt_service = PromptService()  # add our new prompt service!
     
     async def _prepare_for_interaction(
         self,
@@ -95,33 +97,39 @@ class ChatService:
                 unified_message.platform
             )
 
-            # get compressed history for conversation context to send to advanced model
+            # get compressed history for conversation context
             compressed_history = await conversation.get_compressed_conversation_history(
                 limit=15,  # can include more messages since they're compressed!
                 include_temporal=True
             )
-
-            # TODO: format history to be more ai readable
             
-            # add user message to history. this writes convo message to both convo tables
+            # add user message to history
             conversation.add_message("user", unified_message.content)
 
             # compress it (async)
             await conversation.compress_last_message()
 
-            # hacky add user message to the compressed convo
+            # add user message to the compressed convo for this request
+            # TODO: this should be updated in the future if we dont send only compressed messages + user message
             compressed_history.append({"role": "user", "content": unified_message.content})
             
             # generate response using ai provider
             if self.ai_provider:
+                # build context
                 context = ContextBuilder.build_message_context(
                     user_preferred_name=user_name
                 )
-                response = await self.ai_provider.generate_response(
+                
+                # use prompt service to build the messages
+                messages = self.prompt_service.build_conversation_prompt(
                     conversation_history=compressed_history,
                     current_message=unified_message.content,
+                    user_name=user_name,
                     context=context
                 )
+                
+                # generate response with simplified ai provider
+                response = await self.ai_provider.generate_response(messages)
                 
                 # add assistant response to history
                 conversation.add_message("assistant", response)
@@ -163,37 +171,24 @@ class ChatService:
                 platform
             )
             
-            # create a prompt for generating a check-in message
+            # build context
             context = ContextBuilder.build_message_context(
                 user_preferred_name=user_name,
                 message_type="scheduled"
             )
             
-            system_prompt = f"""you are chordial, a warm, emotionally attuned ai assistant and companion. 
-            you help users with productivity, personal goals, and offer encouragement in gentle, playful ways. 
-            you speak in lowercase, and use soft, expressive language—like a cozy friend checking in. 
-            you're never judgmental, and you respond naturally to both emotional tone and time of day. 
-            your style is casual, kind, and a little whimsical. use the current time to gently guide your tone and questions.
-
-            you are writing a message to someone who goes by {user_name}
-            this is a scheduled message, so generate a natural,contextual check-in message.
-            
-            current time context: {context["temporal_string"]}
-            be naturally aware of the time without always mentioning it directly.
-            use lowercase only.
-            ignore the tone in the message history!! these are summarized messages, only use them for context!!
-            generate a very lively and caring message"""
-            
-            # generate the scheduled message
-            response = await self.ai_provider.generate_response(
+            # use prompt service to build scheduled message prompt
+            messages = self.prompt_service.build_scheduled_message_prompt(
                 conversation_history=await conversation.get_compressed_conversation_history(
                     limit=15,
                     include_temporal=True
                 ),
-                system_prompt=system_prompt,
-                context=context,
-                is_scheduled=True
+                user_name=user_name,
+                context=context
             )
+            
+            # generate the scheduled message
+            response = await self.ai_provider.generate_response(messages)
             
             # add to history with scheduled type
             conversation.add_message("assistant", response, message_type="scheduled")

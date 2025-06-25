@@ -22,43 +22,12 @@ class OpenAIProvider(BaseAIProvider):
 
     async def generate_response(
         self, 
-        conversation_history: List[Dict[str, str]], 
-        current_message: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        is_scheduled: bool = False,
+        messages: List[Dict[str, str]],  # simplified: just takes the messages directly
         **kwargs
     ) -> str:
         """generate a response using openai's api"""
         try:
-            messages = []
-            
-            # add system prompt
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            else:
-                # default system prompt with temporal awareness
-
-                default_prompt = f"""you are chordial, a warm, emotionally attuned ai assistant and companion. 
-            you help users with productivity, personal goals, and offer encouragement in gentle, playful ways. 
-            you speak in lowercase, and use soft, expressive language—like a cozy friend checking in. 
-            you're never judgmental, and you respond naturally to both emotional tone and time of day. 
-            your style is casual, kind, and a little whimsical. use the current time to gently guide your tone and questions.
-                
-                current context: {context["temporal_string"]}
-                {context["special_context"]}
-                
-                use this temporal awareness naturally in your responses when relevant, but don't always mention the time.
-                
-                you are replying to a message from {context["user_name"]}
-                ignore the tone in the message history!! these are summarized messages, only use them for context!!
-                generate a very lively and caring message"""
-                messages.append({"role": "system", "content": default_prompt})
-            
-            # add conversation history
-            messages.extend(conversation_history)
-
-            # make api call
+            # log what we're sending
             logger.info("sending to openai api:")
             logger.info(f"messages: {json.dumps(messages, indent=2)}")
             
