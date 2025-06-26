@@ -39,6 +39,7 @@ class User(Base):
     # relationships
     platform_identities = relationship("PlatformIdentity", back_populates="user")
     conversations = relationship("ConversationHistory", back_populates="user")
+    memories = relationship("Memory", back_populates="user")
 
 
 class PlatformIdentity(Base):
@@ -111,6 +112,42 @@ class CompressedMessage(Base):
     # relationships
     original_message = relationship("ConversationHistory")
     user = relationship("User")
+    
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+class Memory(Base):
+    """stores memories about users for persistent context"""
+    __tablename__ = 'memories'
+    
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    
+    # core memory data
+    ai_instruction = Column(String, nullable=False)  # what the ai should remember/do
+    weighting = Column(Float, default=1.0)  # importance weight (higher = more important)
+    keywords = Column(String)  # comma-separated keywords for searching
+    
+    # memory properties
+    core = Column(Boolean, default=False)  # if true, always included (max weight)
+    is_active = Column(Boolean, default=True)  # soft delete flag
+    memory_type = Column(String(20), nullable=False)  # PREFERENCE, FACT, EPISODIC
+    
+    # embedding for semantic search (stored as json for sqlite compatibility)
+    # for postgres, you'd use: embedding = Column(Vector(1536))
+    embedding = Column(JSON)  # store as json array for now
+    
+    # metadata
+    source = Column(String, nullable=False)  # USER_EXPLICIT, AI_INFERRED, SYSTEM_GENERATED
+    access_count = Column(Integer, default=0)
+    last_accessed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    ttl = Column(Integer, nullable=True)  # time to live in seconds (null = permanent)
+    metadata = Column(JSON, default={})  # flexible metadata storage
+    
+    # relationships
+    user = relationship("User", back_populates="memories")
     
     __table_args__ = (
         {'sqlite_autoincrement': True}
