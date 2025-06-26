@@ -2,6 +2,7 @@ import logging
 from typing import Optional, List, Dict
 from datetime import datetime
 
+from config import Config
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
 from src.ai.openai_provider import OpenAIProvider
@@ -12,10 +13,12 @@ logger = logging.getLogger(__name__)
 class CompressorService:
     """compresses messages in real-time for efficient context management"""
     
-    def __init__(self, compression_model: str = "gpt-3.5-turbo"):
-        self.compressor = OpenAIProvider(model=compression_model)
+    def __init__(self, compression_model: str = None):
+        compression_model = compression_model or Config.COMPRESSOR_MODEL
         self.target_compression_ratio = 0.3  # aim for 70% reduction
-        self.min_length_to_compress = 100  # don't compress tiny messages
+        self.min_length_to_compress = Config.MIN_LENGTH_TO_COMPRESS  # don't compress messages N characters or less
+
+        self.compressor = OpenAIProvider(model=compression_model)
     
     async def compress_message(
         self, 

@@ -28,9 +28,9 @@ class SchedulerService:
         self.user_manager = user_manager
         self.user_contexts: Dict[str, ScheduledMessageContext] = {}
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
-        self.delay_after_ignored_hours = 24  # delay 24h if message was ignored
-        self.quiet_hours_start = 21  # 9 PM
-        self.quiet_hours_end = 8   # 8 AM
+        self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
+        self.quiet_hours_start = Config.QUIET_HOURS_START
+        self.quiet_hours_end = Config.QUIET_HOURS_END 
         self._running = False
     
     def _get_context_key(self, user_uuid: str, platform: str) -> str:
