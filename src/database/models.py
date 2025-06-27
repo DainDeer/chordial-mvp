@@ -144,7 +144,7 @@ class Memory(Base):
     last_accessed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     ttl = Column(Integer, nullable=True)  # time to live in seconds (null = permanent)
-    metadata = Column(JSON, default={})  # flexible metadata storage
+    memory_metadata = Column(JSON, default={})  # flexible metadata storage
     
     # relationships
     user = relationship("User", back_populates="memories")

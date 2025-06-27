@@ -42,7 +42,7 @@ class MemoriesManager:
         core: bool = False,
         ttl_seconds: Optional[int] = None,
         embedding: Optional[List[float]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        memory_metadata: Optional[Dict[str, Any]] = None
     ) -> Memory:
         """create a new memory for a user"""
         
@@ -63,7 +63,7 @@ class MemoriesManager:
                 "core": core,
                 "ttl": ttl_seconds,
                 "embedding": embedding if embedding else None,  # stored as json
-                "metadata": metadata or {}
+                "memory_metadata": memory_metadata or {}
             }
             
             memory = Memory(**memory_data)
@@ -164,40 +164,62 @@ class MemoriesManager:
     ) -> List[Dict[str, Any]]:
         """get memories formatted for inclusion in ai prompts"""
         
-        # always get core memories
-        memories = []
-        if include_core:
-            core_memories = await self.get_core_memories(user_uuid)
-            memories.extend(core_memories)
-        
-        # get other active memories
-        regular_memories = await self.get_active_memories(user_uuid)
-        
-        # filter out core memories from regular (avoid duplicates)
-        regular_memories = [m for m in regular_memories if not m.core]
-        
-        # sort by weight and recency
-        regular_memories.sort(
-            key=lambda m: (m.weighting, m.last_accessed_at or m.created_at),
-            reverse=True
-        )
-        
-        # add top regular memories up to limit
-        remaining_slots = max_count - len(memories)
-        memories.extend(regular_memories[:remaining_slots])
-        
-        # format for prompt inclusion
         formatted = []
-        for memory in memories:
-            formatted.append({
-                "type": memory.memory_type,
-                "instruction": memory.ai_instruction,
-                "core": memory.core,
-                "source": memory.source
-            })
+        memory_ids_to_track = []
+        
+        with get_db() as db:
+            # build base query
+            query = db.query(Memory).filter(
+                Memory.user_uuid == user_uuid,
+                Memory.is_active == True
+            )
             
-            # update access tracking
-            await self._track_memory_access(memory.id)
+            # get all active memories
+            all_memories = query.all()
+            
+            # check and expire ttl memories
+            now = datetime.now()
+            for memory in all_memories:
+                if memory.ttl is not None:
+                    age_seconds = (now - memory.created_at).total_seconds()
+                    if age_seconds >= memory.ttl:
+                        memory.is_active = False
+                        logger.info(f"memory {memory.id} expired, marking inactive")
+            
+            db.commit()  # commit any expirations
+            
+            # separate core and regular memories
+            core_memories = [m for m in all_memories if m.core and m.is_active]
+            regular_memories = [m for m in all_memories if not m.core and m.is_active]
+            
+            # start with core memories
+            memories_to_include = core_memories.copy()
+            
+            # sort regular memories by weight and recency
+            regular_memories.sort(
+                key=lambda m: (m.weighting, m.last_accessed_at or m.created_at),
+                reverse=True
+            )
+            
+            # add top regular memories up to limit
+            remaining_slots = max_count - len(memories_to_include)
+            memories_to_include.extend(regular_memories[:remaining_slots])
+            
+            # format for prompt inclusion WHILE SESSION IS OPEN
+            for memory in memories_to_include:
+                formatted.append({
+                    "type": memory.memory_type,
+                    "instruction": memory.ai_instruction,
+                    "core": memory.core,
+                    "source": memory.source
+                })
+                
+                # collect ids to track access later
+                memory_ids_to_track.append(memory.id)
+        
+        # update access tracking with separate session
+        for memory_id in memory_ids_to_track:
+            await self._track_memory_access(memory_id)
         
         return formatted
     

@@ -4,6 +4,8 @@ import logging
 import os
 import json
 
+from src.core.memories_manager import MemoriesManager
+
 logger = logging.getLogger(__name__)
 
 class PromptService:
@@ -20,21 +22,47 @@ your style is casual, kind, and a little whimsical."""
         # prompt logging for debugging/tuning
         self.enable_prompt_logging = enable_prompt_logging
         self.prompt_log_dir = "prompt_logs"
+
+        # memories manager for fetching user memories
+        self.memories_manager = MemoriesManager()
         
         # create log directory if logging is enabled
         if self.enable_prompt_logging and not os.path.exists(self.prompt_log_dir):
             os.makedirs(self.prompt_log_dir)
             logger.info(f"created prompt log directory: {self.prompt_log_dir}")
 
-    def _create_base_system_prompt(
+    async def _create_base_system_prompt(
         self,
         user_name: Optional[str] = None,
+        user_uuid: Optional[str] = None,
         message_type: str = "conversation",
         context: Optional[Dict[str, Any]] = None
     ) -> str:
         """create the base system prompt with user context"""
         
         prompt_parts = [self.base_personality]
+
+        # add user memories if we have a user_uuid
+        if user_uuid:
+            try:
+                memories = await self.memories_manager.get_memories_for_prompt(
+                    user_uuid=user_uuid,
+                    max_count=10,
+                    include_core=True
+                )
+        
+                if memories:
+                    prompt_parts.append("\n--- important things to remember about this user ---")
+                    for memory in memories:
+                        if memory['core']:
+                            prompt_parts.append(f"[ALWAYS REMEMBER] {memory['instruction']}")
+                        else:
+                            prompt_parts.append(f"[{memory['type']}] {memory['instruction']}")
+                    prompt_parts.append("--- end of memories ---\n")
+                    
+            except Exception as e:
+                logger.error(f"failed to fetch memories for prompt: {e}")
+                # continue without memories if there's an error
         
         # add user-specific instructions
         if user_name:
@@ -54,11 +82,12 @@ your style is casual, kind, and a little whimsical."""
         
         return "\n".join(prompt_parts)
 
-    def build_conversation_prompt(
+    async def build_conversation_prompt(
         self,
         conversation_history: List[Dict[str, str]],
         current_message: Optional[str] = None,
         user_name: Optional[str] = None,
+        user_uuid: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for regular conversation responses"""
@@ -66,12 +95,16 @@ your style is casual, kind, and a little whimsical."""
         messages = []
         
         # add system prompt
-        system_prompt = self._create_base_system_prompt(
+        system_prompt = await self._create_base_system_prompt(
             user_name=user_name,
+            user_uuid=user_uuid,
             message_type="conversation",
             context=context
         )
         messages.append({"role": "system", "content": system_prompt})
+
+        # add relevant memories
+
         
         # add conversation history
         messages.extend(conversation_history)
@@ -86,10 +119,11 @@ your style is casual, kind, and a little whimsical."""
         logger.debug(f"built conversation prompt with {len(messages)} messages")
         return messages
 
-    def build_scheduled_message_prompt(
+    async def build_scheduled_message_prompt(
         self,
         conversation_history: List[Dict[str, str]],
         user_name: Optional[str] = None,
+        user_uuid: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for scheduled check-in messages"""
@@ -97,8 +131,9 @@ your style is casual, kind, and a little whimsical."""
         messages = []
         
         # create a more specific system prompt for scheduled messages
-        base_prompt = self._create_base_system_prompt(
+        base_prompt = await self._create_base_system_prompt(
             user_name=user_name,
+            user_uuid=user_uuid,
             message_type="scheduled",
             context=context
         )

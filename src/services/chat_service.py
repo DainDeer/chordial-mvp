@@ -127,10 +127,11 @@ class ChatService:
                 )
                 
                 # use prompt service to build the messages
-                messages = self.prompt_service.build_conversation_prompt(
+                messages = await self.prompt_service.build_conversation_prompt(
                     conversation_history=compressed_history_with_time,
                     current_message=unified_message.content,
                     user_name=user_name,
+                    user_uuid=user_uuid,
                     context=context
                 )
                 
@@ -198,9 +199,10 @@ class ChatService:
             )
             
             # use prompt service to build scheduled message prompt
-            messages = self.prompt_service.build_scheduled_message_prompt(
+            messages = await self.prompt_service.build_scheduled_message_prompt(
                 conversation_history=compressed_history_with_time,
                 user_name=user_name,
+                user_uuid=user_uuid,
                 context=context
             )
             
