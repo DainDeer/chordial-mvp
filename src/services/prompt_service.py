@@ -72,12 +72,12 @@ your style is casual, kind, and a little whimsical."""
             else:
                 prompt_parts.append(f"\nyou are replying to a message from {user_name}")
 
-        prompt_parts.append("\ndo not use their name by default, but try to include it if it feels natural.")
+        prompt_parts.append("\ninclude it if it feels natural. or especially if sending a scheduled check-in message.")
         # TODO: once the temporal strings are added to each message, add further instructions here
         # thinking of something like: try to use their name if it is a scheduled message or if the user is reaching out after a period of over 3 hours.
         
         # add conversation-specific reminders
-        prompt_parts.append("\nignore the tone in the message history!! these are summarized messages, only use them for context!!")
+        prompt_parts.append("\nignore the tone in the messages labeled SUMMARY, these are summarized messages just for context.")
         prompt_parts.append("generate a very lively and caring message")
         
         return "\n".join(prompt_parts)
