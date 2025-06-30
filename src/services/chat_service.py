@@ -111,13 +111,6 @@ class ChatService:
                 full_message_count=self.full_message_count,  # N most recent as full
                 include_temporal=True
             )
-
-            # add temporal context to the compressed history
-            compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
-                conversation_history=hybrid_history,
-                user_name=user_name,
-                include_temporal=True
-            )
             
             # generate response using ai provider
             if self.ai_provider:
@@ -126,9 +119,9 @@ class ChatService:
                     user_preferred_name=user_name
                 )
                 
-                # use prompt service to build the messages
+                # use prompt service to build the messages (it handles temporal context internally)
                 messages = await self.prompt_service.build_conversation_prompt(
-                    conversation_history=compressed_history_with_time,
+                    conversation_history=hybrid_history,
                     current_message=unified_message.content,
                     user_name=user_name,
                     user_uuid=user_uuid,
@@ -189,18 +182,10 @@ class ChatService:
                 user_preferred_name=user_name,
                 message_type="scheduled"
             )
-
-
-            # add temporal context to the compressed history
-            compressed_history_with_time = self.prompt_service.add_temporal_context_to_history(
-                conversation_history=hybrid_history,
-                user_name=user_name,
-                include_temporal=True
-            )
             
-            # use prompt service to build scheduled message prompt
+            # use prompt service to build scheduled message prompt (it handles temporal context internally)
             messages = await self.prompt_service.build_scheduled_message_prompt(
-                conversation_history=compressed_history_with_time,
+                conversation_history=hybrid_history,
                 user_name=user_name,
                 user_uuid=user_uuid,
                 context=context
