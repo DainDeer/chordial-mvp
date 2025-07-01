@@ -4,8 +4,8 @@ import logging
 import os
 import json
 
-from src.core.memories_manager import MemoriesManager
-from src.core.message import Message
+from src.managers.memories_manager import MemoriesManager
+from src.models.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ your style is casual, kind, and a little whimsical."""
         if not conversation_history:
             return conversation_history
         
-        from src.core.temporal_context import TemporalContext
+        from src.utils.temporal_context import TemporalContext
         from datetime import datetime
         
         updated_history = []

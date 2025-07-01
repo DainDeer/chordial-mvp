@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Dict, Any, Optional
-from src.core.temporal_context import TemporalContext
+from src.utils.temporal_context import TemporalContext
 
 class ContextBuilder:
     @staticmethod

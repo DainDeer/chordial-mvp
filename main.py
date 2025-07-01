@@ -3,8 +3,8 @@ import logging
 from config import Config
 from src.services.chat_service import ChatService
 from src.services.scheduler_service import SchedulerService
-from src.core.conversation_manager import ConversationManager
-from src.core.user_manager import UserManager
+from src.managers.conversation_manager import ConversationManager
+from src.managers.user_manager import UserManager
 from src.database.database import init_db
 
 # setup logging
@@ -28,7 +28,7 @@ async def main():
     # initialize ai provider
     ai_provider = None
     if Config.OPENAI_API_KEY:
-        from src.ai.openai_provider import OpenAIProvider
+        from src.providers.ai.openai_provider import OpenAIProvider
         ai_provider = OpenAIProvider()
         if await ai_provider.is_available():
             logger.info("openai provider initialized successfully")
@@ -52,7 +52,7 @@ async def main():
     interfaces = []
     
     if Config.ENABLE_DISCORD:
-        from src.interfaces.discord.bot import DiscordInterface
+        from src.providers.platforms.discord_bot import DiscordInterface
         discord_interface = DiscordInterface(chat_service)
         interfaces.append(discord_interface)
         logger.info("discord interface enabled")

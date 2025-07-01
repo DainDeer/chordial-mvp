@@ -1,8 +1,8 @@
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass, field
-from src.core.message import Message
-from src.core.temporal_context import TemporalContext
+from src.models.message import Message
+from src.utils.temporal_context import TemporalContext
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
 from src.services.compressor_service import CompressorService

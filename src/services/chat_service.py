@@ -1,10 +1,10 @@
 from typing import Optional
 import logging
 
-from src.adapters.message_adapter import UnifiedMessage
-from src.core.context_builder import ContextBuilder
-from src.core.conversation_manager import ConversationManager
-from src.core.user_manager import UserManager
+from src.models.unified_message import UnifiedMessage
+from src.utils.context_builder import ContextBuilder
+from src.managers.conversation_manager import ConversationManager
+from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
 from src.services.prompt_service import PromptService
 

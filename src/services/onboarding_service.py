@@ -1,8 +1,8 @@
 from typing import Optional
 import logging
 
-from src.core.user_manager import UserManager
-from src.core.memories_manager import MemoriesManager, MemoryType, MemorySource
+from src.managers.user_manager import UserManager
+from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
 
 logger = logging.getLogger(__name__)
 

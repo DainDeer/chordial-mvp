@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 from datetime import datetime
 import logging
 
-from ..base import BaseInterface
+from .base import BaseInterface
 from config import Config
 from src.utilities.string_utils import chunk_message
 
@@ -86,7 +86,7 @@ class DiscordInterface(BaseInterface):
     async def handle_incoming_message(self, message: discord.Message):
         """Handle incoming Discord messages"""
         # Convert Discord message to a format the chat service understands
-        from src.adapters.message_adapter import UnifiedMessage
+        from src.models.unified_message import UnifiedMessage
         
         unified_msg = UnifiedMessage(
             content=message.content,

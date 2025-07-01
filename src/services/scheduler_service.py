@@ -3,7 +3,7 @@ from typing import Dict, Optional, List
 import asyncio
 import logging
 
-from src.core.user_manager import UserManager
+from src.managers.user_manager import UserManager
 from src.services.chat_service import ChatService
 from src.database.database import get_db
 from src.database.models import ConversationHistory, PlatformIdentity

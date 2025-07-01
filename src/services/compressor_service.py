@@ -5,9 +5,9 @@ from datetime import datetime
 from config import Config
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
-from src.ai.openai_provider import OpenAIProvider
+from src.providers.ai.openai_provider import OpenAIProvider
 from src.services.prompt_service import PromptService
-from src.core.message import Message
+from src.models.message import Message
 
 logger = logging.getLogger(__name__)
 
