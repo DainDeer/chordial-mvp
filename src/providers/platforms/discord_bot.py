@@ -6,7 +6,7 @@ import logging
 
 from .base import BaseInterface
 from config import Config
-from src.utilities.string_utils import chunk_message
+from src.utils.string_utils import chunk_message
 
 logger = logging.getLogger(__name__)
 
