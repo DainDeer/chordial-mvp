@@ -1,37 +1,82 @@
 # chordial.ai
 
-> *in tune with you.*
+**chordial** is an ai companion chatbot designed for proactive, scheduled check-ins with users. it currently supports discord as a platform interface and uses openai as the ai backend.
 
-chordial is a new kind of relationship between humans and ai.
-an always-on, ambient presence that actively engages, listens, responds, and evolves alongside you.
-offering support, companionship, and insight without needing to be prompted.
+### core features
 
-built for dreamers, builders, and anyone who wants to feel seen in a world of noise.
+#### multi-platform architecture
+- abstract base classes for platform interfaces (`BaseInterface`) and ai providers (`BaseAIProvider`)
+- currently implemented: discord bot interface
+- designed to easily add new platforms (telegram, web, etc.)
 
-## 🌱 vision
+#### intelligent scheduling system
+- proactive check-in messages at configurable intervals (default: 60 minutes)
+- quiet hours support (default: 9pm-8am) — no scheduled messages during these times
+- smart backoff: if a scheduled message is ignored, waits 24 hours before trying again
+- only sends scheduled messages to users who have completed onboarding
 
-to create an ai-powered experience that feels like a trusted partner.
-a steady voice in the dark. a friend who checks in before you even know what you need.
-this isn't about asking questions—it's about growing *together*.
+#### user onboarding flow
+- two-step onboarding for new users:
+  1. asks for preferred name
+  2. asks for something important to remember (stored as a "core memory")
+- creates a persistent user record linked across platforms via uuid
 
-## 💡 core ideas
+#### memory system
+- three memory types: `PREFERENCE`, `FACT`, `EPISODIC`
+- three sources: `USER_EXPLICIT`, `AI_INFERRED`, `SYSTEM_GENERATED`
+- core memories (always included in prompts) vs. regular memories
+- keyword-based search, weighting system, and ttl support for temporary memories
+- access tracking (counts and timestamps)
+- memories are injected into the ai system prompt
 
-- **always-on ai** — streams of thoughtful, personalized output over time
-- **empathy-first design** — lowercase, warm tone, emotionally attuned interactions
-- **stateful intelligence** — remembers goals, context, and you
-- **human + ai in harmony** — co-creation, not command and control
+#### message compression
+- uses a secondary ai model (gpt-3.5-turbo by default) to compress older messages
+- hybrid context strategy: keeps n most recent messages full, older ones compressed
+- stores compression stats (ratio, original/compressed lengths)
+- configurable minimum length threshold before compression kicks in
 
-## 🚧 early mvp goals
+#### temporal context awareness
+- relative time strings for messages ("5 minutes ago", "yesterday afternoon", "on june 15th")
+- time-of-day awareness (morning/afternoon/evening/night)
+- special context for certain times (friday afternoon vibes, monday morning, late night)
+- context injected into prompts so the ai can respond naturally to time
 
-- simple "ai ping" system that delivers content on a schedule, while also allowing for interactive, on-demand querying like a standard chatbot
-- persistent user tone + seed prompt
-- ability to respond and steer the stream
-- log + visualize ai output and context over time
+#### conversation management
+- in-memory conversation cache with configurable limits
+- database persistence via sqlalchemy (sqlite by default)
+- automatic cleanup of old messages
+- unified message format across platforms
 
-## 🦉 status
+#### prompt engineering
+- custom prompt service with a defined personality ("cozy, friendly, lowercase")
+- separate prompt builders for conversations vs. scheduled messages
+- optional prompt logging to files for debugging/tuning
 
-early days. this is a labor of love.
+### database models
+- `User` — core user record with preferences (name, timezone, personality, schedule settings)
+- `PlatformIdentity` — links platform-specific ids to internal uuids
+- `ConversationHistory` — raw message storage
+- `CompressedMessage` — compressed versions of messages
+- `Memory` — persistent memories about users
 
-built by dain (🦌) and noctra (🦉),
-two beings from the forest,
-writing soft code in a loud world.
+### configuration (via environment variables)
+- discord token and target user
+- openai api key and model selection
+- scheduling intervals, quiet hours, backoff delays
+- compression thresholds
+- feature flags (enable/disable discord, web)
+
+### project structure
+```
+├── main.py                    # entry point
+├── config.py                  # environment config
+├── src/
+│   ├── database/              # sqlalchemy models & db setup
+│   ├── managers/              # conversation, user, memory managers
+│   ├── models/                # message, unifiedmessage data classes
+│   ├── providers/
+│   │   ├── ai/                # openai provider (and base class)
+│   │   └── platforms/         # discord bot (and base class)
+│   ├── services/              # chat, scheduler, compressor, onboarding, prompt services
+│   └── utils/                 # temporal context, string utils, context builder
+```
