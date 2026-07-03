@@ -3,6 +3,7 @@ import logging
 
 from src.models.unified_message import UnifiedMessage
 from src.utils.context_builder import ContextBuilder
+from src.utils.timezone_utils import utc_now, to_user_timezone
 from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
@@ -28,35 +29,41 @@ class ChatService:
         platform_user_id: str,
         platform_user_name: Optional[str] = None,
         content: Optional[str] = None
-    ) -> tuple[str, Optional[str], bool, Optional[str]]:
+    ) -> tuple[str, Optional[str], bool, Optional[str], str]:
         """
         helper function to handle user creation and onboarding flow.
-        
+
         returns a tuple containing:
         - the user uuid (string)
         - the user's preferred name (string)
         - whether the interaction should continue (True) or stop due to onboarding (False)
         - an optional response message (e.g., welcome message or onboarding response)
+        - the user's timezone (string), resolved once here so downstream
+          callers (conversation manager, prompt service) don't each re-fetch
+          it from the database for the same interaction
         """
         # check if this is a brand new user
         is_new = await self.user_manager.is_new_user(platform, platform_user_id)
-        
+
         # get or create user (returns user id string and preferred name if it exists)
         user_uuid, user_name = await self.user_manager.get_or_create_user(
             platform,
             platform_user_id,
             platform_user_name
         )
-        
+
+        # resolve once per interaction; passed down explicitly from here on
+        user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+
         # handle brand new users
         if is_new:
             self.onboarding_service.start_onboarding(platform, platform_user_id)
             # return welcome message
-            return user_uuid, None, False, self.onboarding_service.get_welcome_message()
-        
+            return user_uuid, None, False, self.onboarding_service.get_welcome_message(), user_timezone
+
         # check if user needs onboarding (no preferred name set)
         needs_onboarding = user_name is None
-        
+
         # check if user is in onboarding flow
         if self.onboarding_service.is_user_onboarding(platform, platform_user_id) or needs_onboarding:
             if content is not None:
@@ -67,36 +74,37 @@ class ChatService:
                     platform_user_id,
                     content
                 )
-                return user_uuid, user_name, False, response
+                return user_uuid, user_name, False, response, user_timezone
             else:
                 # scheduled message during onboarding - skip
                 logger.info(f"skipping interaction for {platform_user_name} - in onboarding but no content to process")
-                return user_uuid, None, False, None
-        
+                return user_uuid, None, False, None, user_timezone
+
         # user is fully onboarded, continue with normal flow
-        return user_uuid, user_name, True, None
+        return user_uuid, user_name, True, None, user_timezone
 
     async def process_message(self, unified_message: UnifiedMessage) -> Optional[str]:
         """process an incoming message and generate a response"""
         try:
             # prepare for interaction and handle onboarding
-            user_uuid, user_name, should_continue, response = await self._prepare_for_interaction(
+            user_uuid, user_name, should_continue, response, user_timezone = await self._prepare_for_interaction(
                 platform=unified_message.platform,
                 platform_user_id=unified_message.platform_user_id,
                 platform_user_name=unified_message.metadata.get('username'),
                 content=unified_message.content
             )
-            
+
             # if onboarding is active, return the onboarding response
             if not should_continue:
                 if user_name:
                     logger.info(f"user {user_name} successfully onboarded")
                 return response
-            
+
             # normal message processing
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
-                unified_message.platform
+                unified_message.platform,
+                user_timezone=user_timezone
             )
 
             # add user message to history FIRST
@@ -114,17 +122,19 @@ class ChatService:
             
             # generate response using ai provider
             if self.ai_provider:
-                # build context
+                # build context, localized to the user's own timezone
                 context = ContextBuilder.build_message_context(
-                    user_preferred_name=user_name
+                    user_preferred_name=user_name,
+                    timestamp=to_user_timezone(utc_now(), user_timezone)
                 )
-                
+
                 # use prompt service to build the messages (it handles temporal context internally)
                 messages = await self.prompt_service.build_conversation_prompt(
                     conversation_history=hybrid_history,
                     current_message=unified_message.content,
                     user_name=user_name,
                     user_uuid=user_uuid,
+                    user_timezone=user_timezone,
                     context=context
                 )
                 
@@ -150,25 +160,26 @@ class ChatService:
         """generate a scheduled message for a user"""
         try:
             # prepare for interaction
-            user_uuid, user_name, should_continue, response = await self._prepare_for_interaction(
+            user_uuid, user_name, should_continue, response, user_timezone = await self._prepare_for_interaction(
                 platform=platform,
                 platform_user_id=platform_user_id,
                 content=None  # no content for scheduled messages
             )
-            
+
             # if user is new, return the welcome message
             # if user is in onboarding, return None (skip)
             if not should_continue:
                 return response
-            
+
             # normal scheduled message generation
             if not self.ai_provider:
                 return None
-            
+
             # get conversation history
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
-                platform
+                platform,
+                user_timezone=user_timezone
             )
 
             hybrid_history = await conversation.get_hybrid_conversation_history(
@@ -177,17 +188,19 @@ class ChatService:
                 include_temporal=True
             )
             
-            # build context
+            # build context, localized to the user's own timezone
             context = ContextBuilder.build_message_context(
                 user_preferred_name=user_name,
-                message_type="scheduled"
+                message_type="scheduled",
+                timestamp=to_user_timezone(utc_now(), user_timezone)
             )
-            
+
             # use prompt service to build scheduled message prompt (it handles temporal context internally)
             messages = await self.prompt_service.build_scheduled_message_prompt(
                 conversation_history=hybrid_history,
                 user_name=user_name,
                 user_uuid=user_uuid,
+                user_timezone=user_timezone,
                 context=context
             )
             

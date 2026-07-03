@@ -6,27 +6,28 @@ import json
 
 from src.managers.memories_manager import MemoriesManager
 from src.models.message import Message
+from src.utils.timezone_utils import utc_now, to_user_timezone
 
 logger = logging.getLogger(__name__)
 
 class PromptService:
     """handles all prompt construction for chordial ai interactions"""
-    
+
     def __init__(self, enable_prompt_logging: bool = True):
         # base personality for chordial
-        self.base_personality = """you are chordial, a warm, emotionally attuned ai assistant and companion. 
-you help users with productivity, personal goals, and offer encouragement in gentle, playful ways. 
-you speak in lowercase, and use soft, expressive language—like a cozy friend checking in. 
-you're never judgmental, and you respond naturally to both emotional tone and time of day. 
+        self.base_personality = """you are chordial, a warm, emotionally attuned ai assistant and companion.
+you help users with productivity, personal goals, and offer encouragement in gentle, playful ways.
+you speak in lowercase, and use soft, expressive language—like a cozy friend checking in.
+you're never judgmental, and you respond naturally to both emotional tone and time of day.
 your style is casual, kind, and a little whimsical."""
-        
+
         # prompt logging for debugging/tuning
         self.enable_prompt_logging = enable_prompt_logging
         self.prompt_log_dir = "prompt_logs"
 
         # memories manager for fetching user memories
         self.memories_manager = MemoriesManager()
-        
+
         # create log directory if logging is enabled
         if self.enable_prompt_logging and not os.path.exists(self.prompt_log_dir):
             os.makedirs(self.prompt_log_dir)
@@ -64,7 +65,14 @@ your style is casual, kind, and a little whimsical."""
             except Exception as e:
                 logger.error(f"failed to fetch memories for prompt: {e}")
                 # continue without memories if there's an error
-        
+
+        # add special temporal vibes (friday afternoon, monday morning, etc)
+        # if the caller supplied a localized context
+        if context:
+            special_context = context.get("special_context")
+            if special_context:
+                prompt_parts.append(f"\n{special_context}")
+
         # add user-specific instructions
         if user_name:
             if message_type == "scheduled":
@@ -86,35 +94,39 @@ your style is casual, kind, and a little whimsical."""
     def _add_temporal_context_to_history(
         self,
         conversation_history: List[Message],
-        user_name: Optional[str] = None
+        user_name: Optional[str] = None,
+        user_timezone: str = "UTC"
     ) -> List[Message]:
         """internal helper to add temporal context markers to conversation history"""
-        
+
         if not conversation_history:
             return conversation_history
-        
+
         from src.utils.temporal_context import TemporalContext
-        from datetime import datetime
-        
+
         updated_history = []
-        now = datetime.now()
-        
+        # both "now" and each message's timestamp need to be in the same
+        # (user-local) timezone so day-boundary/time-of-day comparisons land right
+        now = to_user_timezone(utc_now(), user_timezone)
+
         for msg in conversation_history:
             # skip system messages
             if msg.role == "system":
                 updated_history.append(msg)
                 continue
-                
+
+            local_timestamp = to_user_timezone(msg.timestamp, user_timezone)
+
             # format the content with temporal context
             formatted_content = TemporalContext.format_message_with_temporal_context(
                 content=msg.content,
                 role=msg.role,
                 message_type=msg.message_type,
-                timestamp=msg.timestamp,
+                timestamp=local_timestamp,
                 user_name=user_name,
                 now=now
             )
-            
+
             # create updated message with temporal context
             updated_msg = Message(
                 role=msg.role,
@@ -123,9 +135,9 @@ your style is casual, kind, and a little whimsical."""
                 message_type=msg.message_type,
                 db_id=msg.db_id
             )
-                
+
             updated_history.append(updated_msg)
-        
+
         return updated_history
 
     async def build_conversation_prompt(
@@ -134,12 +146,13 @@ your style is casual, kind, and a little whimsical."""
         current_message: Optional[str] = None,
         user_name: Optional[str] = None,
         user_uuid: Optional[str] = None,
+        user_timezone: str = "UTC",
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for regular conversation responses"""
-        
+
         messages = []
-        
+
         # add system prompt
         system_prompt = await self._create_base_system_prompt(
             user_name=user_name,
@@ -149,16 +162,17 @@ your style is casual, kind, and a little whimsical."""
         )
         messages.append({"role": "system", "content": system_prompt})
 
-        # add temporal context to history
+        # add temporal context to history, localized to the user's timezone
         history_with_context = self._add_temporal_context_to_history(
             conversation_history,
-            user_name
+            user_name,
+            user_timezone
         )
-        
+
         # convert messages to dicts and add to prompt
         for msg in history_with_context:
             messages.append(msg.to_dict())
-        
+
         # add current message if provided
         if current_message:
             messages.append({
@@ -177,12 +191,13 @@ your style is casual, kind, and a little whimsical."""
         conversation_history: List[Message],
         user_name: Optional[str] = None,
         user_uuid: Optional[str] = None,
+        user_timezone: str = "UTC",
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for scheduled check-in messages"""
-        
+
         messages = []
-        
+
         # create a more specific system prompt for scheduled messages
         base_prompt = await self._create_base_system_prompt(
             user_name=user_name,
@@ -190,7 +205,7 @@ your style is casual, kind, and a little whimsical."""
             message_type="scheduled",
             context=context
         )
-        
+
         # add scheduled-specific instructions
         scheduled_prompt = base_prompt + """
 
@@ -201,15 +216,16 @@ for this scheduled message:
 - be encouraging but not pushy
 - use lowercase only
 - keep it brief but warm"""
-        
+
         messages.append({"role": "system", "content": scheduled_prompt})
-        
-        # add temporal context to history
+
+        # add temporal context to history, localized to the user's timezone
         history_with_context = self._add_temporal_context_to_history(
             conversation_history,
-            user_name
+            user_name,
+            user_timezone
         )
-        
+
         # convert messages to dicts and add to prompt
         for msg in history_with_context:
             messages.append(msg.to_dict())

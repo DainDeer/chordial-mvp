@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Dict
 
+from src.utils.timezone_utils import utc_now
+
 class TemporalContext:
     """provides rich temporal context for ai interactions using static methods"""
     
@@ -80,8 +82,10 @@ class TemporalContext:
         - more than a week ago: "on Month Day"
         """
         if now is None:
-            now = datetime.now()
-            
+            # caller didn't localize - assume timestamp is naive utc, like now()
+            now = utc_now()
+
+
         # calculate the time difference
         diff = now - timestamp
         

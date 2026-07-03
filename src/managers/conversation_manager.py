@@ -3,6 +3,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from src.models.message import Message
 from src.utils.temporal_context import TemporalContext
+from src.utils.timezone_utils import utc_now, to_user_timezone
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
 from src.services.compressor_service import CompressorService
@@ -16,12 +17,13 @@ class Conversation:
     user_uuid: str  # internal chordial user ID
     platform: str
     messages: List[Message] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.now)
-    
+    created_at: datetime = field(default_factory=utc_now)
+    user_timezone: str = "UTC"  # used to localize temporal context shown to the ai
+
     def __post_init__(self):
         # load conversation history from database on creation
         self._load_from_database()
-    
+
     def _load_from_database(self):
         """load conversation history from database"""
         with get_db() as db:
@@ -107,7 +109,7 @@ class Conversation:
         if include_temporal and messages:
             context_note = Message(
                 role="system",
-                content=f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+                content=f"""Current context: {TemporalContext.get_context_string(to_user_timezone(utc_now(), self.user_timezone))}
 use this temporal awareness naturally in your response when relevant, but don't always mention the time.""",
                 message_type="system"
             )
@@ -193,7 +195,7 @@ use this temporal awareness naturally in your response when relevant, but don't 
             if include_temporal and messages:
                 context_note = Message(
                     role="system",
-                    content=f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+                    content=f"""Current context: {TemporalContext.get_context_string(to_user_timezone(utc_now(), self.user_timezone))}
 use this temporal awareness naturally in your response when relevant, but don't always mention the time.""",
                     message_type="system"
                 )
@@ -212,7 +214,7 @@ use this temporal awareness naturally in your response when relevant, but don't 
         if include_temporal and recent_messages:
             context_note = Message(
                 role="system",
-                content=f"""Current context: {TemporalContext.get_context_string(datetime.now())}
+                content=f"""Current context: {TemporalContext.get_context_string(to_user_timezone(utc_now(), self.user_timezone))}
 use this temporal awareness naturally in your response when relevant, but don't always mention the time.""",
                 message_type="system"
             )
@@ -223,27 +225,44 @@ use this temporal awareness naturally in your response when relevant, but don't 
 
 class ConversationManager:
     """manages conversations across all users and platforms"""
-    
-    def __init__(self):
+
+    def __init__(self, user_manager=None):
         # in-memory cache of active conversations
         self._conversations: Dict[str, Conversation] = {}
         self.max_messages_in_memory = 100  # keep last 100 messages in memory
         self.max_messages_in_database = 1000  # keep last 1000 in database
-    
+
+        # used to resolve each user's timezone for localized temporal context
+        from src.managers.user_manager import UserManager
+        self.user_manager = user_manager or UserManager()
+
     def _get_key(self, user_uuid: str, platform: str) -> str:
         """generate a unique key for storing conversations"""
         return f"{platform}:{user_uuid}"
-    
-    async def get_or_create(self, user_uuid: str, platform: str) -> Conversation:
-        """get existing conversation or create a new one"""
+
+    async def get_or_create(self, user_uuid: str, platform: str, user_timezone: Optional[str] = None) -> Conversation:
+        """
+        get existing conversation or create a new one.
+
+        pass user_timezone if the caller has already resolved it for this
+        interaction (e.g. ChatService does, once, in _prepare_for_interaction)
+        to avoid a redundant database lookup here. falls back to looking it
+        up directly for callers that haven't resolved it themselves.
+        """
         key = self._get_key(user_uuid, platform)
-        
+
+        if user_timezone is None:
+            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+
         if key not in self._conversations:
             self._conversations[key] = Conversation(
                 user_uuid=user_uuid,
-                platform=platform
+                platform=platform,
+                user_timezone=user_timezone
             )
-        
+        else:
+            self._conversations[key].user_timezone = user_timezone
+
         # trim messages if too many in memory
         conv = self._conversations[key]
         if len(conv.messages) > self.max_messages_in_memory:

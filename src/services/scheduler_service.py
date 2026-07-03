@@ -7,6 +7,7 @@ from src.managers.user_manager import UserManager
 from src.services.chat_service import ChatService
 from src.database.database import get_db
 from src.database.models import ConversationHistory, PlatformIdentity
+from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -56,16 +57,16 @@ class SchedulerService:
                 return last_message.role, last_message.created_at, last_message.message_type
             return None, None, None
     
-    def _is_quiet_hours(self) -> bool:
-        """check if it's currently quiet hours (after 9pm or before 8am)"""
-        current_hour = datetime.now().hour
-        return current_hour >= self.quiet_hours_start or current_hour < self.quiet_hours_end
-    
+    def _is_quiet_hours(self, user_timezone: str) -> bool:
+        """check if it's currently quiet hours (default: after 9pm or before 8am) in the user's local time"""
+        local_hour = get_user_local_hour(utc_now(), user_timezone)
+        return is_within_quiet_hours(local_hour, self.quiet_hours_start, self.quiet_hours_end)
+
     async def should_send_scheduled_message(self, user_uuid: str, platform: str) -> bool:
         """determine if we should send a scheduled message to this user now"""
         context = self._get_or_create_context(user_uuid, platform)
-        now = datetime.now()
-        
+        now = utc_now()
+
         # check if user has completed onboarding
         needs_onboarding = await self.user_manager.needs_onboarding(user_uuid)
         if needs_onboarding:
@@ -95,9 +96,10 @@ class SchedulerService:
         
         # last message was from user or was a conversation response
         else:
-            # check if we're in quiet hours
-            if self._is_quiet_hours():
-                logger.debug(f"in quiet hours, not sending scheduled message to user {user_uuid}")
+            # check if we're in quiet hours (in the user's own timezone)
+            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+            if self._is_quiet_hours(user_timezone):
+                logger.debug(f"in quiet hours for user {user_uuid} (tz={user_timezone}), not sending scheduled message")
                 return False
             
             # check if enough time has passed for regular interval
@@ -118,7 +120,7 @@ class SchedulerService:
         
         if message:
             context = self._get_or_create_context(user_uuid, platform)
-            context.last_scheduled_at = datetime.now()
+            context.last_scheduled_at = utc_now()
             logger.info(f"generated scheduled message for user {user_uuid} (platform: {platform_user_id}): {message[:50]}...")
         
         return message

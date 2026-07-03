@@ -6,6 +6,10 @@ import uuid
 
 Base = declarative_base()
 
+# all DateTime columns below are stored as naive UTC (datetime.utcnow), never
+# server-local time - convert to a user's local timezone at the point of use
+# via src.utils.timezone_utils
+
 class User(Base):
     """main user table - our source of truth for users across platforms"""
     __tablename__ = 'users'
@@ -17,8 +21,8 @@ class User(Base):
     preferred_name = Column(String, nullable=True)
     
     # when they joined
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # user preferences
     timezone = Column(String, default='UTC')
@@ -52,7 +56,7 @@ class PlatformIdentity(Base):
     platform_user_id = Column(String)  # their id on that platform
     platform_username = Column(String, nullable=True)  # their username if available
     
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
     # relationships
     user = relationship("User", back_populates="platform_identities")
@@ -77,7 +81,7 @@ class ConversationHistory(Base):
     
     message_type = Column(String)  # 'conversation' or 'scheduled'
     
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
     # relationships
     user = relationship("User", back_populates="conversations")
@@ -106,7 +110,7 @@ class CompressedMessage(Base):
     compression_ratio = Column(Float)  # how much we compressed (0.3 = 70% reduction)
     
     # metadata
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
     model_used = Column(String, default='gpt-3.5-turbo')
     
     # relationships
@@ -142,7 +146,7 @@ class Memory(Base):
     source = Column(String, nullable=False)  # USER_EXPLICIT, AI_INFERRED, SYSTEM_GENERATED
     access_count = Column(Integer, default=0)
     last_accessed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.utcnow)
     ttl = Column(Integer, nullable=True)  # time to live in seconds (null = permanent)
     memory_metadata = Column(JSON, default={})  # flexible metadata storage
     

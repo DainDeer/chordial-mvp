@@ -98,7 +98,15 @@ class UserManager:
             if user:
                 return user.preferred_name is None
             return True
-    
+
+    async def get_user_timezone(self, user_uuid: str) -> str:
+        """get a user's timezone, defaulting to UTC if unset or user not found"""
+        with get_db() as db:
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            if user and user.timezone:
+                return user.timezone
+            return "UTC"
+
     async def get_users_with_scheduled_messages(self, platform: str) -> List[tuple[str, str]]:
         """get list of (user_uuid, platform_user_id) tuples for users who have scheduled messages enabled"""
         with get_db() as db:
