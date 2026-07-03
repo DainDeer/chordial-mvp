@@ -3,6 +3,7 @@ import logging
 
 from src.models.unified_message import UnifiedMessage
 from src.utils.context_builder import ContextBuilder
+from src.utils.timezone_utils import utc_now, to_user_timezone
 from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
@@ -114,9 +115,10 @@ class ChatService:
             
             # generate response using ai provider
             if self.ai_provider:
-                # build context
+                # build context, localized to the user's own timezone
                 context = ContextBuilder.build_message_context(
-                    user_preferred_name=user_name
+                    user_preferred_name=user_name,
+                    timestamp=to_user_timezone(utc_now(), conversation.user_timezone)
                 )
                 
                 # use prompt service to build the messages (it handles temporal context internally)
@@ -177,10 +179,11 @@ class ChatService:
                 include_temporal=True
             )
             
-            # build context
+            # build context, localized to the user's own timezone
             context = ContextBuilder.build_message_context(
                 user_preferred_name=user_name,
-                message_type="scheduled"
+                message_type="scheduled",
+                timestamp=to_user_timezone(utc_now(), conversation.user_timezone)
             )
             
             # use prompt service to build scheduled message prompt (it handles temporal context internally)

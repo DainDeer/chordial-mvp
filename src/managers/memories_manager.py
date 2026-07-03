@@ -6,6 +6,7 @@ import logging
 
 from src.database.database import get_db
 from src.database.models import Memory, User
+from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class MemoriesManager:
             
             # filter out expired memories unless requested
             if not include_expired:
-                now = datetime.now()
+                now = utc_now()
                 # this is a bit tricky with sqlalchemy, so we'll filter in python
                 memories = query.all()
                 
@@ -178,7 +179,7 @@ class MemoriesManager:
             all_memories = query.all()
             
             # check and expire ttl memories
-            now = datetime.now()
+            now = utc_now()
             for memory in all_memories:
                 if memory.ttl is not None:
                     age_seconds = (now - memory.created_at).total_seconds()
@@ -230,7 +231,7 @@ class MemoriesManager:
             memory = db.query(Memory).filter(Memory.id == memory_id).first()
             if memory:
                 memory.access_count += 1
-                memory.last_accessed_at = datetime.now()
+                memory.last_accessed_at = utc_now()
                 db.commit()
     
     async def update_memory_weight(

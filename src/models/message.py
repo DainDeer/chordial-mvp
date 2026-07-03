@@ -2,11 +2,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+from src.utils.timezone_utils import utc_now
+
 @dataclass
 class Message:
     role: str  # "user" or "assistant" or "system"
     content: str
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=utc_now)  # naive UTC, matches db storage
     message_type: str = "conversation"  # "conversation", "scheduled", or "system"
     db_id: Optional[int] = None  # for tracking in database
     
