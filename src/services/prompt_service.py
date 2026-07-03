@@ -28,10 +28,6 @@ your style is casual, kind, and a little whimsical."""
         # memories manager for fetching user memories
         self.memories_manager = MemoriesManager()
 
-        # user manager for resolving each user's timezone
-        from src.managers.user_manager import UserManager
-        self.user_manager = UserManager()
-
         # create log directory if logging is enabled
         if self.enable_prompt_logging and not os.path.exists(self.prompt_log_dir):
             os.makedirs(self.prompt_log_dir)
@@ -150,12 +146,13 @@ your style is casual, kind, and a little whimsical."""
         current_message: Optional[str] = None,
         user_name: Optional[str] = None,
         user_uuid: Optional[str] = None,
+        user_timezone: str = "UTC",
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for regular conversation responses"""
-        
+
         messages = []
-        
+
         # add system prompt
         system_prompt = await self._create_base_system_prompt(
             user_name=user_name,
@@ -166,7 +163,6 @@ your style is casual, kind, and a little whimsical."""
         messages.append({"role": "system", "content": system_prompt})
 
         # add temporal context to history, localized to the user's timezone
-        user_timezone = await self.user_manager.get_user_timezone(user_uuid) if user_uuid else "UTC"
         history_with_context = self._add_temporal_context_to_history(
             conversation_history,
             user_name,
@@ -195,12 +191,13 @@ your style is casual, kind, and a little whimsical."""
         conversation_history: List[Message],
         user_name: Optional[str] = None,
         user_uuid: Optional[str] = None,
+        user_timezone: str = "UTC",
         context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, str]]:
         """build prompt for scheduled check-in messages"""
-        
+
         messages = []
-        
+
         # create a more specific system prompt for scheduled messages
         base_prompt = await self._create_base_system_prompt(
             user_name=user_name,
@@ -208,7 +205,7 @@ your style is casual, kind, and a little whimsical."""
             message_type="scheduled",
             context=context
         )
-        
+
         # add scheduled-specific instructions
         scheduled_prompt = base_prompt + """
 
@@ -219,11 +216,10 @@ for this scheduled message:
 - be encouraging but not pushy
 - use lowercase only
 - keep it brief but warm"""
-        
+
         messages.append({"role": "system", "content": scheduled_prompt})
 
         # add temporal context to history, localized to the user's timezone
-        user_timezone = await self.user_manager.get_user_timezone(user_uuid) if user_uuid else "UTC"
         history_with_context = self._add_temporal_context_to_history(
             conversation_history,
             user_name,

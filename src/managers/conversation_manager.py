@@ -240,13 +240,19 @@ class ConversationManager:
         """generate a unique key for storing conversations"""
         return f"{platform}:{user_uuid}"
 
-    async def get_or_create(self, user_uuid: str, platform: str) -> Conversation:
-        """get existing conversation or create a new one"""
+    async def get_or_create(self, user_uuid: str, platform: str, user_timezone: Optional[str] = None) -> Conversation:
+        """
+        get existing conversation or create a new one.
+
+        pass user_timezone if the caller has already resolved it for this
+        interaction (e.g. ChatService does, once, in _prepare_for_interaction)
+        to avoid a redundant database lookup here. falls back to looking it
+        up directly for callers that haven't resolved it themselves.
+        """
         key = self._get_key(user_uuid, platform)
 
-        # look up (or re-check) the user's timezone so temporal context stays
-        # accurate even if it's changed since the conversation was cached
-        user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+        if user_timezone is None:
+            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
 
         if key not in self._conversations:
             self._conversations[key] = Conversation(
