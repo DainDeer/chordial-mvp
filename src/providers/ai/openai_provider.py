@@ -1,5 +1,4 @@
-from openai import AsyncOpenAI
-from openai.resources.models import AsyncModels
+from openai import AsyncOpenAI, RateLimitError, AuthenticationError
 from typing import Any, List, Dict, Optional
 import logging
 import json
@@ -39,7 +38,19 @@ class OpenAIProvider(BaseAIProvider):
             )
             
             return response.output[0].content[0].text.strip()
-            
+
+        except RateLimitError as e:
+            # 429: either rate-limited or, most commonly, out of quota/funds.
+            logger.warning(
+                "openai request rejected with 429 (%s). this usually means the "
+                "account is out of quota/funds — check billing at "
+                "https://platform.openai.com/settings/organization/billing",
+                e,
+            )
+            return "i'm having trouble connecting to my ai service right now. please try again later."
+        except AuthenticationError as e:
+            logger.error("openai authentication failed — api key is missing/invalid/expired: %s", e)
+            return "i'm having trouble connecting to my ai service right now. please try again later."
         except Exception as e:
             logger.error(f"error generating openai response: {e}")
             return "i'm having trouble connecting to my ai service right now. please try again later."
@@ -51,7 +62,8 @@ class OpenAIProvider(BaseAIProvider):
         
         try:
             # try a simple api call to check availability
-            await AsyncModels.retrieve(self.model)
+            await self.client.models.retrieve(self.model)
             return True
-        except:
+        except Exception as e:
+            logger.warning("openai provider configured but unavailable: %s", e)
             return False
