@@ -10,8 +10,8 @@ class Config:
     
     # openai
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "chatgpt-4o-latest")
-    COMPRESSOR_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-4o-mini")
     
     # database
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///chordial.db")

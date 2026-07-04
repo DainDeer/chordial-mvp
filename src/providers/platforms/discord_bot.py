@@ -24,6 +24,7 @@ class DiscordInterface(BaseInterface):
         
         # Create bot instance
         self.bot = commands.Bot(command_prefix="!", intents=intents)
+        self.scheduled_dm_task = None
         self._setup_events()
 
     

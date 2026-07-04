@@ -121,6 +121,33 @@ class CompressedMessage(Base):
         {'sqlite_autoincrement': True}
     )
 
+class ConversationSummary(Base):
+    """stores summaries of conversation chunks for compressed long-term context"""
+    __tablename__ = 'conversation_summaries'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'))
+    platform = Column(String)
+
+    # range of conversation_history ids this summary covers
+    first_message_id = Column(Integer)
+    last_message_id = Column(Integer)
+    message_count = Column(Integer)
+
+    summary = Column(String)
+    key_topics = Column(JSON, default=[])
+    model_used = Column(String)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # relationships
+    user = relationship("User")
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
 class Memory(Base):
     """stores memories about users for persistent context"""
     __tablename__ = 'memories'
