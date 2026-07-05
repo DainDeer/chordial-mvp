@@ -81,11 +81,12 @@ class PromptService:
 
         if user_uuid:
             try:
-                # core memories only, sorted by id for deterministic (cacheable)
-                # ordering. the model reaches for the rest via search_memories.
-                core = await self.memories_manager.get_core_memories(user_uuid)
-                for m in sorted(core, key=lambda x: x.id):
-                    profile_parts.append(f"- always remember: {m.ai_instruction}")
+                # core memories only (detached-safe dicts, sorted by id for
+                # deterministic/cacheable ordering). the model reaches for the
+                # rest via search_memories.
+                core = await self.memories_manager.get_core_memories_for_prompt(user_uuid)
+                for m in core:
+                    profile_parts.append(f"- always remember: {m['instruction']}")
             except Exception as e:
                 logger.error(f"failed to load core memories: {e}")
 

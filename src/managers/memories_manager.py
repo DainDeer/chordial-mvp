@@ -123,14 +123,34 @@ class MemoriesManager:
             return query.all()
     
     async def get_core_memories(self, user_uuid: str) -> List[Memory]:
-        """get all core memories for a user (always included)"""
-        
+        """get all core memories for a user (always included).
+
+        NOTE: these are ORM instances bound to a session that get_db() commits
+        (and therefore expires) on exit. only safe to read inside a session -
+        use get_core_memories_for_prompt() if you need the data afterwards.
+        """
         with get_db() as db:
             return db.query(Memory).filter(
                 Memory.user_uuid == user_uuid,
                 Memory.core == True,
                 Memory.is_active == True
             ).all()
+
+    async def get_core_memories_for_prompt(self, user_uuid: str) -> List[Dict[str, Any]]:
+        """core memories as detached-safe dicts, sorted by id for deterministic
+        (cacheable) ordering.
+
+        extracts the fields WHILE the session is open. get_db() commits on exit,
+        which expires the orm instances - returning Memory objects and reading
+        their attributes afterwards raises DetachedInstanceError.
+        """
+        with get_db() as db:
+            rows = db.query(Memory).filter(
+                Memory.user_uuid == user_uuid,
+                Memory.core == True,
+                Memory.is_active == True
+            ).order_by(Memory.id).all()
+            return [{"id": m.id, "instruction": m.ai_instruction} for m in rows]
     
     async def search_memories_by_keywords(
         self,
