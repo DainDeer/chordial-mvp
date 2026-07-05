@@ -179,7 +179,67 @@ class Memory(Base):
     
     # relationships
     user = relationship("User", back_populates="memories")
-    
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class UsageLog(Base):
+    """per-call token accounting - one row per ai api call.
+
+    the foundation for per-user cost visibility and (later) daily budgets.
+    cheap to write now, impossible to backfill later.
+    """
+    __tablename__ = 'usage_log'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=True)
+    platform = Column(String, nullable=True)
+
+    provider = Column(String)   # 'anthropic' | 'openai'
+    model = Column(String)
+    role = Column(String)       # 'conversation' | 'scheduled' | 'utility'
+
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    cache_read_tokens = Column(Integer, default=0)
+    cache_write_tokens = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class AgentTrace(Base):
+    """one row per agent turn - records the tool loop for debugging/tuning.
+
+    kept separate from ConversationHistory so intra-turn tool exchanges stay
+    out of the replayed (and cached) conversation prefix.
+    """
+    __tablename__ = 'agent_traces'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=True)
+    platform = Column(String, nullable=True)
+
+    turn_kind = Column(String)          # 'conversation' | 'scheduled'
+    iterations = Column(Integer, default=0)
+    hit_iteration_cap = Column(Boolean, default=False)
+    # list of {iteration, calls: [{name, input, is_error}]}
+    tool_trace = Column(JSON, default=[])
+    final_text_length = Column(Integer, default=0)
+    stop_reason = Column(String, nullable=True)
+
+    total_input_tokens = Column(Integer, default=0)
+    total_output_tokens = Column(Integer, default=0)
+    total_cache_read_tokens = Column(Integer, default=0)
+    total_cache_write_tokens = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
     __table_args__ = (
         {'sqlite_autoincrement': True}
     )

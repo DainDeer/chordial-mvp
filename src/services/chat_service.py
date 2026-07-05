@@ -2,27 +2,44 @@ from typing import Optional
 import logging
 
 from src.models.unified_message import UnifiedMessage
-from src.utils.context_builder import ContextBuilder
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
 from src.services.prompt_service import PromptService
+from src.providers.ai.types import ProviderError
+from config import Config
 
 logger = logging.getLogger(__name__)
 
+# in-character copy for the two non-response outcomes. never persisted to
+# history (so they can't pollute future context).
+REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
+ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
+
+
 class ChatService:
     """main service for handling chat interactions across all platforms"""
-    
-    def __init__(self, ai_provider=None, conversation_manager=None, user_manager=None, full_message_count=5, total_message_count=20):
-        self.ai_provider = ai_provider
+
+    def __init__(
+        self,
+        agent_service=None,
+        conversation_manager=None,
+        user_manager=None,
+        tool_registry=None,
+        max_history_messages: int = None,
+    ):
+        self.agent_service = agent_service
         self.conversation_manager = conversation_manager or ConversationManager()
         self.user_manager = user_manager or UserManager()
         self.onboarding_service = OnboardingService(self.user_manager)
         self.prompt_service = PromptService()
-        self.full_message_count = full_message_count
-        self.total_message_count = total_message_count
-    
+        self.tool_registry = tool_registry
+        self.max_history_messages = max_history_messages or Config.MAX_HISTORY_MESSAGES
+
+    def _tool_defs(self):
+        return self.tool_registry.definitions() if self.tool_registry else []
+
     async def _prepare_for_interaction(
         self,
         platform: str,
@@ -58,7 +75,6 @@ class ChatService:
         # handle brand new users
         if is_new:
             self.onboarding_service.start_onboarding(platform, platform_user_id)
-            # return welcome message
             return user_uuid, None, False, self.onboarding_service.get_welcome_message(), user_timezone
 
         # check if user needs onboarding (no preferred name set)
@@ -67,7 +83,6 @@ class ChatService:
         # check if user is in onboarding flow
         if self.onboarding_service.is_user_onboarding(platform, platform_user_id) or needs_onboarding:
             if content is not None:
-                # process onboarding response
                 user_name, response = await self.onboarding_service.handle_onboarding_response(
                     user_uuid,
                     platform,
@@ -76,7 +91,6 @@ class ChatService:
                 )
                 return user_uuid, user_name, False, response, user_timezone
             else:
-                # scheduled message during onboarding - skip
                 logger.info(f"skipping interaction for {platform_user_name} - in onboarding but no content to process")
                 return user_uuid, None, False, None, user_timezone
 
@@ -86,7 +100,6 @@ class ChatService:
     async def process_message(self, unified_message: UnifiedMessage) -> Optional[str]:
         """process an incoming message and generate a response"""
         try:
-            # prepare for interaction and handle onboarding
             user_uuid, user_name, should_continue, response, user_timezone = await self._prepare_for_interaction(
                 platform=unified_message.platform,
                 platform_user_id=unified_message.platform_user_id,
@@ -94,127 +107,106 @@ class ChatService:
                 content=unified_message.content
             )
 
-            # if onboarding is active, return the onboarding response
             if not should_continue:
                 if user_name:
                     logger.info(f"user {user_name} successfully onboarded")
                 return response
 
-            # normal message processing
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
                 unified_message.platform,
                 user_timezone=user_timezone
             )
 
-            # add user message to history FIRST
+            # record the incoming message first, so it's the last item in history
             conversation.add_message("user", unified_message.content)
-
-            # compress it (async)
-            await conversation.compress_last_message()
-
-            # NOW get hybrid history (which will include our just-added message)
-            hybrid_history = await conversation.get_hybrid_conversation_history(
-                limit=self.total_message_count,  # total messages
-                full_message_count=self.full_message_count,  # N most recent as full
-                include_temporal=True
-            )
-            
-            # generate response using ai provider
-            if self.ai_provider:
-                # build context, localized to the user's own timezone
-                context = ContextBuilder.build_message_context(
-                    user_preferred_name=user_name,
-                    timestamp=to_user_timezone(utc_now(), user_timezone)
-                )
-
-                # use prompt service to build the messages (it handles temporal context internally)
-                messages = await self.prompt_service.build_conversation_prompt(
-                    conversation_history=hybrid_history,
-                    current_message=unified_message.content,
-                    user_name=user_name,
-                    user_uuid=user_uuid,
-                    user_timezone=user_timezone,
-                    context=context
-                )
-                
-                # generate response with simplified ai provider
-                response = await self.ai_provider.generate_response(messages)
-                
-                # add assistant response to history
-                conversation.add_message("assistant", response)
-
-                # compress it (async)
+            if Config.ENABLE_COMPRESSION:
                 await conversation.compress_last_message()
-                
-                return response
-            else:
-                # fallback echo response
+
+            if not self.agent_service:
                 return f"echo: {unified_message.content}"
-                
+
+            history = conversation.get_recent_messages(self.max_history_messages)
+            request = await self.prompt_service.build_conversation_request(
+                conversation_history=history,
+                user_name=user_name,
+                user_uuid=user_uuid,
+                user_timezone=user_timezone,
+                tools=self._tool_defs(),
+            )
+
+            result = await self.agent_service.run(
+                request,
+                user_uuid=user_uuid,
+                platform=unified_message.platform,
+                turn_kind="conversation",
+            )
+
+            if result.refused or not result.text:
+                # don't persist a non-answer into history
+                return REFUSAL_REPLY if result.refused else ERROR_REPLY
+
+            conversation.add_message("assistant", result.text)
+            if Config.ENABLE_COMPRESSION:
+                await conversation.compress_last_message()
+            return result.text
+
+        except ProviderError as e:
+            logger.error(f"provider error while processing message: {e}")
+            return ERROR_REPLY
         except Exception as e:
             logger.error(f"error processing message: {e}")
             return "sorry, i encountered an error processing your message."
-    
+
     async def generate_scheduled_message(self, platform_user_id: str, platform: str) -> Optional[str]:
         """generate a scheduled message for a user"""
         try:
-            # prepare for interaction
             user_uuid, user_name, should_continue, response, user_timezone = await self._prepare_for_interaction(
                 platform=platform,
                 platform_user_id=platform_user_id,
-                content=None  # no content for scheduled messages
+                content=None
             )
 
-            # if user is new, return the welcome message
-            # if user is in onboarding, return None (skip)
+            # new user -> welcome message; mid-onboarding -> skip (None)
             if not should_continue:
                 return response
 
-            # normal scheduled message generation
-            if not self.ai_provider:
+            if not self.agent_service:
                 return None
 
-            # get conversation history
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
                 platform,
                 user_timezone=user_timezone
             )
 
-            hybrid_history = await conversation.get_hybrid_conversation_history(
-                limit=self.total_message_count,  # total messages
-                full_message_count=self.full_message_count,  # N most recent as full
-                include_temporal=True
-            )
-            
-            # build context, localized to the user's own timezone
-            context = ContextBuilder.build_message_context(
-                user_preferred_name=user_name,
-                message_type="scheduled",
-                timestamp=to_user_timezone(utc_now(), user_timezone)
-            )
-
-            # use prompt service to build scheduled message prompt (it handles temporal context internally)
-            messages = await self.prompt_service.build_scheduled_message_prompt(
-                conversation_history=hybrid_history,
+            history = conversation.get_recent_messages(self.max_history_messages)
+            request = await self.prompt_service.build_scheduled_request(
+                conversation_history=history,
                 user_name=user_name,
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
-                context=context
+                tools=self._tool_defs(),
             )
-            
-            # generate the scheduled message
-            response = await self.ai_provider.generate_response(messages)
-            
-            # add to history with scheduled type
-            conversation.add_message("assistant", response, message_type="scheduled")
 
-            # compress it (async)
-            await conversation.compress_last_message()
-            
-            return response
-            
+            result = await self.agent_service.run(
+                request,
+                user_uuid=user_uuid,
+                platform=platform,
+                turn_kind="scheduled",
+            )
+
+            if result.refused or not result.text:
+                return None
+
+            conversation.add_message("assistant", result.text, message_type="scheduled")
+            if Config.ENABLE_COMPRESSION:
+                await conversation.compress_last_message()
+            return result.text
+
+        except ProviderError as e:
+            logger.error(f"provider error generating scheduled message: {e}")
+            return None
         except Exception as e:
             logger.error(f"error generating scheduled message: {e}")
             return None

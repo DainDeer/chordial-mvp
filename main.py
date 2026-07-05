@@ -2,10 +2,25 @@ import asyncio
 import logging
 from config import Config
 from src.services.chat_service import ChatService
+from src.services.agent_service import AgentService
 from src.services.scheduler_service import SchedulerService
+from src.services.usage_recorder import UsageRecorder
+from src.services.tools import build_default_registry
 from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.database.database import init_db
+
+
+def _build_provider(provider_name: str):
+    """construct the configured ai provider, or None if misconfigured."""
+    if provider_name == "anthropic":
+        from src.providers.ai.anthropic_provider import AnthropicProvider
+        return AnthropicProvider()
+    if provider_name == "openai":
+        from src.providers.ai.openai_provider import OpenAIProvider
+        return OpenAIProvider()
+    logger.error(f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')")
+    return None
 
 # setup logging
 logging.basicConfig(
@@ -24,22 +39,31 @@ async def main():
     # initialize core services
     conversation_manager = ConversationManager()
     user_manager = UserManager()
-    
-    # initialize ai provider
-    ai_provider = None
-    if Config.OPENAI_API_KEY:
-        from src.providers.ai.openai_provider import OpenAIProvider
-        ai_provider = OpenAIProvider()
-        if await ai_provider.is_available():
-            logger.info("openai provider initialized successfully")
+
+    # initialize ai provider + agent loop
+    provider_name = Config.AI_PROVIDER
+    provider = _build_provider(provider_name)
+    registry = build_default_registry()
+    agent_service = None
+    if provider is not None:
+        if await provider.is_available():
+            logger.info(f"{provider_name} provider initialized (model={provider.model})")
+            agent_service = AgentService(
+                provider=provider,
+                registry=registry,
+                provider_name=provider_name,
+                usage_recorder=UsageRecorder(),
+                max_iterations=Config.MAX_TOOL_ITERATIONS,
+            )
         else:
-            logger.warning("openai provider configured but not available")
-    
-    # create chat service
+            logger.warning(f"{provider_name} provider configured but not available")
+
+    # create chat service (falls back to echo if no agent service is available)
     chat_service = ChatService(
-        ai_provider=ai_provider,
+        agent_service=agent_service,
         conversation_manager=conversation_manager,
-        user_manager=user_manager
+        user_manager=user_manager,
+        tool_registry=registry if agent_service else None,
     )
     
     # create scheduler service

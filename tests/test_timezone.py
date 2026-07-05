@@ -259,37 +259,60 @@ class TestContextBuilderSpecialContext:
         utc_context = ContextBuilder.build_message_context(timestamp=fixed_utc)
         assert "friday afternoon" not in utc_context["special_context"]
 
-    def test_special_context_reaches_the_system_prompt(self, monkeypatch):
-        from src.services.prompt_service import PromptService
+    def test_special_context_reaches_the_current_turn(self, monkeypatch):
+        # the caching redesign moves volatile "now" context (friday vibes, etc)
+        # OUT of the frozen system prompt and ONTO the current turn, so the
+        # system prefix stays byte-stable and cacheable.
+        from src.services import prompt_service as ps_mod
+        from src.services.prompt_service import PromptService, PERSONA
+        from src.models.message import Message
 
-        prompt_service = PromptService(enable_prompt_logging=False)
+        friday_pm = datetime(2025, 6, 27, 15, 0)  # a friday, mid-afternoon UTC
+        monkeypatch.setattr(ps_mod, "utc_now", lambda: friday_pm)
 
-        context_with_vibes = {"special_context": "it's friday afternoon - weekend vibes incoming!"}
-
-        async def run():
-            return await prompt_service._create_base_system_prompt(
-                user_name="dain",
-                context=context_with_vibes
-            )
-
-        system_prompt = asyncio.run(run())
-        assert "it's friday afternoon - weekend vibes incoming!" in system_prompt
-
-    def test_empty_special_context_adds_nothing(self):
-        from src.services.prompt_service import PromptService
-
-        prompt_service = PromptService(enable_prompt_logging=False)
+        ps = PromptService(enable_prompt_logging=False)
+        history = [Message(role="user", content="hi", timestamp=friday_pm)]
 
         async def run():
-            return await prompt_service._create_base_system_prompt(
+            return await ps.build_conversation_request(
+                conversation_history=history,
                 user_name="dain",
-                context={"special_context": ""}
+                user_uuid=None,
+                user_timezone="UTC",
             )
 
-        system_prompt = asyncio.run(run())
-        # base personality is always present; just confirm no stray blank
-        # special-context line was inserted
-        assert prompt_service.base_personality in system_prompt
+        request = asyncio.run(run())
+
+        # the frozen persona is system block 0 and carries no volatile vibes
+        assert request.system[0].text == PERSONA
+        assert "friday afternoon" not in request.system[0].text
+        # the special context rides on the current (last) turn instead
+        assert "friday afternoon" in request.messages[-1].content
+
+    def test_persona_block_is_frozen_and_vibe_free(self, monkeypatch):
+        from src.services import prompt_service as ps_mod
+        from src.services.prompt_service import PromptService, PERSONA
+        from src.models.message import Message
+
+        tuesday_midday = datetime(2025, 7, 1, 12, 0)  # ordinary time, no vibe
+        monkeypatch.setattr(ps_mod, "utc_now", lambda: tuesday_midday)
+
+        ps = PromptService(enable_prompt_logging=False)
+        history = [Message(role="user", content="hi", timestamp=tuesday_midday)]
+
+        async def run():
+            return await ps.build_conversation_request(
+                conversation_history=history,
+                user_name="dain",
+                user_uuid=None,
+                user_timezone="UTC",
+            )
+
+        request = asyncio.run(run())
+        # persona is present, frozen, and identical regardless of the clock
+        assert request.system[0].text == PERSONA
+        # the current turn still carries a "now" marker even with no special vibe
+        assert request.messages[-1].content.startswith("[current time")
 
 
 if __name__ == "__main__":

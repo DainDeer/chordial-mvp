@@ -203,6 +203,17 @@ use this temporal awareness naturally in your response when relevant, but don't 
             
             return messages
 
+    def get_recent_messages(self, limit: int = 30) -> List[Message]:
+        """recent full (uncompressed) user/assistant messages, chronological.
+
+        the agent path uses this instead of the compressed/hybrid history:
+        full messages have stable bytes across turns, which is what makes the
+        conversation prefix cacheable (compressed messages flip form as they
+        age, changing bytes and busting the cache).
+        """
+        msgs = [m for m in self.messages if m.role in ("user", "assistant")]
+        return msgs[-limit:]
+
     def get_history(self, max_messages: int = 10, include_temporal: bool = True) -> List[Message]:
         """
         simple method to get uncompressed conversation history.
