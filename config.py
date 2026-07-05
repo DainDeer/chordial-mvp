@@ -7,22 +7,45 @@ class Config:
     # discord
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
     DISCORD_TARGET_USER_ID = int(os.getenv("DISCORD_TARGET_USER_ID", "267136853159706638"))
-    
-    # openai
+
+    # ai provider selection: "anthropic" (default) or "openai"
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic").lower()
+
+    # anthropic
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    # chat model: the persona-facing model the user talks to
+    CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-sonnet-5")
+    # utility model: cheap model for background jobs (summaries, classification, etc)
+    UTILITY_MODEL = os.getenv("UTILITY_MODEL", "claude-haiku-4-5")
+    # effort for chat turns: low | medium | high (anthropic only; maps to output_config.effort)
+    CHAT_EFFORT = os.getenv("CHAT_EFFORT", "low")
+    # max output tokens for a chat/scheduled turn (leaves headroom for adaptive thinking)
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
+
+    # openai (kept as an alternate provider)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-4o-mini")
-    
+
+    # agent loop
+    MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
+    # how many recent messages of history to send as context
+    MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
+    # ceiling on concurrent in-flight ai api calls across all users
+    MAX_CONCURRENT_AI_CALLS = int(os.getenv("MAX_CONCURRENT_AI_CALLS", "6"))
+
     # database
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///chordial.db")
-    
+
     # scheduler
     DM_INTERVAL_MINUTES = int(os.getenv("DM_INTERVAL_MINUTES", "60"))
     DELAY_AFTER_IGNORED_HOURS = int(os.getenv("DELAY_AFTER_IGNORED_HOURS", "24"))
     QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "21"))
     QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
 
-    # compressor
+    # compressor (legacy per-message compression; off by default in favor of
+    # full-history context, which is both simpler and cache-friendly)
+    ENABLE_COMPRESSION = os.getenv("ENABLE_COMPRESSION", "false").lower() == "true"
     MIN_LENGTH_TO_COMPRESS = int(os.getenv("MIN_LENGTH_TO_COMPRESS", "100"))
 
     # features

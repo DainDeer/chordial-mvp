@@ -6,6 +6,7 @@ from sqlalchemy import and_
 from src.database.database import get_db
 from src.database.models import ConversationHistory, ConversationSummary, User
 from src.providers.ai.openai_provider import OpenAIProvider
+from src.providers.ai.types import AIRequest, SystemBlock, ChatTurn
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -135,10 +136,13 @@ Summary:"""
             prompt = await self.create_summary_prompt(messages)
             
             # generate summary using cheaper model
-            summary = await self.summarizer.generate_response(
-                conversation_history=[{"role": "user", "content": prompt}],
-                system_prompt="You are a helpful assistant that creates concise, informative summaries."
+            request = AIRequest(
+                system=[SystemBlock(text="You are a helpful assistant that creates concise, informative summaries.")],
+                messages=[ChatTurn(role="user", content=prompt)],
+                max_tokens=500,
             )
+            response = await self.summarizer.create_message(request)
+            summary = response.text or ""
             
             # extract key topics
             key_topics = await self.extract_key_topics(summary, messages)

@@ -6,7 +6,7 @@ from config import Config
 from src.database.database import get_db
 from src.database.models import ConversationHistory, CompressedMessage
 from src.providers.ai.openai_provider import OpenAIProvider
-from src.services.prompt_service import PromptService
+from src.providers.ai.types import AIRequest, SystemBlock, ChatTurn
 from src.models.message import Message
 
 logger = logging.getLogger(__name__)
@@ -34,9 +34,6 @@ class CompressorService:
             return content
         
         try:
-            # use prompt service for consistent prompt construction
-            prompt_service = PromptService()
-            
             # different compression instructions for user vs assistant
             if role == "user":
                 compression_instructions = """You are a message compressor. Compress the user's message to its essential meaning.
@@ -55,15 +52,15 @@ Output only the compressed message, no explanation.
 
 Try to compress this to 50-75 words maximum while keeping essential information."""
             
-            # build prompt using our service
-            messages = prompt_service.build_custom_prompt(
-                system_instructions=compression_instructions,
-                user_message=content
+            # build a minimal request for the utility/compressor model
+            request = AIRequest(
+                system=[SystemBlock(text=compression_instructions)],
+                messages=[ChatTurn(role="user", content=content)],
+                max_tokens=300,
             )
-            
-            # use the compressor model
-            compressed = await self.compressor.generate_response(messages)
-            
+            response = await self.compressor.create_message(request)
+            compressed = response.text or content
+
             # make sure we actually compressed it
             if len(compressed) >= len(content) * 0.8:
                 logger.warning(f"compression failed to reduce size significantly")
