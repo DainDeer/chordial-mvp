@@ -5,10 +5,23 @@ from src.services.chat_service import ChatService
 from src.services.agent_service import AgentService
 from src.services.scheduler_service import SchedulerService
 from src.services.usage_recorder import UsageRecorder
+from src.services.message_router import MessageRouter
 from src.services.tools import build_default_registry
 from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.database.database import init_db
+
+
+def _build_interfaces(chat_service):
+    """construct every enabled platform interface. add a branch here per platform;
+    nothing else in main() needs to change - the router and scheduler discover
+    platforms from whatever this returns."""
+    interfaces = []
+    if Config.ENABLE_DISCORD:
+        from src.providers.platforms.discord_bot import DiscordInterface
+        interfaces.append(DiscordInterface(chat_service))
+        logger.info("discord interface enabled")
+    return interfaces
 
 
 def _build_provider(provider_name: str):
@@ -71,38 +84,24 @@ async def main():
         chat_service=chat_service,
         user_manager=user_manager
     )
-    
-    # initialize interfaces
-    interfaces = []
-    
-    if Config.ENABLE_DISCORD:
-        from src.providers.platforms.discord_bot import DiscordInterface
-        discord_interface = DiscordInterface(chat_service)
-        interfaces.append(discord_interface)
-        logger.info("discord interface enabled")
-    
-    # start all interfaces
-    tasks = []
+
+    # build interfaces and register them with the outbound router. the router
+    # owns platform->interface routing and link-deactivation on hard failures,
+    # so the scheduler never has to know which interface backs a platform.
+    interfaces = _build_interfaces(chat_service)
+    router = MessageRouter(user_manager)
     for interface in interfaces:
-        task = asyncio.create_task(interface.start())
-        tasks.append(task)
-    
-    # create callback for sending messages through interfaces
-    async def send_message_callback(platform: str, platform_user_id: str, message: str):
-        """callback for scheduler to send messages through appropriate interface"""
-        for interface in interfaces:
-            if platform == "discord":
-                # check if this interface has send_message method and use it
-                if hasattr(interface, 'send_message'):
-                    await interface.send_message(platform_user_id, message)
-                    break
-            # add other platforms here as we build them
-    
-    # start the scheduler service
+        router.register(interface)
+
+    # start all interfaces
+    tasks = [asyncio.create_task(interface.start()) for interface in interfaces]
+
+    # start the scheduler service - it drives its loop off whatever platforms
+    # actually have a live interface, and delivers through the router.
     scheduler_task = asyncio.create_task(
         scheduler_service.run_scheduling_loop(
-            platforms=['discord'],  # add more platforms as we support them
-            message_callback=send_message_callback
+            platforms=router.platforms(),
+            message_callback=router.deliver,
         )
     )
     tasks.append(scheduler_task)

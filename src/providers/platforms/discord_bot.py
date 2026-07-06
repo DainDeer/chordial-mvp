@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 from datetime import datetime
 import logging
 
-from .base import BaseInterface
+from .base import BaseInterface, UndeliverableError
 from config import Config
 from src.utils.string_utils import chunk_message
 
@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 class DiscordInterface(BaseInterface):
     """Discord bot implementation"""
-    
+
+    platform = "discord"
+
     def __init__(self, chat_service):
         super().__init__(chat_service)
         
@@ -59,30 +61,45 @@ class DiscordInterface(BaseInterface):
         await self.bot.close()
     
     async def send_message(self, platform_user_id: str, content: str, **kwargs) -> bool:
-        """Send a message to a Discord user, splitting if needed"""
+        """Send a message to a Discord user, splitting if needed.
+
+        Raises UndeliverableError for permanent failures (unknown user, DMs
+        forbidden) so the router can deactivate the link. Transient failures
+        return False and leave the link active."""
         try:
             user = await self.bot.fetch_user(int(platform_user_id))
             if not user:
-                return False
-            
+                # fetch_user returns None only for a genuinely unknown id
+                raise UndeliverableError(f"discord user {platform_user_id} not found")
+
             # chunk the message if it's too long
             chunks = chunk_message(content)
-        
+
             # send each chunk
             for i, chunk in enumerate(chunks):
                 await user.send(chunk)
                 # small delay between chunks to avoid rate limiting
                 if i < len(chunks) - 1:
                     await asyncio.sleep(0.5)
-        
+
             logger.info(f"Sent DM to user {user.name} ({len(chunks)} chunk{'s' if len(chunks) > 1 else ''})")
             return True
-        
-        except discord.Forbidden:
-            logger.error(f"Could not send DM to user {platform_user_id}. They might have DMs disabled.")
+
+        except discord.NotFound as e:
+            # 404 unknown user - the id is dead, this link is undeliverable
+            raise UndeliverableError(f"discord user {platform_user_id} not found") from e
+        except discord.Forbidden as e:
+            # 403 - they've blocked the bot or disabled DMs; won't succeed on retry
+            raise UndeliverableError(
+                f"discord user {platform_user_id} has DMs disabled/blocked"
+            ) from e
+        except ValueError as e:
+            # non-integer platform_user_id - malformed link, never deliverable
+            raise UndeliverableError(f"invalid discord user id '{platform_user_id}'") from e
         except Exception as e:
-            logger.error(f"Error sending message: {e}")
-        return False
+            # transient (network, rate limit, etc) - leave the link active
+            logger.error(f"transient error sending discord message to {platform_user_id}: {e}")
+            return False
     
     async def handle_incoming_message(self, message: discord.Message):
         """Handle incoming Discord messages"""

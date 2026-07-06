@@ -108,13 +108,40 @@ class UserManager:
             return "UTC"
 
     async def get_users_with_scheduled_messages(self, platform: str) -> List[tuple[str, str]]:
-        """get list of (user_uuid, platform_user_id) tuples for users who have scheduled messages enabled"""
+        """get list of (user_uuid, platform_user_id) tuples eligible for a proactive
+        send on this platform. eligibility = the human is active and not a test/seed
+        account, and this specific platform link is still deliverable."""
         with get_db() as db:
-            # query for active users on this platform
             identities = db.query(PlatformIdentity).join(User).filter(
                 PlatformIdentity.platform == platform,
-                User.is_active == True,
-                User.preferred_name != None  # only users who completed onboarding
+                PlatformIdentity.is_active == True,   # this link hasn't hard-failed
+                User.is_active == True,               # human is active
+                User.is_test == False,                # not a synthetic/seed row
+                User.preferred_name != None           # completed onboarding
             ).all()
-            
+
             return [(identity.user_uuid, identity.platform_user_id) for identity in identities]
+
+    async def deactivate_platform_identity(self, platform: str, platform_user_id: str) -> None:
+        """mark a single platform link as undeliverable. called when an outbound
+        send hard-fails (e.g. discord 404 unknown-user / 403 forbidden) so the
+        scheduler stops paying to generate messages for a dead channel. the user
+        stays active and reachable on any other platforms they're linked on."""
+        with get_db() as db:
+            identity = db.query(PlatformIdentity).filter(
+                PlatformIdentity.platform == platform,
+                PlatformIdentity.platform_user_id == platform_user_id
+            ).first()
+            if identity is None:
+                logger.warning(
+                    f"cannot deactivate unknown identity {platform}:{platform_user_id}"
+                )
+                return
+            if not identity.is_active:
+                return  # already off, nothing to do
+            identity.is_active = False
+            db.commit()
+            logger.info(
+                f"deactivated undeliverable identity {platform}:{platform_user_id} "
+                f"(user {identity.user_uuid})"
+            )
