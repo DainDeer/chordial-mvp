@@ -27,6 +27,24 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-4o-mini")
 
+    # notion (the dainframe workspace)
+    # an internal integration token: https://www.notion.so/my-integrations
+    # when unset, notion tools are simply not registered (chordial still runs).
+    NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+    # rest api version pin. 2022-06-28 is stable and works with database ids.
+    NOTION_API_VERSION = os.getenv("NOTION_API_VERSION", "2022-06-28")
+    # database ids default to the dainframe's tasks/projects/cycles; override
+    # via env if the integration points at a different workspace.
+    NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID", "9d5b5399-f284-481b-8d2a-e4797c6db18a")
+    NOTION_PROJECTS_DB_ID = os.getenv("NOTION_PROJECTS_DB_ID", "0af777e5-3988-4a65-b9a0-1672524d9952")
+    NOTION_CYCLES_DB_ID = os.getenv("NOTION_CYCLES_DB_ID", "c21c7869-4672-4bf1-8cd1-d5af73282572")
+    # cap rows returned by any single list_* call (keeps prompts lean)
+    NOTION_MAX_PAGE_SIZE = int(os.getenv("NOTION_MAX_PAGE_SIZE", "25"))
+
+    @classmethod
+    def notion_enabled(cls) -> bool:
+        return bool(cls.NOTION_API_KEY)
+
     # agent loop
     MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
     # how many recent messages of history to send as context
