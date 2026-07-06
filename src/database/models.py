@@ -39,7 +39,11 @@ class User(Base):
     
     # is the user actively using the bot
     is_active = Column(Boolean, default=True)
-    
+
+    # synthetic/seed account - kept in the db for testing, but never a target
+    # for proactive/outbound sends (scheduler skips it before generating)
+    is_test = Column(Boolean, default=False)
+
     # relationships
     platform_identities = relationship("PlatformIdentity", back_populates="user")
     conversations = relationship("ConversationHistory", back_populates="user")
@@ -55,7 +59,12 @@ class PlatformIdentity(Base):
     platform = Column(String)  # 'discord', 'telegram', 'web', etc
     platform_user_id = Column(String)  # their id on that platform
     platform_username = Column(String, nullable=True)  # their username if available
-    
+
+    # is this specific link deliverable? flipped off when a send hard-fails
+    # (discord 404/forbidden) so we stop paying to message a dead channel,
+    # without deactivating the user who may still be reachable elsewhere
+    is_active = Column(Boolean, default=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # relationships
