@@ -6,8 +6,10 @@ stability zones (most stable first):
   1. tools           - identical every request (rendered before system)
   2. system block 1  - frozen persona; zero interpolation
   3. system block 2  - user profile + core memories; changes rarely
-  4. messages        - history with ABSOLUTE timestamps (stable bytes), then
-                       the current turn carrying all the volatile "now" context
+  4. messages        - history with ABSOLUTE timestamps on USER turns (stable
+                       bytes; assistant turns carry no timestamp, so the model
+                       doesn't learn to echo one into its replies), then the
+                       current turn carrying all the volatile "now" context
 
 cache breakpoints go on system block 2 (caches tools + system) and on the last
 message before the current turn (caches conversation history). the current turn
@@ -15,14 +17,13 @@ message before the current turn (caches conversation history). the current turn
 nothing before it.
 """
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
 
 from src.managers.memories_manager import MemoriesManager
 from src.models.message import Message
 from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolDef
-from src.utils.temporal_context import TemporalContext
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from config import Config
 
@@ -108,25 +109,73 @@ class PromptService:
         history: List[Message],
         user_timezone: str,
     ) -> List[ChatTurn]:
-        """render prior messages with stable absolute timestamps and mark the
-        last one as the conversation-history cache breakpoint."""
+        """render prior messages and mark the last one as the conversation-
+        history cache breakpoint.
+
+        only USER turns get a timestamp prefix. assistant turns are rendered
+        verbatim - prefixing them taught the model (via its own transcript) that
+        replies start with "[day mon dd h:mmam]", which it then occasionally
+        echoed into a real reply. the user-turn timestamps still give it all the
+        temporal grounding it needs.
+        """
         turns: List[ChatTurn] = []
         for msg in history:
-            if msg.role not in ("user", "assistant"):
+            if msg.role == "user":
+                local_ts = to_user_timezone(msg.timestamp, user_timezone)
+                content = f"[{self._format_ts(local_ts)}] {msg.content}"
+            elif msg.role == "assistant":
+                content = msg.content
+            else:
                 continue
-            local_ts = to_user_timezone(msg.timestamp, user_timezone)
-            content = f"[{self._format_ts(local_ts)}] {msg.content}"
             turns.append(ChatTurn(role=msg.role, content=content))
 
         if turns:
             turns[-1].cache = True  # cache the history prefix
         return turns
 
-    def _now_context(self, user_timezone: str) -> str:
-        local_now = to_user_timezone(utc_now(), user_timezone)
-        line = TemporalContext.get_context_string(local_now)
-        special = TemporalContext.get_special_context(local_now)
-        return f"{line} {special}".strip()
+    @staticmethod
+    def _last_user_timestamp(messages: List[Message]) -> Optional[datetime]:
+        """timestamp (naive utc) of the most recent user message, or None."""
+        for msg in reversed(messages):
+            if msg.role == "user":
+                return msg.timestamp
+        return None
+
+    @staticmethod
+    def _format_elapsed(delta: timedelta) -> str:
+        """coarse, human-friendly duration: 'less than a minute', '5 minutes',
+        '2 hours', '3 days'."""
+        secs = max(0, int(delta.total_seconds()))
+        if secs < 60:
+            return "less than a minute"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} minute{'s' if mins != 1 else ''}"
+        hours = secs // 3600
+        if hours < 24:
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        days = secs // 86400
+        return f"{days} day{'s' if days != 1 else ''}"
+
+    def _now_line(
+        self,
+        user_timezone: str,
+        last_user_ts: Optional[datetime],
+        user_name: Optional[str],
+    ) -> str:
+        """the volatile 'now' context: absolute local time, plus how long it's
+        been since the user last reached out (so the model can gauge whether
+        this is a fresh return or a continuation). deliberately no day-type /
+        'vibe' description - the model reads that off the date, and that filler
+        was leaking into replies."""
+        now_utc = utc_now()
+        local_now = to_user_timezone(now_utc, user_timezone)
+        line = f"it's {local_now.strftime('%I:%M %p')} on {local_now.strftime('%A, %B %d, %Y')}."
+        if last_user_ts is not None:
+            who = user_name or "they"
+            elapsed = self._format_elapsed(now_utc - last_user_ts)
+            line += f" it's been {elapsed} since {who} last messaged you."
+        return line
 
     # --- public builders ---------------------------------------------------
 
@@ -148,10 +197,10 @@ class PromptService:
         messages = self._render_history(prior, user_timezone)
 
         if current is not None:
-            now_ctx = self._now_context(user_timezone)
+            now_line = self._now_line(user_timezone, self._last_user_timestamp(prior), user_name)
             messages.append(ChatTurn(
                 role="user",
-                content=f"[current time - {now_ctx}]\n{current.content}",
+                content=f"[current time - {now_line}]\n{current.content}",
             ))
 
         request = AIRequest(
@@ -178,12 +227,14 @@ class PromptService:
 
         messages = self._render_history(conversation_history, user_timezone)
 
-        now_ctx = self._now_context(user_timezone)
+        now_line = self._now_line(
+            user_timezone, self._last_user_timestamp(conversation_history), user_name
+        )
         who = user_name or "them"
         messages.append(ChatTurn(
             role="user",
             content=(
-                f"[current time - {now_ctx}]\n"
+                f"[current time - {now_line}]\n"
                 f"this is a scheduled check-in (the user hasn't just messaged you). "
                 f"write a brief, warm, natural message to {who}:\n"
                 "- be aware of the time without always stating it\n"
