@@ -24,14 +24,15 @@ def _build_interfaces(chat_service):
     return interfaces
 
 
-def _build_provider(provider_name: str):
-    """construct the configured ai provider, or None if misconfigured."""
+def _build_provider(provider_name: str, model: str = None):
+    """construct the configured ai provider, or None if misconfigured. pass
+    `model` to override the default (e.g. the cheaper utility model)."""
     if provider_name == "anthropic":
         from src.providers.ai.anthropic_provider import AnthropicProvider
-        return AnthropicProvider()
+        return AnthropicProvider(model=model)
     if provider_name == "openai":
         from src.providers.ai.openai_provider import OpenAIProvider
-        return OpenAIProvider()
+        return OpenAIProvider(model=model) if model else OpenAIProvider()
     logger.error(f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')")
     return None
 
@@ -79,10 +80,26 @@ async def main():
         tool_registry=registry if agent_service else None,
     )
     
+    # build the memory curator on the cheaper utility model - it tidies the
+    # memory table (merge/expire/promote) on a debounced pass off the scheduler
+    # loop. only wired up when the provider is actually available.
+    memory_curator = None
+    if agent_service is not None:
+        curator_provider = _build_provider(provider_name, model=Config.UTILITY_MODEL)
+        if curator_provider is not None:
+            from src.services.memory_curator import MemoryCuratorService
+            memory_curator = MemoryCuratorService(
+                provider=curator_provider,
+                provider_name=provider_name,
+                usage_recorder=UsageRecorder(),
+            )
+            logger.info(f"memory curator initialized (model={curator_provider.model})")
+
     # create scheduler service
     scheduler_service = SchedulerService(
         chat_service=chat_service,
-        user_manager=user_manager
+        user_manager=user_manager,
+        memory_curator=memory_curator,
     )
 
     # build interfaces and register them with the outbound router. the router

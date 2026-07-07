@@ -24,9 +24,12 @@ class ScheduledMessageContext:
 class SchedulerService:
     """handles intelligent scheduling of messages across all platforms"""
     
-    def __init__(self, chat_service: ChatService, user_manager: UserManager):
+    def __init__(self, chat_service: ChatService, user_manager: UserManager,
+                 memory_curator=None):
         self.chat_service = chat_service
         self.user_manager = user_manager
+        # optional: runs a memory-cleanup pass each cycle (debounced internally)
+        self.memory_curator = memory_curator
         self.user_contexts: Dict[str, ScheduledMessageContext] = {}
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
         self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
@@ -134,17 +137,32 @@ class SchedulerService:
             try:
                 for platform in platforms:
                     user_mappings = await self.user_manager.get_users_with_scheduled_messages(platform)
-                    
+
                     for user_uuid, platform_user_id in user_mappings:
                         message = await self.send_scheduled_message(user_uuid, platform, platform_user_id)
                         if message:
                             # use the callback to actually send the message
                             await message_callback(platform, platform_user_id, message)
-                
+
+                # piggyback the memory-cleanup pass on the same cycle
+                await self._run_curation_pass()
+
             except Exception as e:
                 logger.error(f"error in scheduling loop: {e}")
-            
+
             await asyncio.sleep(check_interval)
+
+    async def _run_curation_pass(self) -> None:
+        """let the curator tidy any user whose new memories have settled. kept
+        defensive - a curation failure must never stall message scheduling."""
+        if not self.memory_curator:
+            return
+        try:
+            user_uuids = await self.memory_curator.find_users_needing_curation()
+            for user_uuid in user_uuids:
+                await self.memory_curator.curate_user(user_uuid)
+        except Exception as e:
+            logger.error(f"error in memory curation pass: {e}")
     
     def stop(self):
         """stop the scheduling loop"""
