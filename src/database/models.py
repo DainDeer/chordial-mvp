@@ -185,7 +185,18 @@ class Memory(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     ttl = Column(Integer, nullable=True)  # time to live in seconds (null = permanent)
     memory_metadata = Column(JSON, default={})  # flexible metadata storage
-    
+
+    # reinforcement: each time a duplicate memory is saved we bump the existing
+    # row instead of inserting a new one, so repeated facts grow in importance.
+    reinforced_count = Column(Integer, default=0)   # times this memory was re-saved
+    last_reinforced_at = Column(DateTime, nullable=True)
+
+    # curation: the curator agent reviews rows where curated_at IS NULL (merge /
+    # update / expire / promote), then stamps them. merged_into points at the
+    # canonical row when this one was absorbed by a merge (soft-deleted too).
+    curated_at = Column(DateTime, nullable=True)
+    merged_into = Column(Integer, nullable=True)
+
     # relationships
     user = relationship("User", back_populates="memories")
 

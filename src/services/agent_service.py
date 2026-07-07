@@ -53,6 +53,10 @@ class AgentService:
         total = Usage()
         tool_trace: list = []
         stop_reason: Optional[str] = None
+        # user-facing text the model wrote, in order, across every iteration.
+        # a turn can carry both a reply and tool calls; we keep the reply instead
+        # of letting a later iteration's text replace it.
+        collected_text: list[str] = []
 
         for i in range(self.max_iterations):
             response = await self.provider.create_message(request)
@@ -66,11 +70,14 @@ class AgentService:
                 return AgentResult(text=None, refused=True,
                                    stop_reason=stop_reason, usage=total)
 
+            if response.text:
+                collected_text.append(response.text)
+
             if not response.tool_calls:
-                text_len = len(response.text or "")
+                final_text = self._join(collected_text)
                 self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
-                                 tool_trace, text_len, stop_reason, total)
-                return AgentResult(text=response.text, stop_reason=stop_reason, usage=total)
+                                 tool_trace, len(final_text), stop_reason, total)
+                return AgentResult(text=final_text, stop_reason=stop_reason, usage=total)
 
             # append the assistant turn (with its raw blocks) then run tools
             request.messages.append(response.assistant_turn)
@@ -87,6 +94,17 @@ class AgentService:
                 ],
             })
 
+            # terminal short-circuit: the model already wrote a reply this turn
+            # and every tool it called is a fire-and-forget side effect (now run).
+            # keep that reply instead of spending another call to regenerate one -
+            # this is what stops a memory-save from replacing the response.
+            all_terminal = all(self.registry.is_terminal(c.name) for c in response.tool_calls)
+            if collected_text and all_terminal:
+                final_text = self._join(collected_text)
+                self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
+                                 tool_trace, len(final_text), "terminal_tools", total)
+                return AgentResult(text=final_text, stop_reason="terminal_tools", usage=total)
+
         # iteration cap reached: force a final answer with tools disabled
         logger.warning("agent hit iteration cap (%s) for user %s", self.max_iterations, user_uuid)
         request.tools = []
@@ -95,15 +113,25 @@ class AgentService:
         self._record_call(user_uuid, platform, turn_kind, final.usage)
         stop_reason = final.stop_reason
         refused = final.stop_reason == "refusal"
+        if final.text:
+            collected_text.append(final.text)
+        final_text = self._join(collected_text)
         self._save_trace(user_uuid, platform, turn_kind, self.max_iterations, True,
-                         tool_trace, len(final.text or ""), stop_reason, total)
+                         tool_trace, len(final_text), stop_reason, total)
         return AgentResult(
-            text=None if refused else final.text,
+            text=None if refused else final_text,
             refused=refused,
             stop_reason=stop_reason,
             usage=total,
             hit_iteration_cap=True,
         )
+
+    @staticmethod
+    def _join(parts: list[str]) -> Optional[str]:
+        """join the assistant's text fragments into one reply. None if empty, so
+        callers keep treating 'no text' as an error/non-answer."""
+        cleaned = [p.strip() for p in parts if p and p.strip()]
+        return "\n\n".join(cleaned) if cleaned else None
 
     def _record_call(self, user_uuid, platform, turn_kind, usage) -> None:
         self.usage.record_call(

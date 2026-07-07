@@ -1,6 +1,8 @@
 from typing import List, Optional, Dict, Any, Tuple
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+import re
 import json
 import logging
 
@@ -9,6 +11,50 @@ from src.database.models import Memory, User
 from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+# --- dedup/reinforcement tuning -------------------------------------------
+# a candidate save matches an existing memory (of the same type) if EITHER the
+# instruction word-sets overlap enough OR the keyword sets do. word-set Jaccard
+# on the instruction cleanly separates rewordings of the same fact (~0.5+) from
+# unrelated memories (~0.05), where char-level ratios were too muddy.
+#
+# this is deliberately a conservative FIRST pass: it catches obvious lexical
+# duplicates cheaply (no api call). genuinely ambiguous cases - a fact reworded
+# with little shared vocabulary, or two short facts differing by one word - are
+# left for the curator agent, which has an actual model to judge them. the
+# unused `embedding` column is the eventual upgrade path (cosine similarity).
+_INSTRUCTION_JACCARD_THRESHOLD = 0.5
+_KEYWORD_JACCARD_THRESHOLD = 0.6
+_REINFORCE_WEIGHT_STEP = 1.0
+_MAX_REINFORCED_WEIGHT = 10.0   # non-core rows cap here; nothing rivals core (999)
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _word_set(text: str) -> set:
+    return set(_WORD_RE.findall((text or "").lower()))
+
+
+def _keyword_set(csv: Optional[str]) -> set:
+    return {k.strip().lower() for k in (csv or "").split(",") if k.strip()}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+@dataclass
+class UpsertResult:
+    """outcome of upsert_memory, so the save_memory tool can tell the model
+    whether it created a new memory or reinforced an existing one."""
+    memory_id: int
+    action: str          # "inserted" | "reinforced"
+    weighting: float
+    times_seen: int      # 1 on first insert, +1 per reinforcement
+    instruction: str
 
 
 class MemoryType(Enum):
@@ -76,8 +122,106 @@ class MemoriesManager:
                 f"created {'core' if core else 'regular'} {memory_type.value} memory "
                 f"for user {user_uuid}: {ai_instruction[:50]}..."
             )
-            
+
             return memory
+
+    async def upsert_memory(
+        self,
+        user_uuid: str,
+        ai_instruction: str,
+        memory_type: MemoryType,
+        source: MemorySource,
+        keywords: Optional[List[str]] = None,
+        core: bool = False,
+    ) -> UpsertResult:
+        """save a memory, reinforcing an existing near-duplicate instead of
+        inserting a second copy. reinforcement bumps the row's weight (so facts
+        mentioned repeatedly rise in importance), unions the keywords, and marks
+        it for re-curation. matching is scoped to the same memory_type.
+
+        core memories are always inserted verbatim - they're deliberate, and we
+        never want dedup logic quietly folding one into another."""
+        cand_keywords = _keyword_set(",".join(keywords) if keywords else "")
+
+        if not core:
+            with get_db() as db:
+                candidates = db.query(Memory).filter(
+                    Memory.user_uuid == user_uuid,
+                    Memory.is_active == True,
+                    Memory.core == False,
+                    Memory.memory_type == memory_type.value,
+                ).all()
+
+                cand_words = _word_set(ai_instruction)
+                best = None
+                best_score = 0.0
+                for row in candidates:
+                    tsim = _jaccard(cand_words, _word_set(row.ai_instruction))
+                    ksim = _jaccard(cand_keywords, _keyword_set(row.keywords))
+                    if tsim >= _INSTRUCTION_JACCARD_THRESHOLD or ksim >= _KEYWORD_JACCARD_THRESHOLD:
+                        score = max(tsim, ksim)
+                        if score > best_score:
+                            best, best_score = row, score
+
+                if best is not None:
+                    best.weighting = min(
+                        _MAX_REINFORCED_WEIGHT,
+                        (best.weighting or self.default_weighting) + _REINFORCE_WEIGHT_STEP,
+                    )
+                    best.reinforced_count = (best.reinforced_count or 0) + 1
+                    best.last_reinforced_at = utc_now()
+                    best.curated_at = None  # keywords/weight changed - re-review
+                    merged = _keyword_set(best.keywords) | cand_keywords
+                    best.keywords = ",".join(sorted(merged))
+                    result = UpsertResult(
+                        memory_id=best.id,
+                        action="reinforced",
+                        weighting=best.weighting,
+                        times_seen=best.reinforced_count + 1,
+                        instruction=best.ai_instruction,
+                    )
+                    db.commit()
+                    logger.info(
+                        "reinforced memory %s for user %s (weight=%.1f, seen %dx)",
+                        result.memory_id, user_uuid, result.weighting, result.times_seen,
+                    )
+                    return result
+
+        # no match (or a core memory) - insert fresh. new rows have curated_at
+        # NULL by default, so the curator will review them. capture id/weight
+        # WHILE the session is open (get_db expires orm objects on commit).
+        with get_db() as db:
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            if not user:
+                raise ValueError(f"user {user_uuid} not found")
+
+            memory = Memory(
+                user_uuid=user_uuid,
+                ai_instruction=ai_instruction,
+                memory_type=memory_type.value,
+                source=source.value,
+                keywords=",".join(keywords) if keywords else "",
+                weighting=self.core_memory_weight if core else self.default_weighting,
+                core=core,
+                memory_metadata={},
+            )
+            db.add(memory)
+            db.flush()  # populate memory.id before the session closes
+            result = UpsertResult(
+                memory_id=memory.id,
+                action="inserted",
+                weighting=memory.weighting,
+                times_seen=1,
+                instruction=ai_instruction,
+            )
+            db.commit()
+
+        logger.info(
+            "created %s%s memory %s for user %s: %s",
+            "core " if core else "", memory_type.value, result.memory_id,
+            user_uuid, ai_instruction[:50],
+        )
+        return result
     
     async def get_active_memories(
         self,

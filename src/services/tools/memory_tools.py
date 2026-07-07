@@ -31,7 +31,7 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
     if isinstance(keywords, str):
         keywords = [k.strip() for k in keywords.split(",") if k.strip()]
 
-    await _memories.create_memory(
+    result = await _memories.upsert_memory(
         user_uuid=user_uuid,
         ai_instruction=instruction,
         memory_type=memory_type,
@@ -39,6 +39,15 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
         keywords=keywords,
         core=is_core,
     )
+
+    if result.action == "reinforced":
+        # a near-duplicate already existed - we bumped its importance instead of
+        # storing a second copy. tell the model so it doesn't try to "fix" it.
+        return (
+            f"you already had a very similar memory, so i reinforced it "
+            f"(now seen {result.times_seen}x, importance {result.weighting:.0f}): "
+            f"{result.instruction}"
+        )
     return f"saved{' core' if is_core else ''} memory: {instruction}"
 
 
@@ -91,6 +100,7 @@ SAVE_MEMORY = Tool(
         },
     ),
     handler=_save_memory,
+    terminal=True,  # saving is a side effect - don't discard the reply to do it
 )
 
 
