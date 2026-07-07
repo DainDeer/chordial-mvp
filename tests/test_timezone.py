@@ -25,8 +25,8 @@ from src.utils.timezone_utils import (
     is_within_quiet_hours,
 )
 from src.utils.temporal_context import TemporalContext
-from src.database.database import init_db, get_db
-from src.database.models import User, PlatformIdentity, ConversationHistory
+from src.database.database import engine, get_db
+from src.database.models import Base, User, PlatformIdentity, ConversationHistory
 from src.managers.user_manager import UserManager
 from src.services.scheduler_service import SchedulerService
 
@@ -153,7 +153,9 @@ class TestTemporalContextLocalization:
 class TestSchedulerQuietHoursPerUser:
     @pytest.fixture(autouse=True)
     def _setup_db(self):
-        init_db()
+        # build schema directly from the models (fast, and independent of the
+        # alembic-backed init_db used in production)
+        Base.metadata.create_all(bind=engine)
         yield
 
     def _make_user(self, timezone: str, last_message_at: datetime) -> str:
