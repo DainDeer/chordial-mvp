@@ -26,7 +26,6 @@ from src.providers.ai.base import BaseAIProvider
 from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ProviderError
 from src.services.usage_recorder import UsageRecorder
 from src.utils.timezone_utils import utc_now
-from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +198,9 @@ class MemoryCuratorService:
             messages=[ChatTurn(role="user", content=user_msg)],
             tools=[],
             max_tokens=self.max_tokens,
-            effort=Config.CHAT_EFFORT,
+            # no effort: the utility model (haiku) doesn't support output_config
+            # effort, and this is a cheap structured task that doesn't need it.
+            effort=None,
         )
 
     @staticmethod

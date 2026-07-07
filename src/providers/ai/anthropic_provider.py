@@ -29,25 +29,40 @@ class AnthropicProvider(BaseAIProvider):
     claude models). effort is the per-call cost dial.
     """
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        thinking: bool = True,
+    ):
         self.model = model or Config.CHAT_MODEL
         self.client = AsyncAnthropic(api_key=api_key or Config.ANTHROPIC_API_KEY)
+        # adaptive thinking + the effort param exist only on the 4.6+ generation
+        # (sonnet-5, opus 4.x, etc). the utility model (haiku 4.5) rejects both
+        # with a 400, so callers on that tier construct the provider with
+        # thinking=False, and effort is only sent when the request supplies it.
+        self._thinking = thinking
         # shared ceiling on concurrent in-flight calls; invisible at one user,
         # a guardrail against burst fan-out from the scheduler at scale.
         self._semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_AI_CALLS)
 
-    async def create_message(self, request: AIRequest) -> AIResponse:
+    def _build_kwargs(self, request: AIRequest) -> dict:
         kwargs = {
             "model": self.model,
             "max_tokens": request.max_tokens,
             "system": self._render_system(request),
             "messages": self._render_messages(request.messages),
-            "thinking": {"type": "adaptive"},
         }
+        if self._thinking:
+            kwargs["thinking"] = {"type": "adaptive"}
         if request.tools:
             kwargs["tools"] = self._render_tools(request.tools)
         if request.effort:
             kwargs["output_config"] = {"effort": request.effort}
+        return kwargs
+
+    async def create_message(self, request: AIRequest) -> AIResponse:
+        kwargs = self._build_kwargs(request)
 
         try:
             async with self._semaphore:

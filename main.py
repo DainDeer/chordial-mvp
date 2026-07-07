@@ -24,12 +24,13 @@ def _build_interfaces(chat_service):
     return interfaces
 
 
-def _build_provider(provider_name: str, model: str = None):
+def _build_provider(provider_name: str, model: str = None, thinking: bool = True):
     """construct the configured ai provider, or None if misconfigured. pass
-    `model` to override the default (e.g. the cheaper utility model)."""
+    `model` to override the default (e.g. the cheaper utility model), and
+    `thinking=False` for models that don't support adaptive thinking (haiku)."""
     if provider_name == "anthropic":
         from src.providers.ai.anthropic_provider import AnthropicProvider
-        return AnthropicProvider(model=model)
+        return AnthropicProvider(model=model, thinking=thinking)
     if provider_name == "openai":
         from src.providers.ai.openai_provider import OpenAIProvider
         return OpenAIProvider(model=model) if model else OpenAIProvider()
@@ -85,7 +86,10 @@ async def main():
     # loop. only wired up when the provider is actually available.
     memory_curator = None
     if agent_service is not None:
-        curator_provider = _build_provider(provider_name, model=Config.UTILITY_MODEL)
+        # utility model (haiku) doesn't support adaptive thinking -> thinking=False
+        curator_provider = _build_provider(
+            provider_name, model=Config.UTILITY_MODEL, thinking=False,
+        )
         if curator_provider is not None:
             from src.services.memory_curator import MemoryCuratorService
             memory_curator = MemoryCuratorService(
