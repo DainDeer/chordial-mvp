@@ -3,6 +3,7 @@ import logging
 
 from src.managers.user_manager import UserManager
 from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
+from src.utils.timezone_utils import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -30,21 +31,38 @@ first things first - what would you like me to call you? just type your preferre
         if current_state == "name":
             # they just gave us their name
             preferred_name = response.strip()
-            
+
             # update user preferences
             await self.user_manager.update_user_preferences(user_uuid, {
                 'preferred_name': preferred_name
             })
-            
-            # move to memory state
-            self.onboarding_states[state_key] = "memory"
-            
+
+            # move to timezone state
+            self.onboarding_states[state_key] = "timezone"
+
             return preferred_name, f"""nice to meet you, {preferred_name}! 💕
-            
-before we get started, i'd love to learn something special about you!
+
+quick practical thing so my check-ins and reminders land at the right time - what timezone are you in? a city or region works too, like "california" or "london" 🌍"""
+
+        elif current_state == "timezone":
+            # they just told us where/when they are
+            tz = resolve_timezone(response)
+            self.onboarding_states[state_key] = "memory"
+
+            memory_question = """now for the fun part - i'd love to learn something special about you!
 
 what's something you want me to always remember about you? it could be anything - how you like to be treated, something about who you are, or anything else that's important to you! 🌟"""
-        
+
+            if tz:
+                await self.user_manager.update_user_preferences(user_uuid, {'timezone': tz})
+                logger.info(f"onboarding set timezone {tz} for user {user_uuid}")
+                return None, f"got it, {tz.split('/')[-1].replace('_', ' ').lower()} time it is ⏰\n\n{memory_question}"
+
+            # couldn't parse it - don't block onboarding; the chat flow will
+            # sort it out later (the model calls set_preference when it comes up)
+            logger.info(f"onboarding could not resolve timezone from '{response[:40]}' for user {user_uuid}")
+            return None, f"no worries, i'll figure out your timezone as we chat 😊\n\n{memory_question}"
+
         elif current_state == "memory":
             # they just told us what to remember
             memory_content = response.strip()
