@@ -24,6 +24,12 @@ ToolHandler = Callable[[dict, str], Awaitable[str]]
 class Tool:
     definition: ToolDef
     handler: ToolHandler
+    # terminal tools are pure side effects (save a memory, set a preference)
+    # whose result the model doesn't need to react to. when a turn's tool calls
+    # are all terminal, the agent loop runs them and keeps the reply the model
+    # already wrote in that same turn, instead of forcing a second api call that
+    # replaces it. see AgentService.run.
+    terminal: bool = False
 
 
 class ToolRegistry:
@@ -35,6 +41,12 @@ class ToolRegistry:
 
     def definitions(self) -> list[ToolDef]:
         return [t.definition for t in self._tools.values()]
+
+    def is_terminal(self, name: str) -> bool:
+        """True if this tool is a fire-and-forget side effect. unknown tools are
+        treated as non-terminal (safer: they get the normal round-trip)."""
+        tool = self._tools.get(name)
+        return bool(tool and tool.terminal)
 
     async def execute(self, call: ToolCall, user_uuid: str) -> ToolResult:
         """run a tool call. errors are returned to the model (is_error=True)

@@ -86,4 +86,5 @@ SET_PREFERENCE = Tool(
         },
     ),
     handler=_set_preference,
+    terminal=True,  # updating a setting is a side effect - keep the reply
 )
