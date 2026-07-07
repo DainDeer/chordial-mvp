@@ -261,19 +261,23 @@ class TestContextBuilderSpecialContext:
         utc_context = ContextBuilder.build_message_context(timestamp=fixed_utc)
         assert "friday afternoon" not in utc_context["special_context"]
 
-    def test_special_context_reaches_the_current_turn(self, monkeypatch):
-        # the caching redesign moves volatile "now" context (friday vibes, etc)
-        # OUT of the frozen system prompt and ONTO the current turn, so the
-        # system prefix stays byte-stable and cacheable.
+    def test_current_turn_shows_elapsed_since_last_user(self, monkeypatch):
+        # the volatile "now" line reports how long since the user last reached
+        # out (a return vs a continuation), and carries NO day-type "vibe"
+        # description (which used to leak into replies).
         from src.services import prompt_service as ps_mod
-        from src.services.prompt_service import PromptService, PERSONA
+        from src.services.prompt_service import PromptService
         from src.models.message import Message
 
-        friday_pm = datetime(2025, 6, 27, 15, 0)  # a friday, mid-afternoon UTC
-        monkeypatch.setattr(ps_mod, "utc_now", lambda: friday_pm)
+        now = datetime(2026, 7, 7, 19, 0)  # fixed utc
+        monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
         ps = PromptService(enable_prompt_logging=False)
-        history = [Message(role="user", content="hi", timestamp=friday_pm)]
+        history = [
+            Message(role="user", content="earlier", timestamp=now - timedelta(hours=2)),
+            Message(role="assistant", content="a reply", timestamp=now - timedelta(hours=2)),
+            Message(role="user", content="im back", timestamp=now),  # current turn
+        ]
 
         async def run():
             return await ps.build_conversation_request(
@@ -284,12 +288,42 @@ class TestContextBuilderSpecialContext:
             )
 
         request = asyncio.run(run())
+        current = request.messages[-1].content
+        assert current.startswith("[current time")
+        assert "it's been 2 hours since dain last messaged you" in current
+        # the removed day-type description no longer appears
+        assert "weekday" not in current and "afternoon" not in current
 
-        # the frozen persona is system block 0 and carries no volatile vibes
-        assert request.system[0].text == PERSONA
-        assert "friday afternoon" not in request.system[0].text
-        # the special context rides on the current (last) turn instead
-        assert "friday afternoon" in request.messages[-1].content
+    def test_assistant_turns_have_no_timestamp_prefix(self, monkeypatch):
+        # the fix for the leak: assistant turns render verbatim so the model
+        # never sees (and imitates) "[day mon dd h:mmam] <reply>".
+        from src.services import prompt_service as ps_mod
+        from src.services.prompt_service import PromptService
+        from src.models.message import Message
+
+        now = datetime(2026, 7, 7, 19, 0)
+        monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
+
+        ps = PromptService(enable_prompt_logging=False)
+        history = [
+            Message(role="user", content="hello there", timestamp=now - timedelta(minutes=5)),
+            Message(role="assistant", content="hi friend", timestamp=now - timedelta(minutes=5)),
+            Message(role="user", content="current", timestamp=now),
+        ]
+
+        async def run():
+            return await ps.build_conversation_request(
+                conversation_history=history,
+                user_name="dain",
+                user_uuid=None,
+                user_timezone="UTC",
+            )
+
+        request = asyncio.run(run())
+        user_turn, assistant_turn = request.messages[0], request.messages[1]
+        assert user_turn.role == "user" and user_turn.content.startswith("[")
+        assert assistant_turn.role == "assistant"
+        assert assistant_turn.content == "hi friend"  # verbatim, no "[...]" prefix
 
     def test_persona_block_is_frozen_and_vibe_free(self, monkeypatch):
         from src.services import prompt_service as ps_mod
