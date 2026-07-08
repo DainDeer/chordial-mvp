@@ -159,11 +159,18 @@ class SchedulerService:
             await asyncio.sleep(check_interval)
 
     async def _refresh_agenda(self, user_uuid: str) -> None:
-        """refresh this user's notion agenda snapshot if it's stale/expired.
+        """refresh this user's notion agenda snapshot if it's stale/expired -
+        but only outside their quiet hours. nobody's chatting overnight, so
+        there's no reason to spend notion calls keeping it warm then; it
+        catches back up within one 5-min cycle of quiet hours ending, well
+        before a human is likely to say good morning.
         guarded - notion being slow or down must never stall message delivery."""
         if not self.agenda_service:
             return
         try:
+            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+            if self._is_quiet_hours(user_timezone):
+                return
             await self.agenda_service.ensure_fresh(user_uuid)
         except Exception as e:
             logger.error(f"agenda refresh failed for user {user_uuid}: {e}")
