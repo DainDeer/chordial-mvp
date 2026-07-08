@@ -82,6 +82,67 @@ def _cap(n: Optional[int]) -> int:
     return max(1, min(int(n), hi))
 
 
+# --- duplicate detection ----------------------------------------------------
+# the model can't see its own tool calls from previous turns (they live in
+# agent_traces, not the replayed conversation history), so across two quick
+# turns it can create the same task twice - it re-affirms "task's locked in!"
+# and re-runs create_task, not knowing it already did. create_task guards
+# against that here with a cheap pre-insert existence check.
+
+_TITLE_WORD_RE = re.compile(r"[a-z0-9']+")
+# jaccard over title word-sets; high so we only skip genuine near-identicals
+# (casing/punctuation differences), never merely related tasks.
+_TITLE_DUP_THRESHOLD = 0.8
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    return frozenset(_TITLE_WORD_RE.findall((title or "").lower()))
+
+
+def _titles_similar(a: frozenset[str], b: frozenset[str]) -> bool:
+    if not a or not b:
+        return False
+    union = len(a | b)
+    return union > 0 and len(a & b) / union >= _TITLE_DUP_THRESHOLD
+
+
+async def _find_duplicate_task(title: str, scheduled_date: Optional[str]) -> Optional[dict]:
+    """an existing *active* task that's a near-identical of the one about to be
+    created, in the same schedule context (same day, or both undated). returns
+    the matching page or None. one bounded notion query."""
+    tokens = _title_tokens(title)
+    if not tokens:
+        return None
+
+    # scope the candidate set: same-day tasks when a date is given (precise and
+    # cheap), else a bounded scan of recent tasks.
+    if scheduled_date:
+        filt = S.task_filter(
+            scheduled_on_or_after=scheduled_date,
+            scheduled_on_or_before=scheduled_date,
+        )
+    else:
+        filt = None
+    rows = await get_client().query_all(S.tasks_db(), filter=filt, limit=50)
+
+    for page in rows:
+        row = S.task_row(page)
+        if row["status"] in ("Done", "deprioritized"):
+            continue  # completed/dropped tasks aren't duplicates
+        if not _titles_similar(tokens, _title_tokens(row["title"])):
+            continue
+        # only a duplicate if the schedule context matches too: same scheduled
+        # day, or neither is scheduled. (similar titles on different days - e.g.
+        # a recurring "workout" - are distinct tasks.)
+        existing_date = row["scheduled"]
+        if scheduled_date and existing_date:
+            if scheduled_date == existing_date:
+                return page
+        elif not scheduled_date and not existing_date:
+            return page
+    return None
+
+
 # ============================ TASKS ========================================
 
 
@@ -127,6 +188,18 @@ async def _create_task(tool_input: dict, user_uuid: str) -> str:
     if not title:
         return "a task needs a title."
 
+    # guard against creating the same task twice (see _find_duplicate_task)
+    scheduled_date = tool_input.get("scheduled_date")
+    existing = await _find_duplicate_task(title, scheduled_date)
+    if existing:
+        when = S.scheduled_start(existing)
+        when_str = f" (scheduled {when})" if when else ""
+        return (
+            f'a task like that already exists: "{S.title_of(existing, "Task")}"'
+            f'{when_str} (id={S.page_id(existing)}). i didn\'t make a duplicate - '
+            f"update that one if you meant to change it."
+        )
+
     project_ids, miss_p = await _resolve_names_to_ids(
         S.projects_db(), "Project",
         [tool_input["project"]] if tool_input.get("project") else None,
@@ -145,7 +218,7 @@ async def _create_task(tool_input: dict, user_uuid: str) -> str:
         priority=tool_input.get("priority"),
         project_ids=project_ids,
         sprint_ids=sprint_ids,
-        scheduled_start=tool_input.get("scheduled_date"),
+        scheduled_start=scheduled_date,
         pom_estimate=tool_input.get("pom_estimate"),
     )
     page = await get_client().create_page(S.tasks_db(), props)

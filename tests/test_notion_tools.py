@@ -147,3 +147,89 @@ def test_looks_like_id_recognizes_uuids():
     assert NT._looks_like_id("9d5b5399-f284-481b-8d2a-e4797c6db18a")
     assert NT._looks_like_id("9d5b5399f284481b8d2ae4797c6db18a")
     assert not NT._looks_like_id("refill meds")
+
+
+# --- duplicate-task guard --------------------------------------------------
+# regression: across two quick turns the model re-ran create_task for the same
+# thing (it can't see its own prior tool calls), landing a near-identical task
+# twice. create_task now skips an existing active task with a near-identical
+# title in the same schedule context.
+
+def _existing_task(pid, title, *, status="To do", scheduled=None):
+    return {
+        "id": pid,
+        "properties": {
+            "Task": {"title": [{"plain_text": title}]},
+            "Status": {"status": {"name": status}},
+            "Scheduled": {"date": {"start": scheduled}} if scheduled else {"date": None},
+        },
+    }
+
+
+def test_create_task_skips_same_day_near_duplicate(fake_client):
+    # the real incident: same task, only casing differs, same friday
+    fake_client.seed(S.tasks_db(), [_existing_task(
+        "task-43", "Look into VR fitness club discord schedule + commit to a session",
+        scheduled="2026-07-10",
+    )])
+    out = run(NT._create_task({
+        "title": "Look into VR fitness club Discord schedule + commit to a session",
+        "scheduled_date": "2026-07-10",
+    }, "u1"))
+    assert "already exists" in out
+    assert "task-43" in out
+    assert not fake_client.created  # no duplicate written
+
+
+def test_create_task_allows_similar_title_on_different_day(fake_client):
+    fake_client.seed(S.tasks_db(), [_existing_task(
+        "task-43", "water the plants", scheduled="2026-07-10")])
+    out = run(NT._create_task(
+        {"title": "water the plants", "scheduled_date": "2026-07-11"}, "u1"))
+    assert "created task" in out
+    assert fake_client.created
+
+
+def test_create_task_allows_distinct_title_same_day(fake_client):
+    fake_client.seed(S.tasks_db(), [_existing_task(
+        "task-43", "buy milk", scheduled="2026-07-10")])
+    out = run(NT._create_task(
+        {"title": "call the dentist", "scheduled_date": "2026-07-10"}, "u1"))
+    assert "created task" in out
+    assert fake_client.created
+
+
+def test_create_task_skips_undated_near_duplicate(fake_client):
+    fake_client.seed(S.tasks_db(), [_existing_task("task-9", "water the plants")])
+    out = run(NT._create_task({"title": "Water the Plants"}, "u1"))
+    assert "already exists" in out
+    assert not fake_client.created
+
+
+def test_create_task_ignores_completed_tasks(fake_client):
+    # a finished task with the same name is history, not a duplicate
+    fake_client.seed(S.tasks_db(), [_existing_task(
+        "task-old", "buy milk", status="Done", scheduled="2026-07-10")])
+    out = run(NT._create_task(
+        {"title": "buy milk", "scheduled_date": "2026-07-10"}, "u1"))
+    assert "created task" in out
+    assert fake_client.created
+
+
+def test_create_task_scheduled_vs_unscheduled_not_duplicate(fake_client):
+    # one has a date, the other doesn't -> different enough to allow
+    fake_client.seed(S.tasks_db(), [_existing_task("task-9", "water the plants")])
+    out = run(NT._create_task(
+        {"title": "water the plants", "scheduled_date": "2026-07-10"}, "u1"))
+    assert "created task" in out
+    assert fake_client.created
+
+
+def test_titles_similar_thresholds():
+    tok = NT._title_tokens
+    # identical after lowercasing
+    assert NT._titles_similar(tok("Water The Plants"), tok("water the plants"))
+    # clearly distinct
+    assert not NT._titles_similar(tok("buy milk"), tok("call dentist"))
+    # empty never matches
+    assert not NT._titles_similar(tok(""), tok("anything"))
