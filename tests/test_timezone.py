@@ -269,16 +269,19 @@ class TestContextBuilderSpecialContext:
         # description (which used to leak into replies).
         from src.services import prompt_service as ps_mod
         from src.services.prompt_service import PromptService
-        from src.models.message import Message
+        from src.managers.event_log import Event
 
         now = datetime(2026, 7, 7, 19, 0)  # fixed utc
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
         ps = PromptService(enable_prompt_logging=False)
         history = [
-            Message(role="user", content="earlier", timestamp=now - timedelta(hours=2)),
-            Message(role="assistant", content="a reply", timestamp=now - timedelta(hours=2)),
-            Message(role="user", content="im back", timestamp=now),  # current turn
+            Event(author_type="user", author="user", kind="message",
+                  content="earlier", created_at=now - timedelta(hours=2)),
+            Event(author_type="agent", author="chordial", kind="message",
+                  content="a reply", created_at=now - timedelta(hours=2)),
+            Event(author_type="user", author="user", kind="message",
+                  content="im back", created_at=now),  # current turn
         ]
 
         async def run():
@@ -301,16 +304,19 @@ class TestContextBuilderSpecialContext:
         # never sees (and imitates) "[day mon dd h:mmam] <reply>".
         from src.services import prompt_service as ps_mod
         from src.services.prompt_service import PromptService
-        from src.models.message import Message
+        from src.managers.event_log import Event
 
         now = datetime(2026, 7, 7, 19, 0)
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
         ps = PromptService(enable_prompt_logging=False)
         history = [
-            Message(role="user", content="hello there", timestamp=now - timedelta(minutes=5)),
-            Message(role="assistant", content="hi friend", timestamp=now - timedelta(minutes=5)),
-            Message(role="user", content="current", timestamp=now),
+            Event(author_type="user", author="user", kind="message",
+                  content="hello there", created_at=now - timedelta(minutes=5)),
+            Event(author_type="agent", author="chordial", kind="message",
+                  content="hi friend", created_at=now - timedelta(minutes=5)),
+            Event(author_type="user", author="user", kind="message",
+                  content="current", created_at=now),
         ]
 
         async def run():
@@ -330,13 +336,14 @@ class TestContextBuilderSpecialContext:
     def test_persona_block_is_frozen_and_vibe_free(self, monkeypatch):
         from src.services import prompt_service as ps_mod
         from src.services.prompt_service import PromptService, PERSONA
-        from src.models.message import Message
+        from src.managers.event_log import Event
 
         tuesday_midday = datetime(2025, 7, 1, 12, 0)  # ordinary time, no vibe
         monkeypatch.setattr(ps_mod, "utc_now", lambda: tuesday_midday)
 
         ps = PromptService(enable_prompt_logging=False)
-        history = [Message(role="user", content="hi", timestamp=tuesday_midday)]
+        history = [Event(author_type="user", author="user", kind="message",
+                         content="hi", created_at=tuesday_midday)]
 
         async def run():
             return await ps.build_conversation_request(

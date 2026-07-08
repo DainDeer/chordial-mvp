@@ -2,7 +2,6 @@ from typing import Optional
 import logging
 
 from src.models.unified_message import UnifiedMessage
-from src.models.message import Message
 from src.managers.event_log import EventLog, Event
 from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
@@ -66,11 +65,17 @@ class ChatService:
             logger.exception("failed composing ambient context; continuing without")
             return None
 
-    def _history_messages(self, log: EventLog) -> list[Message]:
-        """recent events bridged into the Message shape PromptService speaks.
-        (temporary seam: goes away when the prompt builder consumes Events
-        directly for action-aware rendering.)"""
-        return [Message.from_event(e) for e in log.recent(self.max_history_messages)]
+    def _record_actions(self, log: EventLog, result) -> None:
+        """persist the turn's executed tool calls as action events, so future
+        turns can see what was already done (the cross-turn dedup fix). policy:
+        only successful calls, only tools flagged record_event (mutations, not
+        pure reads). recorded BEFORE the reply message event - chronology."""
+        if not self.tool_registry:
+            return
+        for action in result.actions:
+            if action.is_error or not self.tool_registry.should_record(action.name):
+                continue
+            log.append_action(AGENT_AUTHOR, action.name, action.input, action.result_content)
 
     async def _prepare_for_interaction(
         self,
@@ -163,7 +168,7 @@ class ChatService:
             if not self.agent_service:
                 return f"echo: {unified_message.content}"
 
-            history = self._history_messages(log)
+            history = log.recent(self.max_history_messages)
             request = await self.prompt_service.build_conversation_request(
                 conversation_history=history,
                 user_name=user_name,
@@ -181,9 +186,11 @@ class ChatService:
             )
 
             if result.refused or not result.text:
-                # don't persist a non-answer into history
+                # don't persist a non-answer into history (nor its actions -
+                # they're still in AgentTrace for debugging)
                 return REFUSAL_REPLY if result.refused else ERROR_REPLY
 
+            self._record_actions(log, result)
             reply_event = log.append_message("agent", AGENT_AUTHOR, result.text)
             if Config.ENABLE_COMPRESSION:
                 await self._compress(reply_event, user_uuid, unified_message.platform)
@@ -214,7 +221,7 @@ class ChatService:
 
             log = EventLog(user_uuid, platform)
 
-            history = self._history_messages(log)
+            history = log.recent(self.max_history_messages)
             request = await self.prompt_service.build_scheduled_request(
                 conversation_history=history,
                 user_name=user_name,
@@ -234,6 +241,7 @@ class ChatService:
             if result.refused or not result.text:
                 return None
 
+            self._record_actions(log, result)
             reply_event = log.append_message("agent", AGENT_AUTHOR, result.text, message_type="scheduled")
             if Config.ENABLE_COMPRESSION:
                 await self._compress(reply_event, user_uuid, platform)

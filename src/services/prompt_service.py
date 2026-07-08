@@ -6,23 +6,30 @@ stability zones (most stable first):
   1. tools           - identical every request (rendered before system)
   2. system block 1  - frozen persona; zero interpolation
   3. system block 2  - user profile + core memories; changes rarely
-  4. messages        - history with ABSOLUTE timestamps on USER turns (stable
-                       bytes; assistant turns carry no timestamp, so the model
-                       doesn't learn to echo one into its replies), then the
-                       current turn carrying all the volatile "now" context
+  4. messages        - event history with ABSOLUTE timestamps on USER turns
+                       (stable bytes; assistant turns carry no timestamp or
+                       markup, so the model doesn't learn to echo any of it
+                       into replies), then the current turn carrying all the
+                       volatile "now" context
 
 cache breakpoints go on system block 2 (caches tools + system) and on the last
 message before the current turn (caches conversation history). the current turn
 - the only volatile part - sits after every breakpoint, so it invalidates
 nothing before it.
+
+tool ACTIONS from past turns render as bracketed blocks folded into the next
+USER-side turn (never onto assistant turns - that pattern taught the model to
+echo prefixes into real replies once already). each action line is the frozen
+`content` string from its event, emitted verbatim: bytes are fixed at write
+time, so replayed history stays cache-stable forever.
 """
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
 import logging
 import os
 
 from src.managers.memories_manager import MemoriesManager
-from src.models.message import Message
+from src.managers.event_log import Event
 from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolDef
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from config import Config
@@ -117,41 +124,60 @@ class PromptService:
         clock = local_dt.strftime("%I:%M%p").lstrip("0").lower()
         return f"{day}{clock}"
 
+    def _action_block(self, actions: List[Event], user_timezone: str) -> str:
+        """render a run of action events as one bracketed block. attribution is
+        third-person (the acting agent's name), so the same format serves a
+        multi-persona channel later. lines are the events' frozen content,
+        verbatim - never re-serialized."""
+        first = actions[0]
+        local_ts = to_user_timezone(first.created_at, user_timezone)
+        lines = "\n".join(a.content for a in actions)
+        return f"[{first.author}'s tool actions - {self._format_ts(local_ts)}:\n{lines}]"
+
     def _render_history(
         self,
-        history: List[Message],
+        history: List[Event],
         user_timezone: str,
-    ) -> List[ChatTurn]:
-        """render prior messages and mark the last one as the conversation-
-        history cache breakpoint.
+    ) -> Tuple[List[ChatTurn], List[Event]]:
+        """render prior events into chat turns, marking the last one as the
+        conversation-history cache breakpoint. returns (turns, leftover_actions)
+        - trailing action events with no following user message belong to the
+        caller, which folds them into the volatile current turn.
 
-        only USER turns get a timestamp prefix. assistant turns are rendered
-        verbatim - prefixing them taught the model (via its own transcript) that
-        replies start with "[day mon dd h:mmam]", which it then occasionally
-        echoed into a real reply. the user-turn timestamps still give it all the
-        temporal grounding it needs.
+        only USER turns get a timestamp prefix, and action blocks fold into the
+        NEXT user turn. assistant turns are rendered verbatim - prefixing them
+        taught the model (via its own transcript) that replies start with
+        "[day mon dd h:mmam]", which it then occasionally echoed into a real
+        reply. bracketed meta on user-side turns is context, not style.
         """
         turns: List[ChatTurn] = []
-        for msg in history:
-            if msg.role == "user":
-                local_ts = to_user_timezone(msg.timestamp, user_timezone)
-                content = f"[{self._format_ts(local_ts)}] {msg.content}"
-            elif msg.role == "assistant":
-                content = msg.content
-            else:
+        pending_actions: List[Event] = []
+        for event in history:
+            if event.kind == "action":
+                pending_actions.append(event)
                 continue
-            turns.append(ChatTurn(role=msg.role, content=content))
+            if event.kind != "message":
+                continue  # 'note' is reserved, unrendered for now
+            if event.role == "user":
+                local_ts = to_user_timezone(event.created_at, user_timezone)
+                content = f"[{self._format_ts(local_ts)}] {event.content}"
+                if pending_actions:
+                    content = f"{self._action_block(pending_actions, user_timezone)}\n{content}"
+                    pending_actions = []
+                turns.append(ChatTurn(role="user", content=content))
+            else:
+                turns.append(ChatTurn(role="assistant", content=event.content))
 
         if turns:
             turns[-1].cache = True  # cache the history prefix
-        return turns
+        return turns, pending_actions
 
     @staticmethod
-    def _last_user_timestamp(messages: List[Message]) -> Optional[datetime]:
+    def _last_user_timestamp(events: List[Event]) -> Optional[datetime]:
         """timestamp (naive utc) of the most recent user message, or None."""
-        for msg in reversed(messages):
-            if msg.role == "user":
-                return msg.timestamp
+        for event in reversed(events):
+            if event.kind == "message" and event.role == "user":
+                return event.created_at
         return None
 
     @staticmethod
@@ -194,7 +220,7 @@ class PromptService:
 
     async def build_conversation_request(
         self,
-        conversation_history: List[Message],
+        conversation_history: List[Event],
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
@@ -202,22 +228,26 @@ class PromptService:
         ambient_context: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a reply. the current user message is the LAST
-        item in conversation_history; it becomes the volatile 'now' turn.
+        event in conversation_history; it becomes the volatile 'now' turn.
 
         `ambient_context` (e.g. the notion agenda digest) rides in that same
         volatile turn, after every cache breakpoint - it changes through the day
         but never touches the cached history/system prefix, because history is
-        replayed from stored message content, not from this rendered turn."""
+        replayed from stored event content, not from this rendered turn. any
+        trailing action events (tools run since the last user message) fold in
+        here too, then migrate into the stable history prefix next turn."""
         system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
 
         prior = conversation_history[:-1] if conversation_history else []
         current = conversation_history[-1] if conversation_history else None
 
-        messages = self._render_history(prior, user_timezone)
+        messages, leftover_actions = self._render_history(prior, user_timezone)
 
         if current is not None:
             now_line = self._now_line(user_timezone, self._last_user_timestamp(prior), user_name)
             content = f"[current time - {now_line}]\n"
+            if leftover_actions:
+                content += f"{self._action_block(leftover_actions, user_timezone)}\n"
             if ambient_context:
                 content += f"[{ambient_context}]\n"
             content += current.content
@@ -235,7 +265,7 @@ class PromptService:
 
     async def build_scheduled_request(
         self,
-        conversation_history: List[Message],
+        conversation_history: List[Event],
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
@@ -243,21 +273,25 @@ class PromptService:
         ambient_context: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a proactive check-in. all history is stable;
-        a synthetic 'now' turn carries the generation instructions (and the
-        ambient agenda context, when present)."""
+        a synthetic 'now' turn carries the generation instructions (plus any
+        trailing action events and the ambient agenda context)."""
         system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
 
-        messages = self._render_history(conversation_history, user_timezone)
+        messages, leftover_actions = self._render_history(conversation_history, user_timezone)
 
         now_line = self._now_line(
             user_timezone, self._last_user_timestamp(conversation_history), user_name
         )
         who = user_name or "them"
+        actions_block = (
+            f"{self._action_block(leftover_actions, user_timezone)}\n" if leftover_actions else ""
+        )
         ambient_block = f"[{ambient_context}]\n" if ambient_context else ""
         messages.append(ChatTurn(
             role="user",
             content=(
                 f"[current time - {now_line}]\n"
+                f"{actions_block}"
                 f"{ambient_block}"
                 f"this is a scheduled check-in (the user hasn't just messaged you). "
                 f"write a brief, warm, natural message to {who}:\n"

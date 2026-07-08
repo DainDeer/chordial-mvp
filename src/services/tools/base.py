@@ -30,6 +30,12 @@ class Tool:
     # already wrote in that same turn, instead of forcing a second api call that
     # replaces it. see AgentService.run.
     terminal: bool = False
+    # should successful calls be persisted as conversation events, so the model
+    # can see across turns what it already did? mutations should record (they're
+    # the cross-turn dedup fix); pure reads shouldn't (their results go stale
+    # immediately and would permanently occupy cache-stable history bytes).
+    # default True = over-record: the safe direction for new tools.
+    record_event: bool = True
 
 
 class ToolRegistry:
@@ -47,6 +53,12 @@ class ToolRegistry:
         treated as non-terminal (safer: they get the normal round-trip)."""
         tool = self._tools.get(name)
         return bool(tool and tool.terminal)
+
+    def should_record(self, name: str) -> bool:
+        """True if successful calls to this tool belong in the conversation
+        event log. unknown tools record (same safe-direction default)."""
+        tool = self._tools.get(name)
+        return tool.record_event if tool else True
 
     async def execute(self, call: ToolCall, user_uuid: str) -> ToolResult:
         """run a tool call. errors are returned to the model (is_error=True)

@@ -7,7 +7,7 @@ in a single user turn (splitting them degrades parallel tool use).
 """
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from src.providers.ai.base import BaseAIProvider
@@ -19,12 +19,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ExecutedAction:
+    """one tool call the loop actually ran, surfaced to the caller so it can
+    be recorded into the conversation event log. the loop captures ALL
+    executed calls (reads, errors, everything) - which ones get persisted is
+    the recorder's policy, not the loop's."""
+    name: str
+    input: dict
+    result_content: str
+    is_error: bool
+    terminal: bool
+
+
+@dataclass
 class AgentResult:
     text: Optional[str]
     refused: bool = False
     stop_reason: Optional[str] = None
     usage: Usage = None
     hit_iteration_cap: bool = False
+    actions: list[ExecutedAction] = field(default_factory=list)
 
 
 class AgentService:
@@ -57,6 +71,9 @@ class AgentService:
         # a turn can carry both a reply and tool calls; we keep the reply instead
         # of letting a later iteration's text replace it.
         collected_text: list[str] = []
+        # every tool call actually executed this turn, in order - returned to
+        # the caller so it can persist them as conversation events
+        executed: list[ExecutedAction] = []
 
         for i in range(self.max_iterations):
             response = await self.provider.create_message(request)
@@ -68,7 +85,7 @@ class AgentService:
                 self._save_trace(user_uuid, platform, turn_kind, i, False,
                                  tool_trace, 0, stop_reason, total)
                 return AgentResult(text=None, refused=True,
-                                   stop_reason=stop_reason, usage=total)
+                                   stop_reason=stop_reason, usage=total, actions=executed)
 
             if response.text:
                 collected_text.append(response.text)
@@ -77,7 +94,8 @@ class AgentService:
                 final_text = self._join(collected_text)
                 self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
                                  tool_trace, len(final_text), stop_reason, total)
-                return AgentResult(text=final_text, stop_reason=stop_reason, usage=total)
+                return AgentResult(text=final_text, stop_reason=stop_reason,
+                                   usage=total, actions=executed)
 
             # append the assistant turn (with its raw blocks) then run tools
             request.messages.append(response.assistant_turn)
@@ -93,6 +111,13 @@ class AgentService:
                     for c, r in zip(response.tool_calls, results)
                 ],
             })
+            executed.extend(
+                ExecutedAction(
+                    name=c.name, input=c.input, result_content=r.content,
+                    is_error=r.is_error, terminal=self.registry.is_terminal(c.name),
+                )
+                for c, r in zip(response.tool_calls, results)
+            )
 
             # terminal short-circuit: the model already wrote a reply this turn
             # and every tool it called is a fire-and-forget side effect (now run).
@@ -103,7 +128,8 @@ class AgentService:
                 final_text = self._join(collected_text)
                 self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
                                  tool_trace, len(final_text), "terminal_tools", total)
-                return AgentResult(text=final_text, stop_reason="terminal_tools", usage=total)
+                return AgentResult(text=final_text, stop_reason="terminal_tools",
+                                   usage=total, actions=executed)
 
         # iteration cap reached: force a final answer with tools disabled
         logger.warning("agent hit iteration cap (%s) for user %s", self.max_iterations, user_uuid)
@@ -124,6 +150,7 @@ class AgentService:
             stop_reason=stop_reason,
             usage=total,
             hit_iteration_cap=True,
+            actions=executed,
         )
 
     @staticmethod

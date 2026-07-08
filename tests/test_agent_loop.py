@@ -174,3 +174,47 @@ def test_plain_reply_no_tools_unchanged():
 
     assert result.text == "just a normal reply"
     assert provider.calls == 1
+    assert result.actions == []  # nothing executed, nothing reported
+
+
+def test_executed_actions_are_returned_in_order():
+    """the loop reports every executed call (reads, terminals, everything) with
+    its result content - the caller decides what to persist."""
+    reg, _ = _registry()
+    provider = ScriptedProvider([
+        _resp("one sec",
+              tool_calls=[
+                  ToolCall(id="t1", name="save_memory", input={"instruction": "x"}),
+                  ToolCall(id="t2", name="search_memories", input={"keywords": ["x"]}),
+              ],
+              stop_reason="tool_use"),
+        _resp("all set"),
+    ])
+    agent = _agent(provider, reg)
+
+    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+
+    assert [(a.name, a.input) for a in result.actions] == [
+        ("save_memory", {"instruction": "x"}),
+        ("search_memories", {"keywords": ["x"]}),
+    ]
+    assert result.actions[0].result_content == "saved"
+    assert result.actions[0].terminal is True
+    assert result.actions[1].result_content == "found: user likes tea"
+    assert result.actions[1].terminal is False
+    assert all(a.is_error is False for a in result.actions)
+
+
+def test_terminal_short_circuit_still_reports_actions():
+    reg, _ = _registry()
+    provider = ScriptedProvider([
+        _resp("saved it!",
+              tool_calls=[ToolCall(id="t1", name="save_memory", input={"instruction": "y"})],
+              stop_reason="tool_use"),
+    ])
+    agent = _agent(provider, reg)
+
+    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+
+    assert result.stop_reason == "terminal_tools"
+    assert [(a.name, a.result_content) for a in result.actions] == [("save_memory", "saved")]

@@ -15,6 +15,7 @@ kept for humans and elapsed-time math).
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
+import json
 import logging
 
 from src.database.database import get_db
@@ -22,6 +23,28 @@ from src.database.models import ConversationEvent
 from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+# caps on the frozen action line, so one chatty tool call can't permanently
+# occupy a wall of cache-stable history bytes
+_ACTION_INPUT_CAP = 300
+_ACTION_RESULT_CAP = 300
+
+
+def _clip(text: str, cap: int) -> str:
+    return text if len(text) <= cap else text[:cap] + "…"
+
+
+def format_action_line(name: str, tool_input: dict, result_content: str) -> str:
+    """the one-line action rendering, frozen into the event's content at write
+    time. deterministic serialization (sorted keys) + write-once storage means
+    the bytes replayed into prompts can never drift - the renderer emits this
+    string verbatim, never re-serializing from metadata."""
+    try:
+        input_json = json.dumps(tool_input or {}, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        input_json = str(tool_input)
+    result = " ".join((result_content or "").split())  # collapse newlines/runs
+    return f"{name} {_clip(input_json, _ACTION_INPUT_CAP)} -> {_clip(result, _ACTION_RESULT_CAP)}"
 
 
 @dataclass
@@ -76,6 +99,23 @@ class EventLog:
         return self._append(
             author_type=author_type, author=author, kind="message",
             content=content, message_type=message_type, metadata={},
+        )
+
+    def append_action(
+        self,
+        author: str,
+        name: str,
+        tool_input: dict,
+        result_content: str,
+    ) -> Event:
+        """record one executed tool call as an action event. the promptable
+        one-liner is frozen into `content` here, at write time; metadata keeps
+        the raw pieces for debugging."""
+        return self._append(
+            author_type="agent", author=author, kind="action",
+            content=format_action_line(name, tool_input, result_content),
+            message_type=None,
+            metadata={"tool": name, "input": tool_input, "result": result_content[:1000]},
         )
 
     def _append(self, *, author_type, author, kind, content, message_type, metadata) -> Event:
