@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 import logging
@@ -8,12 +8,33 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+_IS_SQLITE = "sqlite" in Config.DATABASE_URL
+
 # create engine
 engine = create_engine(
     Config.DATABASE_URL,
     echo=False,  # set to true for sql query logging
-    connect_args={"check_same_thread": False} if "sqlite" in Config.DATABASE_URL else {}
+    connect_args={"check_same_thread": False} if _IS_SQLITE else {}
 )
+
+if _IS_SQLITE:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, connection_record):
+        """WAL is far more resilient than the default rollback-journal mode to
+        the kinds of connection hiccups that showed up as spurious "attempt to
+        write a readonly database" errors after a laptop slept overnight with
+        the app still running: rollback-journal mode has to create and delete
+        a `-journal` file alongside the db on every single write, while WAL
+        just appends to a separate log file. journal_mode is persisted in the
+        db file itself, so this "upgrades" any existing db the first time a
+        connection is made - no migration needed. synchronous=NORMAL is
+        sqlite's own recommended pairing for WAL (still crash-safe; only an
+        OS-level power-loss mid-write could lose the last commit, an
+        acceptable tradeoff for a local file)."""
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 # create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

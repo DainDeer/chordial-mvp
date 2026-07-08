@@ -7,6 +7,8 @@ __pycache__/
 .cache/
 .poetry/
 chordial.db
+*.db-wal
+*.db-shm
 chordial_dev.db
 *.db-journal
 prompt_logs/
