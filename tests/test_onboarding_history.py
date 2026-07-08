@@ -1,13 +1,13 @@
 """regression test: onboarding must persist as real conversation history.
 
 before this fix, ChatService.process_message returned onboarding replies (the
-welcome message, the name/timezone/memory prompts) without ever calling
-conversation.add_message. conversation_history stayed empty through onboarding,
-so the scheduler's "no messages yet -> send immediately" rule couldn't tell a
-brand-new user apart from someone who'd just finished onboarding - it fired a
-scheduled check-in within minutes of onboarding completing, which felt jarring
-(worse once the notion agenda digest made that first unprompted message sound
-uncannily well-informed).
+welcome message, the name/timezone/memory prompts) without ever persisting
+them. the event log stayed empty through onboarding, so the scheduler's "no
+messages yet -> send immediately" rule couldn't tell a brand-new user apart
+from someone who'd just finished onboarding - it fired a scheduled check-in
+within minutes of onboarding completing, which felt jarring (worse once the
+notion agenda digest made that first unprompted message sound uncannily
+well-informed).
 
 isolated temp db, no network/ai calls needed - onboarding's early return in
 process_message never reaches the agent_service.
@@ -24,8 +24,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.database.database as db_mod  # noqa: E402
-from src.database.models import Base, ConversationHistory  # noqa: E402
-from src.managers.conversation_manager import ConversationManager  # noqa: E402
+from src.database.models import Base, ConversationEvent  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
 from src.services.chat_service import ChatService  # noqa: E402
 from src.services.scheduler_service import SchedulerService  # noqa: E402
@@ -58,7 +57,6 @@ def _chat_service():
     user_manager = UserManager()
     return ChatService(
         agent_service=None,  # onboarding never reaches the agent service
-        conversation_manager=ConversationManager(user_manager=user_manager),
         user_manager=user_manager,
     ), user_manager
 
@@ -78,10 +76,12 @@ def test_onboarding_exchange_is_persisted(db):
     assert all(replies)  # every step returned a reply
 
     with db() as s:
-        rows = s.query(ConversationHistory).order_by(ConversationHistory.created_at).all()
+        rows = s.query(ConversationEvent).order_by(ConversationEvent.id).all()
 
-    # 4 user turns + 4 assistant turns
-    assert [r.role for r in rows] == ["user", "assistant"] * 4
+    # 4 user turns + 4 assistant turns, all message events, author-attributed
+    assert [r.author_type for r in rows] == ["user", "agent"] * 4
+    assert [r.author for r in rows] == ["user", "chordial"] * 4
+    assert all(r.kind == "message" for r in rows)
     assert rows[0].content == "hello chordial"
     assert rows[-2].content == "i like tea"
     assert all(r.message_type == "conversation" for r in rows)
@@ -95,7 +95,7 @@ def test_scheduler_does_not_fire_immediately_after_onboarding(db):
 
     scheduler = SchedulerService(chat_service=chat, user_manager=user_manager)
     with db() as s:
-        user_uuid = s.query(ConversationHistory).first().user_uuid
+        user_uuid = s.query(ConversationEvent).first().user_uuid
 
     should_send = run(scheduler.should_send_scheduled_message(user_uuid, "discord"))
     assert should_send is False
@@ -109,5 +109,5 @@ def test_partial_onboarding_still_persists_each_turn(db):
     run(chat.process_message(_msg("Dain")))
 
     with db() as s:
-        rows = s.query(ConversationHistory).all()
+        rows = s.query(ConversationEvent).all()
     assert len(rows) == 4  # 2 user + 2 assistant turns so far

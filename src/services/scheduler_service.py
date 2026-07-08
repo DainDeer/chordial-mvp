@@ -4,9 +4,8 @@ import asyncio
 import logging
 
 from src.managers.user_manager import UserManager
+from src.managers.event_log import EventLog
 from src.services.chat_service import ChatService
-from src.database.database import get_db
-from src.database.models import ConversationHistory, PlatformIdentity
 from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
 
@@ -53,16 +52,14 @@ class SchedulerService:
         return self.user_contexts[key]
     
     async def _check_last_message(self, user_uuid: str, platform: str) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
-        """check who sent the last message, when, and what type"""
-        with get_db() as db:
-            last_message = db.query(ConversationHistory).filter(
-                ConversationHistory.user_uuid == user_uuid,
-                ConversationHistory.platform == platform
-            ).order_by(ConversationHistory.created_at.desc()).first()
-            
-            if last_message:
-                return last_message.role, last_message.created_at, last_message.message_type
-            return None, None, None
+        """check who sent the last message, when, and what type. reads the
+        event log's last MESSAGE event - tool-action events are invisible here
+        by construction, so a trailing action can never masquerade as 'the
+        assistant just replied'."""
+        event = EventLog(user_uuid, platform).last_message()
+        if event:
+            return event.role, event.created_at, event.message_type
+        return None, None, None
     
     def _is_quiet_hours(self, user_timezone: str) -> bool:
         """check if it's currently quiet hours (default: after 9pm or before 8am) in the user's local time"""
