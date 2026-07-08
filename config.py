@@ -45,6 +45,18 @@ class Config:
     def notion_enabled(cls) -> bool:
         return bool(cls.NOTION_API_KEY)
 
+    # proactive notion awareness (see services/notion/snapshot_service.py). the
+    # scheduler keeps a cached "agenda snapshot" fresh in the background and the
+    # chat path injects it as ambient context. all of this is effective only
+    # when notion_enabled() - AGENDA_ENABLED is the extra on/off switch.
+    AGENDA_ENABLED = os.getenv("AGENDA_ENABLED", "true").lower() == "true"
+    # how long a snapshot is considered fresh before a background refresh
+    AGENDA_TTL_MINUTES = int(os.getenv("AGENDA_TTL_MINUTES", "30"))
+
+    @classmethod
+    def agenda_enabled(cls) -> bool:
+        return cls.notion_enabled() and cls.AGENDA_ENABLED
+
     # agent loop
     MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
     # how many recent messages of history to send as context
