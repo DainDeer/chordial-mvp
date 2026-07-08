@@ -25,11 +25,15 @@ class SchedulerService:
     """handles intelligent scheduling of messages across all platforms"""
     
     def __init__(self, chat_service: ChatService, user_manager: UserManager,
-                 memory_curator=None):
+                 memory_curator=None, agenda_service=None):
         self.chat_service = chat_service
         self.user_manager = user_manager
         # optional: runs a memory-cleanup pass each cycle (debounced internally)
         self.memory_curator = memory_curator
+        # optional: keeps each user's notion agenda snapshot fresh (the chat
+        # path only ever reads it, so this background refresh is where notion
+        # actually gets queried)
+        self.agenda_service = agenda_service
         self.user_contexts: Dict[str, ScheduledMessageContext] = {}
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
         self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
@@ -139,6 +143,8 @@ class SchedulerService:
                     user_mappings = await self.user_manager.get_users_with_scheduled_messages(platform)
 
                     for user_uuid, platform_user_id in user_mappings:
+                        # keep the agenda snapshot warm before we (maybe) message
+                        await self._refresh_agenda(user_uuid)
                         message = await self.send_scheduled_message(user_uuid, platform, platform_user_id)
                         if message:
                             # use the callback to actually send the message
@@ -151,6 +157,16 @@ class SchedulerService:
                 logger.error(f"error in scheduling loop: {e}")
 
             await asyncio.sleep(check_interval)
+
+    async def _refresh_agenda(self, user_uuid: str) -> None:
+        """refresh this user's notion agenda snapshot if it's stale/expired.
+        guarded - notion being slow or down must never stall message delivery."""
+        if not self.agenda_service:
+            return
+        try:
+            await self.agenda_service.ensure_fresh(user_uuid)
+        except Exception as e:
+            logger.error(f"agenda refresh failed for user {user_uuid}: {e}")
 
     async def _run_curation_pass(self) -> None:
         """let the curator tidy any user whose new memories have settled. kept

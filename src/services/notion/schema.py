@@ -210,6 +210,23 @@ def cycle_filter(*, status: Optional[str] = None) -> Optional[dict]:
     )
 
 
+def agenda_task_filter(today_iso: str) -> dict:
+    """the "today picture" query: everything in progress, plus anything still
+    to-do that was scheduled on or before today (i.e. due today or overdue).
+    the snapshot service partitions the results by scheduled date afterwards."""
+    return {
+        "or": [
+            {"property": "Status", "status": {"equals": "In progress"}},
+            {
+                "and": [
+                    {"property": "Status", "status": {"equals": "To do"}},
+                    {"property": "Scheduled", "date": {"on_or_before": today_iso}},
+                ]
+            },
+        ]
+    }
+
+
 def title_equals_filter(title_prop: str, value: str) -> dict:
     return {"property": title_prop, "title": {"equals": value}}
 
@@ -322,3 +339,54 @@ def format_cycle(page: dict) -> str:
 
 def title_of(page: dict, title_prop: str) -> str:
     return _read_plain(page.get("properties", {}).get(title_prop))
+
+
+# --- structured rows (for the agenda snapshot, not the model) ---------------
+# these return small json-safe dicts rather than promptable strings, so the
+# snapshot service can partition/diff by fields (status, scheduled date, id).
+
+
+def scheduled_start(page: dict) -> str:
+    """the Scheduled start date as YYYY-MM-DD (drops any time component), or ''."""
+    prop = page.get("properties", {}).get("Scheduled")
+    if not prop or not prop.get("date"):
+        return ""
+    return (prop["date"].get("start") or "")[:10]
+
+
+def task_row(page: dict, name_map: Optional[dict[str, str]] = None) -> dict:
+    """a task page -> flat dict. `name_map` (page_id -> title) resolves the
+    Project/Sprint relations to readable names when provided."""
+    p = page.get("properties", {})
+    name_map = name_map or {}
+    projects = [name_map.get(i, i[:8]) for i in _read_relation_ids(p.get("Project"))]
+    sprints = [name_map.get(i, i[:8]) for i in _read_relation_ids(p.get("Sprint"))]
+    return {
+        "id": page_id(page),
+        "title": _read_plain(p.get("Task")) or "(untitled)",
+        "status": _read_select(p.get("Status")),
+        "priority": _read_select(p.get("Priority")),
+        "scheduled": scheduled_start(page),
+        "project": projects[0] if projects else "",
+        "sprint": sprints[0] if sprints else "",
+        "pom": _read_number(p.get("pom estimate")),
+    }
+
+
+def project_row(page: dict) -> dict:
+    p = page.get("properties", {})
+    return {
+        "id": page_id(page),
+        "title": _read_plain(p.get("Project")) or "(untitled)",
+        "areas": _read_multi(p.get("Area")),
+    }
+
+
+def cycle_row(page: dict) -> dict:
+    p = page.get("properties", {})
+    return {
+        "id": page_id(page),
+        "title": _read_plain(p.get("cycle")) or "(untitled)",
+        "dates": _read_date(p.get("dates")),
+        "goal": _read_plain(p.get("cycle goal")),
+    }

@@ -18,6 +18,7 @@ from typing import Optional
 from src.providers.ai.types import ToolDef
 from src.services.notion import get_client
 from src.services.notion import schema as S
+from src.services.notion.snapshot_service import invalidate_all
 from config import Config
 from .base import Tool
 
@@ -148,6 +149,7 @@ async def _create_task(tool_input: dict, user_uuid: str) -> str:
         pom_estimate=tool_input.get("pom_estimate"),
     )
     page = await get_client().create_page(S.tasks_db(), props)
+    invalidate_all()  # the agenda picture just changed
     return f"created task \"{title}\" (id={S.page_id(page)})."
 
 
@@ -182,6 +184,7 @@ async def _update_task(tool_input: dict, user_uuid: str) -> str:
     if not props:
         return "nothing to update - pass at least one field to change."
     await get_client().update_page(page_id, props)
+    invalidate_all()  # the agenda picture just changed
     return f"updated task (id={page_id}): {', '.join(props.keys())}."
 
 
@@ -212,6 +215,7 @@ async def _create_project(tool_input: dict, user_uuid: str) -> str:
         description=tool_input.get("description"),
     )
     page = await get_client().create_page(S.projects_db(), props)
+    invalidate_all()  # the agenda picture just changed
     return f"created project \"{title}\" (id={S.page_id(page)})."
 
 
@@ -231,6 +235,7 @@ async def _update_project(tool_input: dict, user_uuid: str) -> str:
     if not props:
         return "nothing to update - pass at least one field to change."
     await get_client().update_page(page_id, props)
+    invalidate_all()  # the agenda picture just changed
     return f"updated project (id={page_id}): {', '.join(props.keys())}."
 
 
@@ -264,6 +269,7 @@ async def _create_cycle(tool_input: dict, user_uuid: str) -> str:
         description=tool_input.get("description"),
     )
     page = await get_client().create_page(S.cycles_db(), props)
+    invalidate_all()  # the agenda picture just changed
     return f"created cycle \"{title}\" (id={S.page_id(page)})."
 
 
@@ -285,6 +291,7 @@ async def _update_cycle(tool_input: dict, user_uuid: str) -> str:
     if not props:
         return "nothing to update - pass at least one field to change."
     await get_client().update_page(page_id, props)
+    invalidate_all()  # the agenda picture just changed
     return f"updated cycle (id={page_id}): {', '.join(props.keys())}."
 
 
@@ -296,9 +303,10 @@ LIST_TASKS = Tool(
         description=(
             "List tasks from the dainframe (the user's Notion). Filter by any "
             "combination of status, priority, project name, sprint/cycle name, "
-            "and scheduled date range. Use this to answer 'what's on my plate', "
-            "'what's due this week', 'what's in progress', etc. Results are "
-            "sorted by scheduled date and each line ends with the task's id."
+            "and scheduled date range. You already see a compact agenda summary "
+            "with each message; use this to look beyond it - a specific filter, "
+            "'what's due this week', the full backlog, etc. Results are sorted "
+            "by scheduled date and each line ends with the task's id."
         ),
         input_schema={
             "type": "object",

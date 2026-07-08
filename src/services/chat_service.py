@@ -28,6 +28,8 @@ class ChatService:
         user_manager=None,
         tool_registry=None,
         max_history_messages: int = None,
+        agenda_service=None,
+        daily_pass_service=None,
     ):
         self.agent_service = agent_service
         self.conversation_manager = conversation_manager or ConversationManager()
@@ -36,9 +38,31 @@ class ChatService:
         self.prompt_service = PromptService()
         self.tool_registry = tool_registry
         self.max_history_messages = max_history_messages or Config.MAX_HISTORY_MESSAGES
+        # optional proactive-notion services: agenda snapshot (ambient digest)
+        # and daily passes (morning context note). both read-only here, and both
+        # strictly db reads - the chat path never waits on notion.
+        self.agenda_service = agenda_service
+        self.daily_pass_service = daily_pass_service
 
     def _tool_defs(self):
         return self.tool_registry.definitions() if self.tool_registry else []
+
+    def _compose_ambient(self, user_uuid: str, user_timezone: str) -> Optional[str]:
+        """assemble the ambient context injected into the volatile 'now' turn:
+        the notion agenda digest (+ the morning note once daily passes land).
+        pure db reads, fully guarded - any failure degrades to no ambient
+        context, i.e. exactly today's prompt bytes."""
+        if not self.agenda_service:
+            return None
+        try:
+            parts = []
+            digest = self.agenda_service.get_digest(user_uuid)
+            if digest:
+                parts.append(digest)
+            return "\n\n".join(parts) if parts else None
+        except Exception:
+            logger.exception("failed composing ambient context; continuing without")
+            return None
 
     async def _prepare_for_interaction(
         self,
@@ -133,6 +157,7 @@ class ChatService:
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
                 tools=self._tool_defs(),
+                ambient_context=self._compose_ambient(user_uuid, user_timezone),
             )
 
             result = await self.agent_service.run(
@@ -187,6 +212,7 @@ class ChatService:
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
                 tools=self._tool_defs(),
+                ambient_context=self._compose_ambient(user_uuid, user_timezone),
             )
 
             result = await self.agent_service.run(
