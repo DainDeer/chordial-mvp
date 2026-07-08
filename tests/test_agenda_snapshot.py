@@ -279,8 +279,11 @@ def test_write_tool_invalidates_snapshot(db, monkeypatch):
     fake.seed(S.projects_db(), [])
     run(_service(fake).refresh("u1"))
 
-    # a minimal fake client for the *tool* (create_page), separate from ours
+    # a minimal fake client for the *tool*, separate from ours. create_task
+    # also runs a duplicate-check query first, so serve that too (no dupes).
     class ToolClient:
+        async def query_all(self, db_id, *, filter=None, sorts=None, limit=25):
+            return []
         async def create_page(self, db_id, properties, children=None):
             return {"id": "new", "properties": properties}
     monkeypatch.setattr(NT, "get_client", lambda: ToolClient())
