@@ -56,7 +56,7 @@ def _msg(content: str) -> UnifiedMessage:
 def _chat_service():
     user_manager = UserManager()
     return ChatService(
-        agent_service=None,  # onboarding never reaches the agent service
+        orchestrator=None,  # onboarding never reaches the orchestrator
         user_manager=user_manager,
     ), user_manager
 
@@ -93,7 +93,7 @@ def test_scheduler_does_not_fire_immediately_after_onboarding(db):
     chat, user_manager = _chat_service()
     _drive_onboarding(chat)
 
-    scheduler = SchedulerService(chat_service=chat, user_manager=user_manager)
+    scheduler = SchedulerService(user_manager=user_manager)
     with db() as s:
         user_uuid = s.query(ConversationEvent).first().user_uuid
 

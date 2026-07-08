@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from src.providers.ai.types import ToolCall, ToolDef, ToolResult
 
@@ -47,6 +47,17 @@ class ToolRegistry:
 
     def definitions(self) -> list[ToolDef]:
         return [t.definition for t in self._tools.values()]
+
+    def view(self, names: "Iterable[str]") -> "ToolRegistry":
+        """a filtered registry sharing the same Tool objects - the surface an
+        agent is allowed to reach for. unknown names raise immediately, so a
+        typo in an agent's tool list fails at wiring time, not mid-chat."""
+        filtered = ToolRegistry()
+        for name in names:
+            if name not in self._tools:
+                raise KeyError(f"unknown tool '{name}' in registry view")
+            filtered._tools[name] = self._tools[name]
+        return filtered
 
     def is_terminal(self, name: str) -> bool:
         """True if this tool is a fire-and-forget side effect. unknown tools are
