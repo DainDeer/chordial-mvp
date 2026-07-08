@@ -186,7 +186,7 @@ class TestSchedulerQuietHoursPerUser:
             return user_uuid
 
     def test_same_utc_instant_is_quiet_for_one_user_and_not_another(self, monkeypatch):
-        scheduler = SchedulerService(chat_service=None, user_manager=UserManager())
+        scheduler = SchedulerService(user_manager=UserManager())
 
         # 6am utc: quiet in new york (1am, within default 21-8 window)
         # but not quiet in tokyo (3pm)
@@ -206,7 +206,7 @@ class TestSchedulerQuietHoursPerUser:
         ny_user_uuid = self._make_user("America/New_York", last_message_at)
         tokyo_user_uuid = self._make_user("Asia/Tokyo", last_message_at)
 
-        scheduler = SchedulerService(chat_service=None, user_manager=UserManager())
+        scheduler = SchedulerService(user_manager=UserManager())
         scheduler.default_interval_minutes = 0  # no interval gating for this test
 
         monkeypatch.setattr(

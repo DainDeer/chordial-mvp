@@ -5,7 +5,7 @@ import logging
 
 from src.managers.user_manager import UserManager
 from src.managers.event_log import EventLog
-from src.services.chat_service import ChatService
+from src.services.orchestrator import Stimulus
 from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
 
@@ -23,12 +23,12 @@ class ScheduledMessageContext:
 class SchedulerService:
     """handles intelligent scheduling of messages across all platforms"""
     
-    def __init__(self, chat_service: ChatService, user_manager: UserManager,
-                 memory_curator=None, agenda_service=None):
-        self.chat_service = chat_service
-        self.user_manager = user_manager
-        # optional: runs a memory-cleanup pass each cycle (debounced internally)
-        self.memory_curator = memory_curator
+    def __init__(self, orchestrator=None, user_manager: UserManager = None,
+                 agenda_service=None):
+        # the orchestrator generates scheduled check-ins and runs the curation
+        # pass; None (e.g. no ai provider configured) disables both quietly
+        self.orchestrator = orchestrator
+        self.user_manager = user_manager or UserManager()
         # optional: keeps each user's notion agenda snapshot fresh (the chat
         # path only ever reads it, so this background refresh is where notion
         # actually gets queried)
@@ -71,7 +71,10 @@ class SchedulerService:
         context = self._get_or_create_context(user_uuid, platform)
         now = utc_now()
 
-        # check if user has completed onboarding
+        # check if user has completed onboarding. LOAD-BEARING for the
+        # orchestrator path: send_scheduled_message goes straight to the
+        # orchestrator (no onboarding pre-check of its own), so this gate is
+        # the only thing keeping scheduled sends away from mid-onboarding users.
         needs_onboarding = await self.user_manager.needs_onboarding(user_uuid)
         if needs_onboarding:
             logger.debug(f"user {user_uuid} needs onboarding, skipping scheduled message")
@@ -116,17 +119,21 @@ class SchedulerService:
     
     async def send_scheduled_message(self, user_uuid: str, platform: str, platform_user_id: str) -> Optional[str]:
         """send a scheduled message if appropriate"""
+        if self.orchestrator is None:
+            return None
         if not await self.should_send_scheduled_message(user_uuid, platform):
             return None
-        
-        # generate the message using platform_user_id
-        message = await self.chat_service.generate_scheduled_message(platform_user_id, platform)
-        
+
+        deliverable = await self.orchestrator.handle(Stimulus(
+            kind="scheduled_tick", user_uuid=user_uuid, platform=platform,
+        ))
+        message = deliverable.text if not (deliverable.refused or deliverable.errored) else None
+
         if message:
             context = self._get_or_create_context(user_uuid, platform)
             context.last_scheduled_at = utc_now()
             logger.info(f"generated scheduled message for user {user_uuid} (platform: {platform_user_id}): {message[:50]}...")
-        
+
         return message
     
     async def run_scheduling_loop(self, platforms: List[str], message_callback):
@@ -175,12 +182,12 @@ class SchedulerService:
     async def _run_curation_pass(self) -> None:
         """let the curator tidy any user whose new memories have settled. kept
         defensive - a curation failure must never stall message scheduling."""
-        if not self.memory_curator:
+        if self.orchestrator is None:
             return
         try:
-            user_uuids = await self.memory_curator.find_users_needing_curation()
+            user_uuids = await self.orchestrator.curation_candidates()
             for user_uuid in user_uuids:
-                await self.memory_curator.curate_user(user_uuid)
+                await self.orchestrator.handle(Stimulus(kind="curation_due", user_uuid=user_uuid))
         except Exception as e:
             logger.error(f"error in memory curation pass: {e}")
     

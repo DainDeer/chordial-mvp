@@ -29,11 +29,9 @@ import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.managers.event_log import Event, EventLog, format_action_line  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
-from src.services.chat_service import ChatService  # noqa: E402
-from src.services.agent_service import ExecutedAction, AgentResult  # noqa: E402
+from src.services.agent_service import ExecutedAction  # noqa: E402
 from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
-from src.providers.ai.types import ToolDef, Usage  # noqa: E402
-from src.models.unified_message import UnifiedMessage  # noqa: E402
+from src.providers.ai.types import ToolDef  # noqa: E402
 
 
 def run(coro):
@@ -249,39 +247,31 @@ def _registry():
     return reg
 
 
-class FakeAgentService:
-    """returns a canned AgentResult; lets us drive ChatService's recording."""
-    def __init__(self, result):
-        self._result = result
+class FakeAgent:
+    """returns a canned AgentOutcome; lets us drive the orchestrator's recording."""
+    name = "chordial"
 
-    async def run(self, request, **kwargs):
-        return self._result
+    def __init__(self, outcome):
+        self._outcome = outcome
+
+    async def act(self, briefing):
+        return self._outcome
 
 
-def _chat(result, db):
+def _orchestrator(outcome):
     from src.managers.user_manager import UserManager
-    user_manager = UserManager()
-    chat = ChatService(
-        agent_service=FakeAgentService(result),
-        user_manager=user_manager,
+    from src.services.orchestrator import Orchestrator
+    return Orchestrator(
+        agents={"chordial": FakeAgent(outcome)},
+        user_manager=UserManager(),
         tool_registry=_registry(),
     )
-    return chat
 
 
-def _onboarded_message(db, content="hey"):
-    """a message from a user who's already onboarded (name set)."""
-    with db() as s:
-        user = s.query(User).filter_by(uuid="u1").one()
-        user.preferred_name = "dain"
-        s.commit()
-    from src.database.models import PlatformIdentity
-    with db() as s:
-        if not s.query(PlatformIdentity).filter_by(platform_user_id="123").first():
-            s.add(PlatformIdentity(user_uuid="u1", platform="discord", platform_user_id="123"))
-            s.commit()
-    return UnifiedMessage(content=content, platform_user_id="123", platform="discord",
-                          platform_message_id="m1", metadata={"username": "dain"})
+def _stimulus(content="hey"):
+    from src.services.orchestrator import Stimulus
+    return Stimulus(kind="user_message", user_uuid="u1", platform="discord",
+                    content=content, user_name="dain", user_timezone="UTC")
 
 
 def _events(db):
@@ -290,16 +280,16 @@ def _events(db):
                 s.query(ConversationEvent).order_by(ConversationEvent.id).all()]
 
 
-def _result(text="done!", actions=()):
-    return AgentResult(text=text, usage=Usage(), actions=list(actions))
+def _outcome(text="done!", actions=(), refused=False):
+    from src.agents.base import AgentOutcome
+    return AgentOutcome(text=text, actions=list(actions), refused=refused)
 
 
 def test_successful_mutation_is_recorded_before_reply(db):
-    result = _result(actions=[
+    orch = _orchestrator(_outcome(actions=[
         ExecutedAction("create_task", {"title": "x"}, 'created task "x" (id=1)', False, False),
-    ])
-    chat = _chat(result, db)
-    run(chat.process_message(_onboarded_message(db)))
+    ]))
+    run(orch.handle(_stimulus()))
 
     events = _events(db)
     kinds = [k for k, _, _ in events]
@@ -309,26 +299,23 @@ def test_successful_mutation_is_recorded_before_reply(db):
 
 
 def test_reads_and_errors_are_not_recorded(db):
-    result = _result(actions=[
+    orch = _orchestrator(_outcome(actions=[
         ExecutedAction("list_tasks", {}, "3 tasks", False, False),          # read: skip
         ExecutedAction("create_task", {"title": "y"}, "boom", True, False), # error: skip
-    ])
-    chat = _chat(result, db)
-    run(chat.process_message(_onboarded_message(db)))
+    ]))
+    run(orch.handle(_stimulus()))
 
     kinds = [k for k, _, _ in _events(db)]
     assert kinds == ["message", "message"]  # no action events at all
 
 
 def test_refused_turn_persists_nothing_after_user_message(db):
-    result = AgentResult(text=None, refused=True, usage=Usage(), actions=[
+    orch = _orchestrator(_outcome(text=None, refused=True, actions=[
         ExecutedAction("create_task", {"title": "z"}, "created", False, False),
-    ])
-    chat = _chat(result, db)
-    reply = run(chat.process_message(_onboarded_message(db)))
+    ]))
+    deliverable = run(orch.handle(_stimulus()))
 
-    from src.services.chat_service import REFUSAL_REPLY
-    assert reply == REFUSAL_REPLY
+    assert deliverable.refused is True
     kinds = [k for k, _, _ in _events(db)]
     assert kinds == ["message"]  # only the inbound user message
 
@@ -343,6 +330,6 @@ def test_scheduler_ignores_trailing_action_event(db):
     log.append_message("agent", "chordial", "checking in~", message_type="scheduled")
     log.append_action("chordial", "create_task", {"title": "x"}, "created")
 
-    scheduler = SchedulerService(chat_service=None, user_manager=UserManager())
+    scheduler = SchedulerService(user_manager=UserManager())
     role, _, mtype = run(scheduler._check_last_message("u1", "discord"))
     assert (role, mtype) == ("assistant", "scheduled")
