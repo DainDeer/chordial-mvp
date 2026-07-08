@@ -107,16 +107,25 @@ class ChatService:
                 content=unified_message.content
             )
 
-            if not should_continue:
-                if user_name:
-                    logger.info(f"user {user_name} successfully onboarded")
-                return response
-
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
                 unified_message.platform,
                 user_timezone=user_timezone
             )
+
+            if not should_continue:
+                if user_name:
+                    logger.info(f"user {user_name} successfully onboarded")
+                # persist the onboarding exchange like any other turn. without
+                # this, conversation_history stays empty through onboarding, so
+                # the scheduler's "no messages yet" rule can't tell "brand new
+                # user" apart from "just finished onboarding" - and fires a
+                # scheduled check-in within minutes of onboarding completing.
+                if unified_message.content:
+                    conversation.add_message("user", unified_message.content)
+                if response:
+                    conversation.add_message("assistant", response)
+                return response
 
             # record the incoming message first, so it's the last item in history
             conversation.add_message("user", unified_message.content)
