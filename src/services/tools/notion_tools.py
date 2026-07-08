@@ -326,6 +326,7 @@ LIST_TASKS = Tool(
         },
     ),
     handler=_list_tasks,
+    record_event=False,  # pure read: results go stale, nothing to dedup
 )
 
 CREATE_TASK = Tool(
@@ -396,6 +397,7 @@ LIST_PROJECTS = Tool(
         },
     ),
     handler=_list_projects,
+    record_event=False,  # pure read: results go stale, nothing to dedup
 )
 
 CREATE_PROJECT = Tool(
@@ -454,6 +456,7 @@ LIST_CYCLES = Tool(
         },
     ),
     handler=_list_cycles,
+    record_event=False,  # pure read: results go stale, nothing to dedup
 )
 
 CREATE_CYCLE = Tool(

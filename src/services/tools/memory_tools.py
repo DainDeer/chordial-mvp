@@ -125,4 +125,5 @@ SEARCH_MEMORIES = Tool(
         },
     ),
     handler=_search_memories,
+    record_event=False,  # pure read: results go stale, nothing to dedup
 )
