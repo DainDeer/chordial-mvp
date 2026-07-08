@@ -20,12 +20,16 @@ class Message:
         }
     
     @classmethod
-    def from_db(cls, db_msg) -> 'Message':
-        """create message from database model"""
+    def from_event(cls, event) -> 'Message':
+        """bridge an event-log Event into the prompt-side Message shape.
+
+        a temporary compatibility seam: PromptService still speaks Message;
+        once it consumes Events directly (action-aware rendering), this module
+        retires."""
         return cls(
-            role=db_msg.role,
-            content=db_msg.content,
-            timestamp=db_msg.created_at,
-            message_type=db_msg.message_type or "conversation",
-            db_id=db_msg.id
+            role=event.role,
+            content=event.content,
+            timestamp=event.created_at,
+            message_type=event.message_type or "conversation",
+            db_id=event.db_id
         )

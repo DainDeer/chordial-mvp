@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -46,7 +46,6 @@ class User(Base):
 
     # relationships
     platform_identities = relationship("PlatformIdentity", back_populates="user")
-    conversations = relationship("ConversationHistory", back_populates="user")
     memories = relationship("Memory", back_populates="user")
 
 
@@ -76,36 +75,50 @@ class PlatformIdentity(Base):
     )
 
 
-class ConversationHistory(Base):
-    """stores conversation messages for persistence"""
-    __tablename__ = 'conversation_history'
-    
+class ConversationEvent(Base):
+    """the conversation event log: everything that happened in a user's
+    channel, in order - messages, agent tool actions, (future) system notes.
+
+    replaces the old conversation_history table. single writer + sqlite
+    autoincrement means id order IS chronological order; created_at is kept
+    for humans and for the scheduler's elapsed-time math. author attribution
+    (rather than a bare user/assistant role) is what lets multiple agent
+    personas share one channel later without another schema change.
+    """
+    __tablename__ = 'conversation_events'
+
     id = Column(Integer, primary_key=True)
-    user_uuid = Column(String, ForeignKey('users.uuid')) # this is the user UUID, not platform ID!
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
     platform = Column(String)
-    
-    # message data
-    role = Column(String)  # 'user' or 'assistant'
-    content = Column(String)
-    
-    message_type = Column(String)  # 'conversation' or 'scheduled'
-    
+
+    author_type = Column(String, nullable=False)   # 'user' | 'agent' | 'system'
+    author = Column(String, nullable=False)        # 'user' | 'chordial' | 'curator' | future personas
+    kind = Column(String, nullable=False)          # 'message' | 'action' | 'note' (note reserved, unused)
+
+    # message text, or (for actions) the frozen one-line rendering that gets
+    # replayed into prompts verbatim - written once, never re-serialized, so
+    # history bytes stay cache-stable
+    content = Column(String, nullable=False)
+    message_type = Column(String, nullable=True)   # 'conversation' | 'scheduled'; only on kind='message'
+    event_metadata = Column(JSON, default={})      # actions: {tool, input, result, is_error, iteration}
+
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # relationships
-    user = relationship("User", back_populates="conversations")
-    
+
     __table_args__ = (
-        {'sqlite_autoincrement': True}
+        Index('ix_conversation_events_user_platform_id', 'user_uuid', 'platform', 'id'),
+        {'sqlite_autoincrement': True},
     )
 
 
 class CompressedMessage(Base):
     """stores compressed versions of messages for efficient context"""
     __tablename__ = 'compressed_messages'
-    
+
     id = Column(Integer, primary_key=True)
-    conversation_history_id = Column(Integer, ForeignKey('conversation_history.id'))
+    # legacy pointer into the retired conversation_history table; new rows
+    # store the conversation_events id here instead. plain integer (no FK) so
+    # pre-migration ids can dangle harmlessly.
+    conversation_history_id = Column(Integer)
     user_uuid = Column(String, ForeignKey('users.uuid'))
     platform = Column(String)
     
@@ -121,11 +134,10 @@ class CompressedMessage(Base):
     # metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     model_used = Column(String, default='gpt-3.5-turbo')
-    
+
     # relationships
-    original_message = relationship("ConversationHistory")
     user = relationship("User")
-    
+
     __table_args__ = (
         {'sqlite_autoincrement': True}
     )
@@ -267,8 +279,8 @@ class UsageLog(Base):
 class AgentTrace(Base):
     """one row per agent turn - records the tool loop for debugging/tuning.
 
-    kept separate from ConversationHistory so intra-turn tool exchanges stay
-    out of the replayed (and cached) conversation prefix.
+    kept separate from the conversation event log so raw intra-turn tool
+    exchanges stay out of the replayed (and cached) conversation prefix.
     """
     __tablename__ = 'agent_traces'
 

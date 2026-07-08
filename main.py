@@ -7,7 +7,6 @@ from src.services.scheduler_service import SchedulerService
 from src.services.usage_recorder import UsageRecorder
 from src.services.message_router import MessageRouter
 from src.services.tools import build_default_registry
-from src.managers.conversation_manager import ConversationManager
 from src.managers.user_manager import UserManager
 from src.database.database import init_db
 
@@ -52,7 +51,6 @@ async def main():
     init_db()
     
     # initialize core services
-    conversation_manager = ConversationManager()
     user_manager = UserManager()
 
     # initialize ai provider + agent loop
@@ -85,7 +83,6 @@ async def main():
     # create chat service (falls back to echo if no agent service is available)
     chat_service = ChatService(
         agent_service=agent_service,
-        conversation_manager=conversation_manager,
         user_manager=user_manager,
         tool_registry=registry if agent_service else None,
         agenda_service=agenda_service,

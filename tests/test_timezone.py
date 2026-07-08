@@ -26,7 +26,7 @@ from src.utils.timezone_utils import (
 )
 from src.utils.temporal_context import TemporalContext
 from src.database.database import engine, get_db
-from src.database.models import Base, User, PlatformIdentity, ConversationHistory
+from src.database.models import Base, User, PlatformIdentity, ConversationEvent
 from src.managers.user_manager import UserManager
 from src.services.scheduler_service import SchedulerService
 
@@ -172,10 +172,12 @@ class TestSchedulerQuietHoursPerUser:
                 platform="discord",
                 platform_user_id="123",
             ))
-            db.add(ConversationHistory(
+            db.add(ConversationEvent(
                 user_uuid=user_uuid,
                 platform="discord",
-                role="user",
+                author_type="user",
+                author="user",
+                kind="message",
                 content="hey",
                 message_type="conversation",
                 created_at=last_message_at,

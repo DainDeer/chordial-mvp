@@ -2,8 +2,8 @@ from typing import Optional
 import logging
 
 from src.models.unified_message import UnifiedMessage
-from src.utils.timezone_utils import utc_now, to_user_timezone
-from src.managers.conversation_manager import ConversationManager
+from src.models.message import Message
+from src.managers.event_log import EventLog, Event
 from src.managers.user_manager import UserManager
 from src.services.onboarding_service import OnboardingService
 from src.services.prompt_service import PromptService
@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
 ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
 
+# the event-log author id for the (currently one and only) chat persona.
+# becomes Agent.name when the orchestrator/agent split lands.
+AGENT_AUTHOR = "chordial"
+
 
 class ChatService:
     """main service for handling chat interactions across all platforms"""
@@ -24,7 +28,6 @@ class ChatService:
     def __init__(
         self,
         agent_service=None,
-        conversation_manager=None,
         user_manager=None,
         tool_registry=None,
         max_history_messages: int = None,
@@ -32,7 +35,6 @@ class ChatService:
         daily_pass_service=None,
     ):
         self.agent_service = agent_service
-        self.conversation_manager = conversation_manager or ConversationManager()
         self.user_manager = user_manager or UserManager()
         self.onboarding_service = OnboardingService(self.user_manager)
         self.prompt_service = PromptService()
@@ -64,6 +66,12 @@ class ChatService:
             logger.exception("failed composing ambient context; continuing without")
             return None
 
+    def _history_messages(self, log: EventLog) -> list[Message]:
+        """recent events bridged into the Message shape PromptService speaks.
+        (temporary seam: goes away when the prompt builder consumes Events
+        directly for action-aware rendering.)"""
+        return [Message.from_event(e) for e in log.recent(self.max_history_messages)]
+
     async def _prepare_for_interaction(
         self,
         platform: str,
@@ -80,8 +88,8 @@ class ChatService:
         - whether the interaction should continue (True) or stop due to onboarding (False)
         - an optional response message (e.g., welcome message or onboarding response)
         - the user's timezone (string), resolved once here so downstream
-          callers (conversation manager, prompt service) don't each re-fetch
-          it from the database for the same interaction
+          callers (event log, prompt service) don't each re-fetch it from the
+          database for the same interaction
         """
         # check if this is a brand new user
         is_new = await self.user_manager.is_new_user(platform, platform_user_id)
@@ -131,35 +139,31 @@ class ChatService:
                 content=unified_message.content
             )
 
-            conversation = await self.conversation_manager.get_or_create(
-                user_uuid,
-                unified_message.platform,
-                user_timezone=user_timezone
-            )
+            log = EventLog(user_uuid, unified_message.platform)
 
             if not should_continue:
                 if user_name:
                     logger.info(f"user {user_name} successfully onboarded")
                 # persist the onboarding exchange like any other turn. without
-                # this, conversation_history stays empty through onboarding, so
-                # the scheduler's "no messages yet" rule can't tell "brand new
+                # this, the event log stays empty through onboarding, so the
+                # scheduler's "no messages yet" rule can't tell "brand new
                 # user" apart from "just finished onboarding" - and fires a
                 # scheduled check-in within minutes of onboarding completing.
                 if unified_message.content:
-                    conversation.add_message("user", unified_message.content)
+                    log.append_message("user", "user", unified_message.content)
                 if response:
-                    conversation.add_message("assistant", response)
+                    log.append_message("agent", AGENT_AUTHOR, response)
                 return response
 
             # record the incoming message first, so it's the last item in history
-            conversation.add_message("user", unified_message.content)
+            user_event = log.append_message("user", "user", unified_message.content)
             if Config.ENABLE_COMPRESSION:
-                await conversation.compress_last_message()
+                await self._compress(user_event, user_uuid, unified_message.platform)
 
             if not self.agent_service:
                 return f"echo: {unified_message.content}"
 
-            history = conversation.get_recent_messages(self.max_history_messages)
+            history = self._history_messages(log)
             request = await self.prompt_service.build_conversation_request(
                 conversation_history=history,
                 user_name=user_name,
@@ -180,9 +184,9 @@ class ChatService:
                 # don't persist a non-answer into history
                 return REFUSAL_REPLY if result.refused else ERROR_REPLY
 
-            conversation.add_message("assistant", result.text)
+            reply_event = log.append_message("agent", AGENT_AUTHOR, result.text)
             if Config.ENABLE_COMPRESSION:
-                await conversation.compress_last_message()
+                await self._compress(reply_event, user_uuid, unified_message.platform)
             return result.text
 
         except ProviderError as e:
@@ -208,13 +212,9 @@ class ChatService:
             if not self.agent_service:
                 return None
 
-            conversation = await self.conversation_manager.get_or_create(
-                user_uuid,
-                platform,
-                user_timezone=user_timezone
-            )
+            log = EventLog(user_uuid, platform)
 
-            history = conversation.get_recent_messages(self.max_history_messages)
+            history = self._history_messages(log)
             request = await self.prompt_service.build_scheduled_request(
                 conversation_history=history,
                 user_name=user_name,
@@ -234,9 +234,9 @@ class ChatService:
             if result.refused or not result.text:
                 return None
 
-            conversation.add_message("assistant", result.text, message_type="scheduled")
+            reply_event = log.append_message("agent", AGENT_AUTHOR, result.text, message_type="scheduled")
             if Config.ENABLE_COMPRESSION:
-                await conversation.compress_last_message()
+                await self._compress(reply_event, user_uuid, platform)
             return result.text
 
         except ProviderError as e:
@@ -245,3 +245,24 @@ class ChatService:
         except Exception as e:
             logger.error(f"error generating scheduled message: {e}")
             return None
+
+    async def _compress(self, event: Event, user_uuid: str, platform: str) -> None:
+        """legacy per-message compression hook (ENABLE_COMPRESSION, off by
+        default): store a compressed twin of a just-logged message event."""
+        try:
+            from src.services.compressor_service import CompressorService
+            if event.db_id is None:
+                logger.warning("event has no db_id, skipping compression")
+                return
+            compressor = CompressorService()
+            compressed = await compressor.compress_message(event.content, event.role)
+            await compressor.store_compressed_message(
+                conversation_history_id=event.db_id,
+                user_uuid=user_uuid,
+                platform=platform,
+                role=event.role,
+                original_content=event.content,
+                compressed_content=compressed,
+            )
+        except Exception as e:
+            logger.error(f"compression failed (continuing uncompressed): {e}")

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from config import Config
 from src.database.database import get_db
-from src.database.models import ConversationHistory, CompressedMessage
+from src.database.models import CompressedMessage
 from src.providers.ai.openai_provider import OpenAIProvider
 from src.providers.ai.types import AIRequest, SystemBlock, ChatTurn
 from src.models.message import Message
