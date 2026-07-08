@@ -73,12 +73,22 @@ async def main():
         else:
             logger.warning(f"{provider_name} provider configured but not available")
 
+    # proactive notion awareness: a cached agenda snapshot the scheduler keeps
+    # fresh in the background and the chat path injects as ambient context. only
+    # wired up when notion is configured and the feature flag is on.
+    agenda_service = None
+    if Config.agenda_enabled():
+        from src.services.notion.snapshot_service import AgendaSnapshotService
+        agenda_service = AgendaSnapshotService()
+        logger.info("agenda snapshot service enabled")
+
     # create chat service (falls back to echo if no agent service is available)
     chat_service = ChatService(
         agent_service=agent_service,
         conversation_manager=conversation_manager,
         user_manager=user_manager,
         tool_registry=registry if agent_service else None,
+        agenda_service=agenda_service,
     )
     
     # build the memory curator on the cheaper utility model - it tidies the
@@ -104,6 +114,7 @@ async def main():
         chat_service=chat_service,
         user_manager=user_manager,
         memory_curator=memory_curator,
+        agenda_service=agenda_service,
     )
 
     # build interfaces and register them with the outbound router. the router

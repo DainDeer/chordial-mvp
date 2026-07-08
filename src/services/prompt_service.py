@@ -80,6 +80,19 @@ class PromptService:
             profile_parts.append(f"- they go by {user_name}")
         profile_parts.append(f"- their timezone is {user_timezone}")
 
+        # standing guidance for the ambient agenda note (the note itself rides in
+        # the volatile current turn; this byte-stable line just tells the model
+        # how to treat it, so we don't pay the instructions on every turn).
+        if Config.agenda_enabled():
+            profile_parts.append(
+                "- you have quiet, ambient awareness of their notion workspace "
+                "(tasks, projects, cycles). a \"notion agenda\" note may ride "
+                "along with their messages - treat it as things you happen to "
+                "know, not a checklist to recite. bring something up only when "
+                "it's relevant or genuinely helpful, one gentle nudge at most, "
+                "and use your notion tools when they want details or changes."
+            )
+
         if user_uuid:
             try:
                 # core memories only (detached-safe dicts, sorted by id for
@@ -186,9 +199,15 @@ class PromptService:
         user_uuid: Optional[str],
         user_timezone: str,
         tools: Optional[List[ToolDef]] = None,
+        ambient_context: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a reply. the current user message is the LAST
-        item in conversation_history; it becomes the volatile 'now' turn."""
+        item in conversation_history; it becomes the volatile 'now' turn.
+
+        `ambient_context` (e.g. the notion agenda digest) rides in that same
+        volatile turn, after every cache breakpoint - it changes through the day
+        but never touches the cached history/system prefix, because history is
+        replayed from stored message content, not from this rendered turn."""
         system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
 
         prior = conversation_history[:-1] if conversation_history else []
@@ -198,10 +217,11 @@ class PromptService:
 
         if current is not None:
             now_line = self._now_line(user_timezone, self._last_user_timestamp(prior), user_name)
-            messages.append(ChatTurn(
-                role="user",
-                content=f"[current time - {now_line}]\n{current.content}",
-            ))
+            content = f"[current time - {now_line}]\n"
+            if ambient_context:
+                content += f"[{ambient_context}]\n"
+            content += current.content
+            messages.append(ChatTurn(role="user", content=content))
 
         request = AIRequest(
             system=system,
@@ -220,9 +240,11 @@ class PromptService:
         user_uuid: Optional[str],
         user_timezone: str,
         tools: Optional[List[ToolDef]] = None,
+        ambient_context: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a proactive check-in. all history is stable;
-        a synthetic 'now' turn carries the generation instructions."""
+        a synthetic 'now' turn carries the generation instructions (and the
+        ambient agenda context, when present)."""
         system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
 
         messages = self._render_history(conversation_history, user_timezone)
@@ -231,10 +253,12 @@ class PromptService:
             user_timezone, self._last_user_timestamp(conversation_history), user_name
         )
         who = user_name or "them"
+        ambient_block = f"[{ambient_context}]\n" if ambient_context else ""
         messages.append(ChatTurn(
             role="user",
             content=(
                 f"[current time - {now_line}]\n"
+                f"{ambient_block}"
                 f"this is a scheduled check-in (the user hasn't just messaged you). "
                 f"write a brief, warm, natural message to {who}:\n"
                 "- be aware of the time without always stating it\n"

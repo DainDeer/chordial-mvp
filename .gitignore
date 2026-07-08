@@ -9,5 +9,7 @@ __pycache__/
 chordial.db
 *.db-wal
 *.db-shm
+chordial_dev.db
+*.db-journal
 prompt_logs/
 *.log

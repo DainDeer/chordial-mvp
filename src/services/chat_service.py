@@ -28,6 +28,8 @@ class ChatService:
         user_manager=None,
         tool_registry=None,
         max_history_messages: int = None,
+        agenda_service=None,
+        daily_pass_service=None,
     ):
         self.agent_service = agent_service
         self.conversation_manager = conversation_manager or ConversationManager()
@@ -36,9 +38,31 @@ class ChatService:
         self.prompt_service = PromptService()
         self.tool_registry = tool_registry
         self.max_history_messages = max_history_messages or Config.MAX_HISTORY_MESSAGES
+        # optional proactive-notion services: agenda snapshot (ambient digest)
+        # and daily passes (morning context note). both read-only here, and both
+        # strictly db reads - the chat path never waits on notion.
+        self.agenda_service = agenda_service
+        self.daily_pass_service = daily_pass_service
 
     def _tool_defs(self):
         return self.tool_registry.definitions() if self.tool_registry else []
+
+    def _compose_ambient(self, user_uuid: str, user_timezone: str) -> Optional[str]:
+        """assemble the ambient context injected into the volatile 'now' turn:
+        the notion agenda digest (+ the morning note once daily passes land).
+        pure db reads, fully guarded - any failure degrades to no ambient
+        context, i.e. exactly today's prompt bytes."""
+        if not self.agenda_service:
+            return None
+        try:
+            parts = []
+            digest = self.agenda_service.get_digest(user_uuid)
+            if digest:
+                parts.append(digest)
+            return "\n\n".join(parts) if parts else None
+        except Exception:
+            logger.exception("failed composing ambient context; continuing without")
+            return None
 
     async def _prepare_for_interaction(
         self,
@@ -107,16 +131,25 @@ class ChatService:
                 content=unified_message.content
             )
 
-            if not should_continue:
-                if user_name:
-                    logger.info(f"user {user_name} successfully onboarded")
-                return response
-
             conversation = await self.conversation_manager.get_or_create(
                 user_uuid,
                 unified_message.platform,
                 user_timezone=user_timezone
             )
+
+            if not should_continue:
+                if user_name:
+                    logger.info(f"user {user_name} successfully onboarded")
+                # persist the onboarding exchange like any other turn. without
+                # this, conversation_history stays empty through onboarding, so
+                # the scheduler's "no messages yet" rule can't tell "brand new
+                # user" apart from "just finished onboarding" - and fires a
+                # scheduled check-in within minutes of onboarding completing.
+                if unified_message.content:
+                    conversation.add_message("user", unified_message.content)
+                if response:
+                    conversation.add_message("assistant", response)
+                return response
 
             # record the incoming message first, so it's the last item in history
             conversation.add_message("user", unified_message.content)
@@ -133,6 +166,7 @@ class ChatService:
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
                 tools=self._tool_defs(),
+                ambient_context=self._compose_ambient(user_uuid, user_timezone),
             )
 
             result = await self.agent_service.run(
@@ -187,6 +221,7 @@ class ChatService:
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
                 tools=self._tool_defs(),
+                ambient_context=self._compose_ambient(user_uuid, user_timezone),
             )
 
             result = await self.agent_service.run(

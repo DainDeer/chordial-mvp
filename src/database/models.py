@@ -205,6 +205,37 @@ class Memory(Base):
     )
 
 
+class AgendaSnapshot(Base):
+    """rolling cache of a user's notion 'today picture' (see
+    services/notion/snapshot_service.py).
+
+    one row per user, overwritten in place: the scheduler keeps it fresh in the
+    background and the chat path reads the pre-rendered `digest` as ambient
+    context (a db read, never a synchronous notion call). history worth diffing
+    is frozen in daily_notes, not kept here.
+    """
+    __tablename__ = 'agenda_snapshots'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, unique=True)
+
+    # structured agenda rows (cycle / projects / tasks_today / tasks_overdue /
+    # tasks_in_progress / done_today) - what the daily passes diff against.
+    payload = Column(JSON, default={})
+    # pre-rendered ~150-400 token text - what conversation turns inject verbatim.
+    digest = Column(String, nullable=True)
+
+    refreshed_at = Column(DateTime, nullable=True)
+    # flipped True by notion write tools so the next background pass re-fetches.
+    is_stale = Column(Boolean, default=True)
+    # last refresh failure (kept for debugging; the digest survives the error).
+    last_error = Column(String, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
 class UsageLog(Base):
     """per-call token accounting - one row per ai api call.
 
