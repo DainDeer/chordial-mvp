@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
+from typing import Optional, List
 import asyncio
 import logging
 
@@ -11,18 +11,14 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-class ScheduledMessageContext:
-    """tracks scheduling context for each user"""
-    def __init__(self, user_uuid: str, platform: str):
-        self.user_uuid = user_uuid
-        self.platform = platform
-        self.last_scheduled_at: Optional[datetime] = None
-        self.last_message_was_scheduled: bool = False
-        self.next_scheduled_time: Optional[datetime] = None
 
 class SchedulerService:
-    """handles intelligent scheduling of messages across all platforms"""
-    
+    """handles intelligent scheduling of messages across all platforms.
+
+    scheduling is per-USER (one conversation, one recency clock, however many
+    platforms they're on); delivery targets the platform the user most
+    recently spoke on, falling back to any other live link."""
+
     def __init__(self, orchestrator=None, user_manager: UserManager = None,
                  agenda_service=None):
         # the orchestrator generates scheduled check-ins and runs the curation
@@ -33,30 +29,18 @@ class SchedulerService:
         # path only ever reads it, so this background refresh is where notion
         # actually gets queried)
         self.agenda_service = agenda_service
-        self.user_contexts: Dict[str, ScheduledMessageContext] = {}
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
         self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
         self.quiet_hours_start = Config.QUIET_HOURS_START
-        self.quiet_hours_end = Config.QUIET_HOURS_END 
+        self.quiet_hours_end = Config.QUIET_HOURS_END
         self._running = False
-    
-    def _get_context_key(self, user_uuid: str, platform: str) -> str:
-        """generate unique key for user context"""
-        return f"{platform}:{user_uuid}"
-    
-    def _get_or_create_context(self, user_uuid: str, platform: str) -> ScheduledMessageContext:
-        """get or create scheduling context for a user"""
-        key = self._get_context_key(user_uuid, platform)
-        if key not in self.user_contexts:
-            self.user_contexts[key] = ScheduledMessageContext(user_uuid, platform)
-        return self.user_contexts[key]
-    
-    async def _check_last_message(self, user_uuid: str, platform: str) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
+
+    async def _check_last_message(self, user_uuid: str) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
         """check who sent the last message, when, and what type. reads the
-        event log's last MESSAGE event - tool-action events are invisible here
-        by construction, so a trailing action can never masquerade as 'the
-        assistant just replied'."""
-        event = EventLog(user_uuid, platform).last_message()
+        event log's last MESSAGE event - tool-action and note events are
+        invisible here by construction, so a trailing action or switch notice
+        can never masquerade as 'the assistant just replied'."""
+        event = EventLog(user_uuid).last_message()
         if event:
             return event.role, event.created_at, event.message_type
         return None, None, None
@@ -66,9 +50,10 @@ class SchedulerService:
         local_hour = get_user_local_hour(utc_now(), user_timezone)
         return is_within_quiet_hours(local_hour, self.quiet_hours_start, self.quiet_hours_end)
 
-    async def should_send_scheduled_message(self, user_uuid: str, platform: str) -> bool:
-        """determine if we should send a scheduled message to this user now"""
-        context = self._get_or_create_context(user_uuid, platform)
+    async def should_send_scheduled_message(self, user_uuid: str) -> bool:
+        """determine if we should send a scheduled message to this user now.
+        the gate runs against the user's UNIFIED conversation - chatting on
+        any platform resets the recency clock for all of them."""
         now = utc_now()
 
         # check if user has completed onboarding. LOAD-BEARING for the
@@ -79,9 +64,9 @@ class SchedulerService:
         if needs_onboarding:
             logger.debug(f"user {user_uuid} needs onboarding, skipping scheduled message")
             return False
-        
+
         # check last message in conversation
-        last_role, last_message_time, last_message_type = await self._check_last_message(user_uuid, platform)
+        last_role, last_message_time, last_message_type = await self._check_last_message(user_uuid)
         
         # if no messages yet, send one
         if not last_role:
@@ -117,12 +102,28 @@ class SchedulerService:
                 logger.debug(f"only {time_since_last} since last user message, waiting")
                 return False
     
-    async def send_scheduled_message(self, user_uuid: str, platform: str, platform_user_id: str) -> Optional[str]:
-        """send a scheduled message if appropriate"""
+    async def send_scheduled_message(
+        self, user_uuid: str, platforms: Optional[List[str]] = None,
+    ) -> Optional[tuple[str, str, str]]:
+        """generate a scheduled message if appropriate, targeted at the
+        platform the user most recently spoke on (falling back to any other
+        live link). returns (platform, platform_user_id, message) or None.
+        the target is resolved BEFORE the orchestrator runs, so no tokens are
+        spent when there's nowhere to deliver, and the reply event's
+        provenance is the real destination."""
         if self.orchestrator is None:
             return None
-        if not await self.should_send_scheduled_message(user_uuid, platform):
+        if not await self.should_send_scheduled_message(user_uuid):
             return None
+
+        active = EventLog(user_uuid).active_platform()
+        target = await self.user_manager.resolve_delivery_identity(
+            user_uuid, active, platforms,
+        )
+        if target is None:
+            logger.debug(f"no deliverable platform for user {user_uuid}, skipping")
+            return None
+        platform, platform_user_id = target
 
         deliverable = await self.orchestrator.handle(Stimulus(
             kind="scheduled_tick", user_uuid=user_uuid, platform=platform,
@@ -130,29 +131,26 @@ class SchedulerService:
         message = deliverable.text if not (deliverable.refused or deliverable.errored) else None
 
         if message:
-            context = self._get_or_create_context(user_uuid, platform)
-            context.last_scheduled_at = utc_now()
-            logger.info(f"generated scheduled message for user {user_uuid} (platform: {platform_user_id}): {message[:50]}...")
+            logger.info(f"generated scheduled message for user {user_uuid} -> {platform}: {message[:50]}...")
+            return platform, platform_user_id, message
+        return None
 
-        return message
-    
     async def run_scheduling_loop(self, platforms: List[str], message_callback):
-        """main scheduling loop that checks all users across platforms"""
+        """main scheduling loop: one pass per USER per cycle (a person on two
+        platforms is one schedule slot, not two). `platforms` is the set with
+        a live interface - delivery targeting is restricted to it."""
         self._running = True
         check_interval = 60*5  # check every 5 minutes
-        
+
         while self._running:
             try:
-                for platform in platforms:
-                    user_mappings = await self.user_manager.get_users_with_scheduled_messages(platform)
-
-                    for user_uuid, platform_user_id in user_mappings:
-                        # keep the agenda snapshot warm before we (maybe) message
-                        await self._refresh_agenda(user_uuid)
-                        message = await self.send_scheduled_message(user_uuid, platform, platform_user_id)
-                        if message:
-                            # use the callback to actually send the message
-                            await message_callback(platform, platform_user_id, message)
+                for user_uuid in await self.user_manager.get_scheduled_users():
+                    # keep the agenda snapshot warm before we (maybe) message
+                    await self._refresh_agenda(user_uuid)
+                    result = await self.send_scheduled_message(user_uuid, platforms)
+                    if result:
+                        # use the callback to actually send the message
+                        await message_callback(*result)
 
                 # piggyback the memory-cleanup pass on the same cycle
                 await self._run_curation_pass()

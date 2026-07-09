@@ -97,7 +97,7 @@ def test_scheduler_does_not_fire_immediately_after_onboarding(db):
     with db() as s:
         user_uuid = s.query(ConversationEvent).first().user_uuid
 
-    should_send = run(scheduler.should_send_scheduled_message(user_uuid, "discord"))
+    should_send = run(scheduler.should_send_scheduled_message(user_uuid))
     assert should_send is False
 
 

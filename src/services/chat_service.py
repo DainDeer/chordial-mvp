@@ -113,11 +113,13 @@ class ChatService:
                 # scheduler's "no messages yet" rule can't tell "brand new
                 # user" apart from "just finished onboarding" - and fires a
                 # scheduled check-in within minutes of onboarding completing.
-                log = EventLog(user_uuid, unified_message.platform)
+                log = EventLog(user_uuid)
                 if unified_message.content:
-                    log.append_message("user", "user", unified_message.content)
+                    log.append_message("user", "user", unified_message.content,
+                                       platform=unified_message.platform)
                 if response:
-                    log.append_message("agent", AGENT_AUTHOR, response)
+                    log.append_message("agent", AGENT_AUTHOR, response,
+                                       platform=unified_message.platform)
                 return response
 
             if not self.orchestrator:

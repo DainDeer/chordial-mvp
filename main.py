@@ -80,6 +80,12 @@ async def main():
         agenda_service = AgendaSnapshotService()
         logger.info("agenda snapshot service enabled")
 
+    # the outbound router is constructed early (before the orchestrator, which
+    # borrows router.deliver for out-of-band sends like the platform-switch
+    # notice); interfaces register onto it further down, and deliver resolves
+    # them at call time, so the ordering is safe.
+    router = MessageRouter(user_manager)
+
     # assemble the cast and the orchestrator. the orchestrator decides who
     # talks and records what happened; each agent owns how it thinks. today's
     # cast: the companion (chordial's chat persona, tool loop on the persona
@@ -127,6 +133,7 @@ async def main():
             agenda_service=agenda_service,
             tool_registry=registry,
             reconciler=reconciler,
+            deliver=router.deliver,
         )
         logger.info(f"orchestrator initialized (agents: {', '.join(agents)})")
 
@@ -147,7 +154,6 @@ async def main():
     # owns platform->interface routing and link-deactivation on hard failures,
     # so the scheduler never has to know which interface backs a platform.
     interfaces = _build_interfaces(chat_service)
-    router = MessageRouter(user_manager)
     for interface in interfaces:
         router.register(interface)
 

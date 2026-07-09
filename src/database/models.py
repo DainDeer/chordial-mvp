@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float, Index
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -68,10 +68,13 @@ class PlatformIdentity(Base):
     
     # relationships
     user = relationship("User", back_populates="platform_identities")
-    
-    # unique constraint - one platform_user_id per platform
+
+    # one platform_user_id per platform, enforced for real (the linking flow
+    # relies on this - a telegram account can only be bound to one user)
     __table_args__ = (
-        {'sqlite_autoincrement': True}
+        UniqueConstraint('platform', 'platform_user_id',
+                         name='uq_platform_identity_platform_user'),
+        {'sqlite_autoincrement': True},
     )
 
 
@@ -89,11 +92,14 @@ class ConversationEvent(Base):
 
     id = Column(Integer, primary_key=True)
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    # provenance: which platform this event happened on. NOT a conversation
+    # key - a user has ONE conversation spanning platforms; this just records
+    # where each moment took place (delivery targeting, switch detection).
     platform = Column(String)
 
     author_type = Column(String, nullable=False)   # 'user' | 'agent' | 'system'
     author = Column(String, nullable=False)        # 'user' | 'chordial' | 'curator' | future personas
-    kind = Column(String, nullable=False)          # 'message' | 'action' | 'note' (note reserved, unused)
+    kind = Column(String, nullable=False)          # 'message' | 'action' | 'note'
 
     # message text, or (for actions) the frozen one-line rendering that gets
     # replayed into prompts verbatim - written once, never re-serialized, so
@@ -105,8 +111,30 @@ class ConversationEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        Index('ix_conversation_events_user_platform_id', 'user_uuid', 'platform', 'id'),
+        Index('ix_conversation_events_user_id', 'user_uuid', 'id'),
         {'sqlite_autoincrement': True},
+    )
+
+
+class LinkCode(Base):
+    """one-time codes for linking a new platform account to an existing user.
+
+    chordial hands the user a short code (and a telegram deep link carrying
+    it); redeeming it on the new platform binds that platform identity to the
+    same user - same memories, same conversation. short-lived and single-use.
+    """
+    __tablename__ = 'link_codes'
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String, nullable=False, unique=True)   # 8 chars, unambiguous alphabet
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)        # created + ttl (15 min default)
+    used_at = Column(DateTime, nullable=True)            # stamped on redemption
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
     )
 
 

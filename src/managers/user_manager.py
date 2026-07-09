@@ -115,20 +115,60 @@ class UserManager:
                 return None, "UTC"
             return user.preferred_name, user.timezone or "UTC"
 
-    async def get_users_with_scheduled_messages(self, platform: str) -> List[tuple[str, str]]:
-        """get list of (user_uuid, platform_user_id) tuples eligible for a proactive
-        send on this platform. eligibility = the human is active and not a test/seed
-        account, and this specific platform link is still deliverable."""
+    async def get_scheduled_users(self) -> List[str]:
+        """distinct user_uuids eligible for proactive sends: the human is
+        active, not a test/seed account, onboarded, and reachable on at least
+        one still-deliverable platform link. one entry per USER (a person on
+        discord AND telegram is one person, not two schedule slots)."""
         with get_db() as db:
-            identities = db.query(PlatformIdentity).join(User).filter(
-                PlatformIdentity.platform == platform,
-                PlatformIdentity.is_active == True,   # this link hasn't hard-failed
+            rows = db.query(PlatformIdentity.user_uuid).join(User).filter(
+                PlatformIdentity.is_active == True,   # ≥1 link hasn't hard-failed
                 User.is_active == True,               # human is active
                 User.is_test == False,                # not a synthetic/seed row
                 User.preferred_name != None           # completed onboarding
-            ).all()
+            ).distinct().all()
+            return [user_uuid for (user_uuid,) in rows]
 
-            return [(identity.user_uuid, identity.platform_user_id) for identity in identities]
+    async def resolve_delivery_identity(
+        self,
+        user_uuid: str,
+        preferred_platform: Optional[str],
+        allowed_platforms: Optional[List[str]] = None,
+    ) -> Optional[tuple[str, str]]:
+        """where to actually deliver a proactive message: the preferred (i.e.
+        most recently used) platform's active link if it exists, else the most
+        recently created other active link - going silent on a user who is
+        reachable elsewhere is worse than check-in on their other platform.
+        `allowed_platforms` restricts to platforms with a live interface.
+        returns (platform, platform_user_id) or None."""
+        with get_db() as db:
+            query = db.query(PlatformIdentity).filter(
+                PlatformIdentity.user_uuid == user_uuid,
+                PlatformIdentity.is_active == True,
+            )
+            if allowed_platforms is not None:
+                query = query.filter(PlatformIdentity.platform.in_(allowed_platforms))
+            identities = query.order_by(PlatformIdentity.id.desc()).all()
+
+            if not identities:
+                return None
+            for identity in identities:
+                if identity.platform == preferred_platform:
+                    return identity.platform, identity.platform_user_id
+            newest = identities[0]
+            return newest.platform, newest.platform_user_id
+
+    async def get_identity(self, user_uuid: str, platform: str) -> Optional[tuple[str, bool]]:
+        """(platform_user_id, is_active) for this user's link on a platform,
+        or None if they've never been linked there."""
+        with get_db() as db:
+            identity = db.query(PlatformIdentity).filter(
+                PlatformIdentity.user_uuid == user_uuid,
+                PlatformIdentity.platform == platform,
+            ).first()
+            if identity is None:
+                return None
+            return identity.platform_user_id, bool(identity.is_active)
 
     async def deactivate_platform_identity(self, platform: str, platform_user_id: str) -> None:
         """mark a single platform link as undeliverable. called when an outbound
