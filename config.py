@@ -57,6 +57,11 @@ class Config:
     def agenda_enabled(cls) -> bool:
         return cls.notion_enabled() and cls.AGENDA_ENABLED
 
+    # completion reconciler: after the companion replies, a cheap utility-model
+    # pass that marks tasks done which the user mentioned finishing in passing.
+    # only effective when the agenda is available (it needs the open-task list).
+    RECONCILER_ENABLED = os.getenv("RECONCILER_ENABLED", "true").lower() == "true"
+
     # agent loop
     MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
     # how many recent messages of history to send as context
