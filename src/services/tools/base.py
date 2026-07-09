@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from src.providers.ai.types import ToolCall, ToolDef, ToolResult
 
@@ -30,6 +30,12 @@ class Tool:
     # already wrote in that same turn, instead of forcing a second api call that
     # replaces it. see AgentService.run.
     terminal: bool = False
+    # should successful calls be persisted as conversation events, so the model
+    # can see across turns what it already did? mutations should record (they're
+    # the cross-turn dedup fix); pure reads shouldn't (their results go stale
+    # immediately and would permanently occupy cache-stable history bytes).
+    # default True = over-record: the safe direction for new tools.
+    record_event: bool = True
 
 
 class ToolRegistry:
@@ -42,11 +48,28 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDef]:
         return [t.definition for t in self._tools.values()]
 
+    def view(self, names: "Iterable[str]") -> "ToolRegistry":
+        """a filtered registry sharing the same Tool objects - the surface an
+        agent is allowed to reach for. unknown names raise immediately, so a
+        typo in an agent's tool list fails at wiring time, not mid-chat."""
+        filtered = ToolRegistry()
+        for name in names:
+            if name not in self._tools:
+                raise KeyError(f"unknown tool '{name}' in registry view")
+            filtered._tools[name] = self._tools[name]
+        return filtered
+
     def is_terminal(self, name: str) -> bool:
         """True if this tool is a fire-and-forget side effect. unknown tools are
         treated as non-terminal (safer: they get the normal round-trip)."""
         tool = self._tools.get(name)
         return bool(tool and tool.terminal)
+
+    def should_record(self, name: str) -> bool:
+        """True if successful calls to this tool belong in the conversation
+        event log. unknown tools record (same safe-direction default)."""
+        tool = self._tools.get(name)
+        return tool.record_event if tool else True
 
     async def execute(self, call: ToolCall, user_uuid: str) -> ToolResult:
         """run a tool call. errors are returned to the model (is_error=True)

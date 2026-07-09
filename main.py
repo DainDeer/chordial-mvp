@@ -80,37 +80,48 @@ async def main():
         agenda_service = AgendaSnapshotService()
         logger.info("agenda snapshot service enabled")
 
-    # create chat service (falls back to echo if no agent service is available)
-    chat_service = ChatService(
-        agent_service=agent_service,
-        user_manager=user_manager,
-        tool_registry=registry if agent_service else None,
-        agenda_service=agenda_service,
-    )
-    
-    # build the memory curator on the cheaper utility model - it tidies the
-    # memory table (merge/expire/promote) on a debounced pass off the scheduler
-    # loop. only wired up when the provider is actually available.
-    memory_curator = None
+    # assemble the cast and the orchestrator. the orchestrator decides who
+    # talks and records what happened; each agent owns how it thinks. today's
+    # cast: the companion (chordial's chat persona, tool loop on the persona
+    # model) and the curator (silent memory hygiene on the utility model).
+    orchestrator = None
     if agent_service is not None:
+        from src.agents import CompanionAgent, CuratorAgent
+        from src.services.orchestrator import Orchestrator
+
+        agents = {"chordial": CompanionAgent(agent_service, registry)}
+
         # utility model (haiku) doesn't support adaptive thinking -> thinking=False
         curator_provider = _build_provider(
             provider_name, model=Config.UTILITY_MODEL, thinking=False,
         )
         if curator_provider is not None:
             from src.services.memory_curator import MemoryCuratorService
-            memory_curator = MemoryCuratorService(
+            agents["curator"] = CuratorAgent(MemoryCuratorService(
                 provider=curator_provider,
                 provider_name=provider_name,
                 usage_recorder=UsageRecorder(),
-            )
+            ))
             logger.info(f"memory curator initialized (model={curator_provider.model})")
+
+        orchestrator = Orchestrator(
+            agents=agents,
+            user_manager=user_manager,
+            agenda_service=agenda_service,
+            tool_registry=registry,
+        )
+        logger.info(f"orchestrator initialized (agents: {', '.join(agents)})")
+
+    # create chat service (falls back to echo if no orchestrator is available)
+    chat_service = ChatService(
+        orchestrator=orchestrator,
+        user_manager=user_manager,
+    )
 
     # create scheduler service
     scheduler_service = SchedulerService(
-        chat_service=chat_service,
+        orchestrator=orchestrator,
         user_manager=user_manager,
-        memory_curator=memory_curator,
         agenda_service=agenda_service,
     )
 

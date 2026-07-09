@@ -7,7 +7,6 @@ from src.database.database import get_db
 from src.database.models import CompressedMessage
 from src.providers.ai.openai_provider import OpenAIProvider
 from src.providers.ai.types import AIRequest, SystemBlock, ChatTurn
-from src.models.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -104,36 +103,6 @@ Try to compress this to 50-75 words maximum while keeping essential information.
             )
             
             return compressed_msg
-    
-    async def get_compressed_history(
-        self,
-        user_uuid: str,
-        platform: str,
-        limit: int = 10
-    ) -> List[Message]:
-        """get compressed conversation history for feeding to AI"""
-        with get_db() as db:
-            # get most recent compressed messages
-            compressed_messages = db.query(CompressedMessage).filter(
-                CompressedMessage.user_uuid == user_uuid,
-                CompressedMessage.platform == platform
-            ).order_by(CompressedMessage.created_at.desc()).limit(limit).all()
-            
-            # reverse to get chronological order
-            compressed_messages.reverse()
-            
-            # convert to Message objects
-            messages = []
-            for msg in compressed_messages:
-                messages.append(Message(
-                    role=msg.role,
-                    content=msg.compressed_content,
-                    timestamp=msg.created_at,
-                    message_type="summary",  # mark as summary since it's compressed
-                    db_id=msg.conversation_history_id
-                ))
-            
-            return messages
     
     async def get_compression_stats(self, user_uuid: str, platform: str) -> Dict:
         """get compression statistics for a user"""

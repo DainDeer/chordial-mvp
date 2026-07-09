@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.services.prompt_service import PromptService  # noqa: E402
-from src.models.message import Message  # noqa: E402
+from src.managers.event_log import Event  # noqa: E402
 from src.utils.timezone_utils import utc_now  # noqa: E402
 
 
@@ -24,12 +24,22 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def _user(content, ts):
+    return Event(author_type="user", author="user", kind="message",
+                 content=content, created_at=ts)
+
+
+def _agent(content, ts):
+    return Event(author_type="agent", author="chordial", kind="message",
+                 content=content, created_at=ts)
+
+
 def _history():
     base = utc_now() - timedelta(hours=2)
     return [
-        Message(role="user", content="hey there", timestamp=base),
-        Message(role="assistant", content="hi! how's it going", timestamp=base + timedelta(minutes=1)),
-        Message(role="user", content="what should i do today", timestamp=base + timedelta(hours=2)),
+        _user("hey there", base),
+        _agent("hi! how's it going", base + timedelta(minutes=1)),
+        _user("what should i do today", base + timedelta(hours=2)),
     ]
 
 

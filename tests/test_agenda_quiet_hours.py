@@ -61,7 +61,7 @@ def test_refresh_skipped_during_quiet_hours(db, monkeypatch):
     user_uuid = _make_user(db, "America/New_York")
     fake_agenda = FakeAgendaService()
     scheduler = SchedulerService(
-        chat_service=None, user_manager=UserManager(), agenda_service=fake_agenda,
+        user_manager=UserManager(), agenda_service=fake_agenda,
     )
 
     run(scheduler._refresh_agenda(user_uuid))
@@ -77,7 +77,7 @@ def test_refresh_runs_outside_quiet_hours(db, monkeypatch):
     user_uuid = _make_user(db, "Asia/Tokyo")
     fake_agenda = FakeAgendaService()
     scheduler = SchedulerService(
-        chat_service=None, user_manager=UserManager(), agenda_service=fake_agenda,
+        user_manager=UserManager(), agenda_service=fake_agenda,
     )
 
     run(scheduler._refresh_agenda(user_uuid))
@@ -90,6 +90,6 @@ def test_refresh_is_noop_without_agenda_service(db, monkeypatch):
     monkeypatch.setattr("src.services.scheduler_service.utc_now", lambda: fixed_utc)
 
     user_uuid = _make_user(db, "Asia/Tokyo")
-    scheduler = SchedulerService(chat_service=None, user_manager=UserManager())  # no agenda_service
+    scheduler = SchedulerService(user_manager=UserManager())  # no agenda_service
 
     run(scheduler._refresh_agenda(user_uuid))  # must not raise

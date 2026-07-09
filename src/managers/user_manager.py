@@ -107,6 +107,14 @@ class UserManager:
                 return user.timezone
             return "UTC"
 
+    async def get_user_profile(self, user_uuid: str) -> tuple[Optional[str], str]:
+        """(preferred_name, timezone) in one query - what a briefing needs."""
+        with get_db() as db:
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            if user is None:
+                return None, "UTC"
+            return user.preferred_name, user.timezone or "UTC"
+
     async def get_users_with_scheduled_messages(self, platform: str) -> List[tuple[str, str]]:
         """get list of (user_uuid, platform_user_id) tuples eligible for a proactive
         send on this platform. eligibility = the human is active and not a test/seed
