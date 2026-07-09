@@ -91,24 +91,42 @@ async def main():
 
         agents = {"chordial": CompanionAgent(agent_service, registry)}
 
-        # utility model (haiku) doesn't support adaptive thinking -> thinking=False
-        curator_provider = _build_provider(
+        # one utility provider (haiku; thinking=False - it doesn't support
+        # adaptive thinking) shared by the background utility jobs below
+        utility_provider = _build_provider(
             provider_name, model=Config.UTILITY_MODEL, thinking=False,
         )
-        if curator_provider is not None:
+
+        if utility_provider is not None:
             from src.services.memory_curator import MemoryCuratorService
             agents["curator"] = CuratorAgent(MemoryCuratorService(
-                provider=curator_provider,
+                provider=utility_provider,
                 provider_name=provider_name,
                 usage_recorder=UsageRecorder(),
             ))
-            logger.info(f"memory curator initialized (model={curator_provider.model})")
+            logger.info(f"memory curator initialized (model={utility_provider.model})")
+
+        # completion reconciler: marks tasks done that the user mentioned
+        # finishing in passing. needs the agenda (for the open-task list) and
+        # the utility model.
+        reconciler = None
+        if agenda_service is not None and utility_provider is not None and Config.RECONCILER_ENABLED:
+            from src.services.completion_reconciler import CompletionReconcilerService
+            reconciler = CompletionReconcilerService(
+                provider=utility_provider,
+                provider_name=provider_name,
+                agenda_service=agenda_service,
+                tool_registry=registry,
+                usage_recorder=UsageRecorder(),
+            )
+            logger.info("completion reconciler initialized")
 
         orchestrator = Orchestrator(
             agents=agents,
             user_manager=user_manager,
             agenda_service=agenda_service,
             tool_registry=registry,
+            reconciler=reconciler,
         )
         logger.info(f"orchestrator initialized (agents: {', '.join(agents)})")
 

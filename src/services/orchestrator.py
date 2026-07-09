@@ -57,6 +57,7 @@ class Orchestrator:
         user_manager: UserManager,
         agenda_service=None,
         tool_registry=None,
+        reconciler=None,
         max_history_messages: Optional[int] = None,
     ):
         self.agents = agents
@@ -65,6 +66,9 @@ class Orchestrator:
         # the FULL registry (agents hold views of it) - consulted for the
         # record_event policy when persisting actions
         self.tool_registry = tool_registry
+        # optional: after the companion replies to a user, a cheap pass that
+        # marks tasks done which the user mentioned finishing in passing
+        self.reconciler = reconciler
         self.max_history_messages = max_history_messages or Config.MAX_HISTORY_MESSAGES
 
     # --- entry point ---------------------------------------------------------
@@ -101,6 +105,12 @@ class Orchestrator:
                 # v2: single speaker, single deliverable. (v3: a script of
                 # sequential deliveries lands here.)
                 deliverable.text = outcome.text
+
+        # after a normal user turn, reconcile any tasks the user mentioned
+        # finishing in passing (the companion's warmth can crowd out the
+        # bookkeeping; this narrow pass catches what it missed)
+        if stimulus.kind == "user_message" and deliverable.text:
+            await self._reconcile_completions(log, stimulus)
 
         return deliverable
 
@@ -179,6 +189,32 @@ class Orchestrator:
         message_type = "scheduled" if stimulus.kind == "scheduled_tick" else "conversation"
         await self._append_message(log, "agent", agent.name, outcome.text,
                                    stimulus=stimulus, message_type=message_type)
+
+    async def _reconcile_completions(self, log: EventLog, stimulus: Stimulus) -> None:
+        """run the completion reconciler and record any Done marks it made as
+        the companion's own actions (so the replay reads coherently and the
+        companion sees next turn what it 'noticed'). fully guarded - a failure
+        here must never affect the reply the user already got."""
+        if self.reconciler is None or not stimulus.content:
+            return
+        try:
+            recent = log.recent(self.max_history_messages)
+            # drop the just-recorded inbound message; it's passed separately
+            recent = [e for e in recent if not (e.kind == "message" and e.role == "user"
+                      and e.content == stimulus.content)][-6:]
+            result = await self.reconciler.reconcile(
+                user_uuid=stimulus.user_uuid,
+                platform=stimulus.platform,
+                message_text=stimulus.content,
+                recent=recent,
+            )
+            for action in result.actions:
+                if not action.is_error:
+                    log.append_action("chordial", action.name, action.input,
+                                      action.result_content)
+        except Exception as e:
+            logger.error("completion reconcile failed for user %s: %s",
+                         stimulus.user_uuid, e)
 
     async def _append_message(self, log: EventLog, author_type: str, author: str,
                               content: str, *, stimulus: Stimulus,
