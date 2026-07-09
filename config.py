@@ -61,9 +61,9 @@ class Config:
     # only effective when the agenda is available (it needs the open-task list).
     RECONCILER_ENABLED = os.getenv("RECONCILER_ENABLED", "true").lower() == "true"
 
-    # telegram (second platform). token comes in PR 3 with the interface; the
-    # username (no '@') is needed already for link-code deep links
-    # (https://t.me/<username>?start=<code>).
+    # telegram (second platform). bot token from @BotFather; username (no '@')
+    # is used for link-code deep links (https://t.me/<username>?start=<code>).
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME")
     ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "false").lower() == "true"
     # how long a platform link code stays redeemable

@@ -11,7 +11,7 @@ from src.managers.user_manager import UserManager
 from src.database.database import init_db
 
 
-def _build_interfaces(chat_service):
+def _build_interfaces(chat_service, link_service, user_manager):
     """construct every enabled platform interface. add a branch here per platform;
     nothing else in main() needs to change - the router and scheduler discover
     platforms from whatever this returns."""
@@ -20,6 +20,16 @@ def _build_interfaces(chat_service):
         from src.providers.platforms.discord_bot import DiscordInterface
         interfaces.append(DiscordInterface(chat_service))
         logger.info("discord interface enabled")
+    if Config.ENABLE_TELEGRAM:
+        # fail loudly at startup if the flag is on but config is incomplete -
+        # a silently-missing platform is much harder to notice
+        if not Config.TELEGRAM_TOKEN:
+            raise RuntimeError("ENABLE_TELEGRAM is true but TELEGRAM_TOKEN is not set")
+        if not Config.TELEGRAM_BOT_USERNAME:
+            raise RuntimeError("ENABLE_TELEGRAM is true but TELEGRAM_BOT_USERNAME is not set")
+        from src.providers.platforms.telegram_bot import TelegramInterface
+        interfaces.append(TelegramInterface(chat_service, link_service, user_manager))
+        logger.info("telegram interface enabled")
     return interfaces
 
 
@@ -150,10 +160,15 @@ async def main():
         agenda_service=agenda_service,
     )
 
+    # the link-code service: chat-first account linking across platforms
+    # (minted by the link_platform tool, redeemed by the telegram interface)
+    from src.services.platform_link_service import PlatformLinkService
+    link_service = PlatformLinkService(user_manager)
+
     # build interfaces and register them with the outbound router. the router
     # owns platform->interface routing and link-deactivation on hard failures,
     # so the scheduler never has to know which interface backs a platform.
-    interfaces = _build_interfaces(chat_service)
+    interfaces = _build_interfaces(chat_service, link_service, user_manager)
     for interface in interfaces:
         router.register(interface)
 
