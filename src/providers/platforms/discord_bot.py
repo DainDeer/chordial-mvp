@@ -119,7 +119,12 @@ class DiscordInterface(BaseInterface):
         
         # Process through chat service
         response = await self.chat_service.process_message(unified_msg)
-        
-        # Send response back
+
+        # Send response back, chunked - a >2000-char reply on this live path
+        # used to hit discord's raw length limit and error out uncaught
         if response:
-            await message.channel.send(response)
+            chunks = chunk_message(response)
+            for i, chunk in enumerate(chunks):
+                await message.channel.send(chunk)
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(0.5)

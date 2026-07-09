@@ -50,6 +50,12 @@ class Deliverable:
     errored: bool = False
 
 
+# the one-time courtesy sent to a platform the conversation just walked away
+# from. asterisk stage-direction styling matches the persona's voice; on
+# plain-text platforms the asterisks read as deliberate emphasis.
+SWITCH_NOTICE = "*(pssst — we're chatting over on {platform} now. see you there 💜)*"
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -58,6 +64,7 @@ class Orchestrator:
         agenda_service=None,
         tool_registry=None,
         reconciler=None,
+        deliver=None,
         max_history_messages: Optional[int] = None,
     ):
         self.agents = agents
@@ -69,16 +76,24 @@ class Orchestrator:
         # optional: after the companion replies to a user, a cheap pass that
         # marks tasks done which the user mentioned finishing in passing
         self.reconciler = reconciler
+        # optional: awaitable (platform, platform_user_id, message) -> bool,
+        # wired to MessageRouter.deliver in main - lets the orchestrator send
+        # out-of-band courtesies like the platform-switch notice
+        self.deliver = deliver
         self.max_history_messages = max_history_messages or Config.MAX_HISTORY_MESSAGES
 
     # --- entry point ---------------------------------------------------------
 
     async def handle(self, stimulus: Stimulus) -> Deliverable:
-        log = EventLog(stimulus.user_uuid, stimulus.platform)
+        log = EventLog(stimulus.user_uuid)
 
-        # 1. record the inbound message first, so it's the last item in history
+        # 1. record the inbound message first, so it's the last item in history.
+        # (previous user message read BEFORE the append - it's what tells us
+        # whether the conversation just walked to a different platform.)
         if stimulus.kind == "user_message" and stimulus.content:
+            prev_user_event = log.last_user_message()
             await self._append_message(log, "user", "user", stimulus.content, stimulus=stimulus)
+            await self._maybe_notify_platform_switch(log, stimulus, prev_user_event)
 
         deliverable = Deliverable()
         for speaker in self._select(stimulus):
@@ -184,7 +199,8 @@ class Orchestrator:
                 continue
             if self.tool_registry and not self.tool_registry.should_record(action.name):
                 continue
-            log.append_action(agent.name, action.name, action.input, action.result_content)
+            log.append_action(agent.name, action.name, action.input, action.result_content,
+                              platform=stimulus.platform)
 
         message_type = "scheduled" if stimulus.kind == "scheduled_tick" else "conversation"
         await self._append_message(log, "agent", agent.name, outcome.text,
@@ -211,15 +227,64 @@ class Orchestrator:
             for action in result.actions:
                 if not action.is_error:
                     log.append_action("chordial", action.name, action.input,
-                                      action.result_content)
+                                      action.result_content, platform=stimulus.platform)
         except Exception as e:
             logger.error("completion reconcile failed for user %s: %s",
+                         stimulus.user_uuid, e)
+
+    async def _maybe_notify_platform_switch(self, log: EventLog, stimulus: Stimulus,
+                                            prev_user_event) -> None:
+        """the conversation just walked from platform A to platform B: send the
+        one-time courtesy notice to A. structurally self-deduping - after this
+        message, the last user message IS on B, so the trigger can't refire
+        until the user speaks on A again (which is the reset the owner asked
+        for). fully guarded: a failure here must never affect the user's reply.
+        """
+        try:
+            if self.deliver is None or prev_user_event is None:
+                return
+            old_platform = prev_user_event.platform
+            if not old_platform or old_platform == stimulus.platform:
+                return
+
+            # only notify a link we could actually reach
+            identity = await self.user_manager.get_identity(stimulus.user_uuid, old_platform)
+            if identity is None or not identity[1]:
+                return
+            platform_user_id = identity[0]
+
+            # belt-and-braces for two rapid messages dispatched concurrently:
+            # if a switch note for A was already recorded after A's last user
+            # message, another handler beat us to it. this scan sits directly
+            # before the note append with NO await between them, so the
+            # check-then-write pair is atomic within the event loop.
+            for event in reversed(log.recent(self.max_history_messages)):
+                if event.db_id and prev_user_event.db_id and event.db_id <= prev_user_event.db_id:
+                    break
+                if (event.kind == "note"
+                        and event.metadata.get("note_type") == "platform_switch"
+                        and event.platform == old_platform):
+                    return
+
+            notice = SWITCH_NOTICE.format(platform=stimulus.platform)
+            # note first (the at-most-once record), then best-effort delivery -
+            # a transient miss is an acceptable cost for a cosmetic courtesy
+            log.append_note(notice, platform=old_platform,
+                            metadata={"note_type": "platform_switch", "to": stimulus.platform})
+            delivered = await self.deliver(old_platform, platform_user_id, notice)
+            if not delivered:
+                logger.info("switch notice to %s not delivered (transient or dead link)",
+                            old_platform)
+        except Exception as e:
+            logger.error("platform-switch notice failed for user %s: %s",
                          stimulus.user_uuid, e)
 
     async def _append_message(self, log: EventLog, author_type: str, author: str,
                               content: str, *, stimulus: Stimulus,
                               message_type: str = "conversation") -> None:
-        event = log.append_message(author_type, author, content, message_type=message_type)
+        event = log.append_message(author_type, author, content,
+                                   message_type=message_type,
+                                   platform=stimulus.platform)
         if Config.ENABLE_COMPRESSION:
             await self._compress(event, stimulus)
 

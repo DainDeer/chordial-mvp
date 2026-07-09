@@ -326,10 +326,12 @@ def test_scheduler_ignores_trailing_action_event(db):
     from src.services.scheduler_service import SchedulerService
     from src.managers.user_manager import UserManager
 
-    log = EventLog("u1", "discord")
-    log.append_message("agent", "chordial", "checking in~", message_type="scheduled")
-    log.append_action("chordial", "create_task", {"title": "x"}, "created")
+    log = EventLog("u1")
+    log.append_message("agent", "chordial", "checking in~", message_type="scheduled",
+                       platform="discord")
+    log.append_action("chordial", "create_task", {"title": "x"}, "created",
+                      platform="discord")
 
     scheduler = SchedulerService(user_manager=UserManager())
-    role, _, mtype = run(scheduler._check_last_message("u1", "discord"))
+    role, _, mtype = run(scheduler._check_last_message("u1"))
     assert (role, mtype) == ("assistant", "scheduled")

@@ -170,7 +170,9 @@ class TestSchedulerQuietHoursPerUser:
             db.add(PlatformIdentity(
                 user_uuid=user_uuid,
                 platform="discord",
-                platform_user_id="123",
+                # unique per user - (platform, platform_user_id) is a real
+                # db constraint now
+                platform_user_id=f"pid-{user_uuid[:8]}",
             ))
             db.add(ConversationEvent(
                 user_uuid=user_uuid,
@@ -215,8 +217,8 @@ class TestSchedulerQuietHoursPerUser:
         )
 
         async def run():
-            ny_result = await scheduler.should_send_scheduled_message(ny_user_uuid, "discord")
-            tokyo_result = await scheduler.should_send_scheduled_message(tokyo_user_uuid, "discord")
+            ny_result = await scheduler.should_send_scheduled_message(ny_user_uuid)
+            tokyo_result = await scheduler.should_send_scheduled_message(tokyo_user_uuid)
             return ny_result, tokyo_result
 
         ny_result, tokyo_result = asyncio.run(run())

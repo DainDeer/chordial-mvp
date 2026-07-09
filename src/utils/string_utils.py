@@ -15,7 +15,7 @@ def chunk_message(content: str, max_length: int = 2000) -> List[str]:
         # if a single paragraph is too long, we need to split it further
         if len(paragraph) > max_length:
             # split by sentences
-            sentences = self._split_into_sentences(paragraph)
+            sentences = split_into_sentences(paragraph)
             
             for sentence in sentences:
                 # if even a sentence is too long, hard split it
