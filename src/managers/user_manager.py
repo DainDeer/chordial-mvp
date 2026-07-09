@@ -170,6 +170,55 @@ class UserManager:
                 return None
             return identity.platform_user_id, bool(identity.is_active)
 
+    async def link_platform_identity(
+        self,
+        user_uuid: str,
+        platform: str,
+        platform_user_id: str,
+        platform_username: Optional[str] = None,
+    ) -> str:
+        """bind a platform account to an existing user (the link-code flow's
+        write). returns:
+        - 'linked'   - no identity existed for (platform, platform_user_id):
+                       created, active
+        - 'relinked' - the identity already belonged to THIS user (e.g.
+                       deactivated after a block): reactivated, username
+                       refreshed
+        - 'conflict' - the identity belongs to a DIFFERENT user: refused,
+                       nothing changed (a platform account binds to one user)
+        """
+        with get_db() as db:
+            identity = db.query(PlatformIdentity).filter(
+                PlatformIdentity.platform == platform,
+                PlatformIdentity.platform_user_id == platform_user_id,
+            ).first()
+
+            if identity is None:
+                db.add(PlatformIdentity(
+                    user_uuid=user_uuid,
+                    platform=platform,
+                    platform_user_id=platform_user_id,
+                    platform_username=platform_username,
+                    is_active=True,
+                ))
+                db.commit()
+                logger.info(f"linked {platform}:{platform_user_id} to user {user_uuid}")
+                return "linked"
+
+            if identity.user_uuid == user_uuid:
+                identity.is_active = True
+                if platform_username:
+                    identity.platform_username = platform_username
+                db.commit()
+                logger.info(f"relinked {platform}:{platform_user_id} for user {user_uuid}")
+                return "relinked"
+
+            logger.warning(
+                f"link refused: {platform}:{platform_user_id} already belongs to "
+                f"user {identity.user_uuid}, not {user_uuid}"
+            )
+            return "conflict"
+
     async def deactivate_platform_identity(self, platform: str, platform_user_id: str) -> None:
         """mark a single platform link as undeliverable. called when an outbound
         send hard-fails (e.g. discord 404 unknown-user / 403 forbidden) so the

@@ -26,6 +26,13 @@ def build_default_registry() -> ToolRegistry:
     else:
         logger.info("notion tools disabled (no NOTION_API_KEY set)")
 
+    if Config.telegram_linking_enabled():
+        # config-stable gating (like notion): the tool's bytes only change at
+        # deploy time, so the prompt cache is unaffected.
+        from .link_tools import LINK_PLATFORM
+        registry.register(LINK_PLATFORM)
+        logger.info("platform linking tool enabled")
+
     return registry
 
 
