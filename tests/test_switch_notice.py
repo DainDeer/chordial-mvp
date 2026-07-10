@@ -59,7 +59,9 @@ class FakeDeliver:
         self.ok = ok
         self.sent = []  # (platform, platform_user_id, message)
 
-    async def __call__(self, platform, platform_user_id, message):
+    async def __call__(self, platform, platform_user_id, message, speaker="chordial"):
+        # speaker-aware in v3 (deliver_as); the switch notice always speaks as
+        # chordial, so the default keeps these assertions unchanged.
         self.sent.append((platform, platform_user_id, message))
         return self.ok
 

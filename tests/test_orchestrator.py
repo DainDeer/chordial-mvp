@@ -22,6 +22,7 @@ from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.agents.base import AgentOutcome, Briefing  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
 from src.services.agent_service import ExecutedAction  # noqa: E402
+import src.services.orchestrator as orch_mod  # noqa: E402
 from src.services.orchestrator import Orchestrator, Stimulus  # noqa: E402
 from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
 from src.providers.ai.types import ToolDef, ProviderError  # noqa: E402
@@ -55,6 +56,35 @@ class RecordingAgent:
     async def act(self, briefing):
         self.briefings.append(briefing)
         return self.outcome
+
+
+class FakeView:
+    def __init__(self, helper_id, is_active=True):
+        self.helper_id = helper_id
+        self.is_active = is_active
+
+
+class FakeHSM:
+    """a fixed active cast; chordial is always present, like the real manager."""
+    def __init__(self, active=("chordial",)):
+        ids = list(active)
+        if "chordial" not in ids:
+            ids.insert(0, "chordial")
+        self._ids = ids
+
+    async def active_helpers(self, user_uuid):
+        return [FakeView(h, True) for h in self._ids]
+
+
+class FakeDeliver:
+    """the speaker-aware out-of-band send (router.deliver_as in prod)."""
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.calls = []  # (platform, target_id, text, speaker)
+
+    async def __call__(self, platform, target_id, text, speaker):
+        self.calls.append((platform, target_id, text, speaker))
+        return self.ok
 
 
 class FakeCurator:
@@ -210,3 +240,134 @@ def test_registry_view_raises_on_unknown_tool():
     reg = ToolRegistry()
     with pytest.raises(KeyError):
         reg.view(["ghost_tool"])
+
+
+# --- group delivery, scope, and dm privacy (v3) -------------------------------
+
+def _events_meta(db):
+    with db() as s:
+        return [(e.author, e.kind, dict(e.event_metadata or {})) for e in
+                s.query(ConversationEvent).order_by(ConversationEvent.id).all()]
+
+
+def test_group_delivers_each_line_out_of_band_with_a_gap(db, monkeypatch):
+    """a group activation delivers every line through the speaker-aware router
+    (each bot speaks for itself), with one natural gap between the two lines,
+    and returns handled=True/text=None so the interface sends nothing."""
+    sleeps = []
+
+    async def fake_sleep(secs):
+        sleeps.append(secs)
+    monkeypatch.setattr(orch_mod.asyncio, "sleep", fake_sleep)
+
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="train time"))
+    aria = RecordingAgent(name="aria", outcome=AgentOutcome(text="a poem"))
+    deliver = FakeDeliver()
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo, "aria": aria},
+                 helper_state_manager=FakeHSM(("chordial", "tempo", "aria")),
+                 deliver=deliver)
+    d = run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram",
+        content="@tempo @aria hey", chat_scope="group", group_chat_id="g1",
+        mentioned=["tempo", "aria"], user_name="dain", user_timezone="UTC")))
+
+    assert deliver.calls == [
+        ("telegram", "g1", "train time", "tempo"),
+        ("telegram", "g1", "a poem", "aria"),
+    ]
+    assert len(sleeps) == 1 and 2.0 <= sleeps[0] <= 5.0  # one gap between two lines
+    assert d.handled is True
+    assert d.text is None
+
+
+def test_dm_returns_text_without_out_of_band_delivery(db):
+    deliver = FakeDeliver()
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hey from tempo"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo}, deliver=deliver)
+    d = run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="hi tempo",
+        chat_scope="dm", dm_helper="tempo", user_name="dain", user_timezone="UTC")))
+    assert d.text == "hey from tempo"
+    assert d.handled is False
+    assert deliver.calls == []  # dm: the receiving interface sends, not the orchestrator
+
+
+def test_group_is_handled_even_without_a_deliver_hook(db, monkeypatch):
+    monkeypatch.setattr(orch_mod.asyncio, "sleep", lambda s: asyncio.sleep(0))
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hi"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo},
+                 helper_state_manager=FakeHSM(("chordial", "tempo")))  # deliver=None
+    d = run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="@tempo hi",
+        chat_scope="group", group_chat_id="g1", mentioned=["tempo"],
+        user_name="dain", user_timezone="UTC")))
+    assert d.handled is True and d.text is None
+
+
+def test_dm_events_carry_the_helpers_private_scope(db):
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo})
+    run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="hi",
+        chat_scope="dm", dm_helper="tempo", user_name="dain", user_timezone="UTC")))
+    metas = _events_meta(db)
+    assert [(a, k) for a, k, _ in metas] == [("user", "message"), ("tempo", "message")]
+    assert all(m.get("scope") == "dm" and m.get("with_helper") == "tempo"
+               for _, _, m in metas)
+
+
+def test_group_events_carry_no_scope_tag(db, monkeypatch):
+    """group history writes no scope tag (absence means group), keeping those
+    bytes identical to pre-dm history."""
+    monkeypatch.setattr(orch_mod.asyncio, "sleep", lambda s: asyncio.sleep(0))
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo},
+                 helper_state_manager=FakeHSM(("chordial", "tempo")), deliver=FakeDeliver())
+    run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="@tempo hi",
+        chat_scope="group", group_chat_id="g1", mentioned=["tempo"],
+        user_name="dain", user_timezone="UTC")))
+    assert all(not m for _, _, m in _events_meta(db))  # no scope metadata anywhere
+
+
+def test_briefing_is_scope_aware_and_excludes_a_siblings_dm(db):
+    """the privacy window: chordial sees the group channel and its own dm, but
+    never aria's private transcript. (verifies the behavior the foundation's
+    recent(visible_to=) is meant to provide; the orchestrator filters here
+    because that foundation branch has a detached-instance bug - see the
+    _visible_window docstring.)"""
+    from src.managers.event_log import EventLog
+    log = EventLog("u1")
+    log.append_message("user", "user", "secret for aria", platform="telegram",
+                       scope="dm", with_helper="aria")
+    log.append_message("agent", "aria", "aria private reply", platform="telegram",
+                       scope="dm", with_helper="aria")
+    log.append_message("user", "user", "group hello", platform="telegram", scope="group")
+
+    companion = RecordingAgent()  # chordial
+    orch = _orch({"chordial": companion})
+    run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="hi chordial",
+        chat_scope="dm", dm_helper="chordial", user_name="dain", user_timezone="UTC")))
+
+    seen = [e.content for e in companion.briefings[0].events]
+    assert "secret for aria" not in seen
+    assert "aria private reply" not in seen
+    assert "group hello" in seen        # the shared channel is visible
+    assert "hi chordial" in seen        # its own inbound dm is visible
+
+
+def test_group_briefing_reflects_scope_and_cue(db, monkeypatch):
+    """the director's stage direction (cue/style) and the group scope reach the
+    briefed agent."""
+    monkeypatch.setattr(orch_mod.asyncio, "sleep", lambda s: asyncio.sleep(0))
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo},
+                 helper_state_manager=FakeHSM(("chordial", "tempo")), deliver=FakeDeliver())
+    run(orch.handle(Stimulus(
+        kind="user_message", user_uuid="u1", platform="telegram", content="@tempo hi",
+        chat_scope="group", group_chat_id="g1", mentioned=["tempo"],
+        user_name="dain", user_timezone="UTC")))
+    b = tempo.briefings[0]
+    assert b.scope == "group"
+    assert b.style == "full"

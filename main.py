@@ -14,22 +14,51 @@ from src.database.database import init_db
 def _build_interfaces(chat_service, link_service, user_manager):
     """construct every enabled platform interface. add a branch here per platform;
     nothing else in main() needs to change - the router and scheduler discover
-    platforms from whatever this returns."""
+    platforms from whatever this returns.
+
+    telegram in v3 is MULTI-BOT: one interface per enabled helper that has a
+    token (Config.telegram_helper_tokens()), all sharing one UpdateDeduper (N
+    bots in a group each receive every human message; the deduper keeps the
+    first) and one handle->helper map (for resolving @mentions). a single-bot
+    deployment - only chordial's TELEGRAM_TOKEN set - yields exactly one
+    telegram interface, i.e. v2 behavior."""
     interfaces = []
     if Config.ENABLE_DISCORD:
         from src.providers.platforms.discord_bot import DiscordInterface
         interfaces.append(DiscordInterface(chat_service))
         logger.info("discord interface enabled")
     if Config.ENABLE_TELEGRAM:
-        # fail loudly at startup if the flag is on but config is incomplete -
-        # a silently-missing platform is much harder to notice
-        if not Config.TELEGRAM_TOKEN:
-            raise RuntimeError("ENABLE_TELEGRAM is true but TELEGRAM_TOKEN is not set")
+        from src.personas import load_personas
+        from src.providers.platforms.telegram_bot import TelegramInterface, UpdateDeduper
+
+        tokens = Config.telegram_helper_tokens()
+        if not tokens:
+            raise RuntimeError(
+                "ENABLE_TELEGRAM is true but no helper has a telegram token "
+                "(set TELEGRAM_TOKEN for chordial and/or TELEGRAM_TOKEN_<HELPER>)"
+            )
         if not Config.TELEGRAM_BOT_USERNAME:
             raise RuntimeError("ENABLE_TELEGRAM is true but TELEGRAM_BOT_USERNAME is not set")
-        from src.providers.platforms.telegram_bot import TelegramInterface
-        interfaces.append(TelegramInterface(chat_service, link_service, user_manager))
-        logger.info("telegram interface enabled")
+
+        cards = load_personas()
+        handle_to_helper = {
+            c.telegram_handle.lower(): c.id for c in cards.values() if c.telegram_handle
+        }
+        deduper = UpdateDeduper()
+        for helper_id, token in tokens.items():
+            card = cards[helper_id]
+            interfaces.append(TelegramInterface(
+                helper_id=helper_id,
+                token=token,
+                telegram_handle=card.telegram_handle,
+                chat_service=chat_service,
+                link_service=link_service,
+                user_manager=user_manager,
+                deduper=deduper,
+                group_chat_id=Config.TELEGRAM_GROUP_CHAT_ID,
+                handle_to_helper=handle_to_helper,
+            ))
+        logger.info("telegram interfaces enabled for helpers: %s", ", ".join(tokens))
     return interfaces
 
 
@@ -150,13 +179,19 @@ async def main():
             )
             logger.info("completion reconciler initialized")
 
+        from src.managers.helper_state_manager import HelperStateManager
+
         orchestrator = Orchestrator(
             agents=agents,
             user_manager=user_manager,
             agenda_service=agenda_service,
             tool_registry=registry,
             reconciler=reconciler,
-            deliver=router.deliver,
+            # speaker-aware delivery: the orchestrator makes a specific helper
+            # speak (a group line via that helper's bot, or the switch notice as
+            # chordial). deliver_as resolves (platform, speaker) -> interface.
+            deliver=router.deliver_as,
+            helper_state_manager=HelperStateManager(),
         )
         logger.info(f"orchestrator initialized (agents: {', '.join(agents)})")
 

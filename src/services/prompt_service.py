@@ -37,6 +37,31 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# shared framing for every introduction activation, regardless of which
+# helper is running it. persona-specific color (the narrative frame, what
+# this helper leads with) lives in `PersonaCard.intro_block`; this is the
+# thin procedural instruction that keeps every helper's introduction landing
+# on the same tools. lives in the volatile current turn (never system blocks
+# 1/2), so it costs nothing against the cache and can be edited freely.
+_INTRO_SHARED_GUIDANCE = (
+    "this is an introduction activation - run it as a natural conversation, "
+    "never a form or checklist, and let it unfold over as many turns as it "
+    "takes. if you don't have their name yet, learn it. weave in a few fully "
+    "freeform questions to get a feel for them (how their days usually go, "
+    "what \"productive\" means to them, whether they want encouragement loud "
+    "or quiet, whatever the conversation naturally opens up) and save what "
+    "you learn with save_memory as you go (visibility='shared' - it's "
+    "calibration data for the whole crew). then run the representation "
+    "ritual: ask how they'd like you to appear to them - any form, any "
+    "gender, any vibe, \"surprise me\", or no character at all. every answer "
+    "is a good one. propose a name that fits what they chose, or let them "
+    "name you. once it's settled (or they've made clear they don't want you "
+    "in their crew), save the identity with save_memory(is_core=true, "
+    "visibility='shared') AND call complete_introduction to record the "
+    "outcome - do both. mid-conversation interruptions are fine; there's no "
+    "rigid step order to desync."
+)
+
 
 class PromptService:
     """builds cache-aware AIRequests for a persona's ai interactions."""
@@ -244,6 +269,73 @@ class PromptService:
             effort=Config.CHAT_EFFORT,
         )
         self._log_request(user_name, "conversation", request)
+        return request
+
+    async def build_introduction_request(
+        self,
+        conversation_history: List[Event],
+        user_name: Optional[str],
+        user_uuid: Optional[str],
+        user_timezone: str,
+        tools: Optional[List[ToolDef]] = None,
+        ambient_context: Optional[str] = None,
+    ) -> AIRequest:
+        """build the request for an introduction activation (docs/V3_DESIGN.md
+        section 3). system blocks 1/2 are untouched (byte-identical to a normal
+        conversation turn for this persona - the cache doesn't know or care
+        that this is an introduction); the persona's `intro_block` plus shared
+        procedural guidance ride ONLY in the volatile current turn, alongside
+        the usual now-context/ambient/leftover-actions.
+
+        handles both shapes this activation can arrive in:
+        - first contact / a fresh introduction turn: the last history event is
+          the just-received user message (or `None` for a truly cold open,
+          e.g. a `/start meet` deep link with no text) - same "current turn"
+          split as `build_conversation_request`.
+        - a returning user meeting a NEW helper: `conversation_history` may
+          carry prior events (this helper's own past dm turns, if any, plus
+          whatever the orchestrator scoped in) which render as ordinary
+          history ahead of the intro framing.
+        """
+        system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
+
+        prior = conversation_history[:-1] if conversation_history else []
+        current = conversation_history[-1] if conversation_history else None
+        # only the last event being an inbound user message makes it "current"
+        # (the volatile turn); anything else (e.g. no history at all, or a
+        # trailing action/note with no message) means this activation opens
+        # cold and everything present is prior context.
+        if current is not None and not (current.kind == "message" and current.role == "user"):
+            prior = conversation_history
+            current = None
+
+        messages, leftover_actions = self._render_history(prior, user_timezone)
+
+        now_line = self._now_line(user_timezone, self._last_user_timestamp(prior), user_name)
+        content = (
+            f"[current time - {now_line}]\n"
+            f"[{self.persona.intro_block}]\n"
+            f"[{_INTRO_SHARED_GUIDANCE}]\n"
+        )
+        if leftover_actions:
+            content += f"{self._action_block(leftover_actions, user_timezone)}\n"
+        if ambient_context:
+            content += f"[{ambient_context}]\n"
+        if current is not None:
+            content += current.content
+        else:
+            who = user_name or "them"
+            content += f"begin the introduction now, in your own voice, for {who}."
+        messages.append(ChatTurn(role="user", content=content))
+
+        request = AIRequest(
+            system=system,
+            messages=messages,
+            tools=tools or [],
+            max_tokens=Config.CHAT_MAX_TOKENS,
+            effort=Config.CHAT_EFFORT,
+        )
+        self._log_request(user_name, "introduction", request)
         return request
 
     async def build_scheduled_request(

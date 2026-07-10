@@ -236,11 +236,13 @@ class EventLog:
         # privacy path: pull a generous tail, drop what this helper can't see,
         # THEN window on the visible messages. bounded pull keeps it cheap at
         # mvp scale (a user's whole log is trimmed to ~1000 events anyway).
+        # detach into Event dataclasses INSIDE the session - the orm rows are
+        # invalid once it closes.
         with get_db() as db:
             rows = db.query(ConversationEvent).filter(
                 ConversationEvent.user_uuid == self.user_uuid,
             ).order_by(ConversationEvent.id.desc()).limit(message_limit * 6 + 200).all()
-        events = [Event.from_row(r) for r in reversed(rows)]
+            events = [Event.from_row(r) for r in reversed(rows)]
         events = [e for e in events if e.visible_to(visible_to)]
         return self._window(events, message_limit)
 

@@ -25,6 +25,7 @@ telegram facts this file leans on (verified against current docs):
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from typing import Optional
 
 from telegram.constants import ChatAction
@@ -40,6 +41,55 @@ from src.services.platform_link_service import LinkResult
 from src.utils.string_utils import chunk_message
 
 logger = logging.getLogger(__name__)
+
+
+class UpdateDeduper:
+    """N bots in one group each deliver every human message; keep the first.
+
+    every helper bot polls its own update stream, so a single human line in the
+    shared group arrives once per bot - all with the same (chat_id, message_id).
+    all interfaces share ONE deduper instance; the first bot to observe a given
+    (chat_id, message_id) processes it, the rest see a duplicate and drop it.
+    """
+
+    def __init__(self, maxlen: int = 512):
+        self._seen: "OrderedDict[tuple[int, int], None]" = OrderedDict()
+        self._maxlen = maxlen
+
+    def is_duplicate(self, chat_id: int, message_id: int) -> bool:
+        key = (chat_id, message_id)
+        if key in self._seen:
+            return True
+        self._seen[key] = None
+        if len(self._seen) > self._maxlen:
+            self._seen.popitem(last=False)
+        return False
+
+
+def mentioned_helpers(message, handle_to_helper: "dict[str, str] | None") -> list[str]:
+    """resolve @-mentions in a group message to helper ids, in order (deduped).
+
+    telegram hands us `MessageEntity` spans instead of leaving us to regex the
+    text: a "mention" entity is an '@handle' substring we slice out of the text
+    and map to a helper id; a "text_mention" entity carries a `User` object
+    directly (used when a bot has no public username) whose `.username` we map
+    the same way. unknown handles are ignored.
+    """
+    handle_to_helper = handle_to_helper or {}
+    out: list[str] = []
+    text = message.text or ""
+    for ent in (message.entities or []):
+        helper: Optional[str] = None
+        if ent.type == "mention":
+            handle = text[ent.offset + 1 : ent.offset + ent.length]  # drop the '@'
+            helper = handle_to_helper.get(handle.lower())
+        elif ent.type == "text_mention" and getattr(ent, "user", None) is not None:
+            username = getattr(ent.user, "username", None)
+            if username:
+                helper = handle_to_helper.get(username.lower())
+        if helper and helper not in out:
+            out.append(helper)
+    return out
 
 _TELEGRAM_MAX_LENGTH = 4096
 _INTER_CHUNK_DELAY = 1.0   # stay under telegram's ~1 msg/sec per chat
@@ -71,21 +121,49 @@ CONFLICT_REPLY = (
 
 
 class TelegramInterface(BaseInterface):
-    """telegram bot implementation (long polling, DMs only)."""
+    """one helper's telegram bot (long polling): its DMs + the shared group.
+
+    in v3 each helper (chordial, tempo, ...) runs as its own bot account with
+    its own token, so main builds one interface per enabled helper. they all
+    still report `platform == "telegram"`; the router disambiguates by
+    `helper_id`. per-helper state carried here:
+    - `helper_id`: which persona this bot speaks as (event-log author / router
+      sub-key / the `via_bot` stamp on inbound messages).
+    - `deduper`: a SHARED `UpdateDeduper` across every interface - N bots each
+      receive every human group message, and only the first delivery of a given
+      (chat_id, message_id) is processed.
+    - `handle_to_helper`: bot @handle (lowercase, no '@') -> helper id, for
+      resolving @mentions in group messages to the helpers they summon.
+    """
 
     platform = "telegram"
 
-    def __init__(self, chat_service, link_service, user_manager):
+    def __init__(self, helper_id: str, token: str, telegram_handle: str, chat_service,
+                 link_service, user_manager, deduper, group_chat_id=None,
+                 handle_to_helper: "dict[str, str] | None" = None):
         super().__init__(chat_service)
+        self.helper_id = helper_id
+        self.token = token
+        self.telegram_handle = telegram_handle
         self.link_service = link_service
         self.user_manager = user_manager
+        self.deduper = deduper
+        self.group_chat_id = group_chat_id
+        self.handle_to_helper = handle_to_helper or {}
         self._stopped = asyncio.Event()
 
-        self.app: Application = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).build()
+        self.app: Application = ApplicationBuilder().token(token).build()
         self.app.add_handler(CommandHandler("start", self._on_start))
+        self.app.add_handler(CommandHandler(
+            "setup_group", self._on_setup_group, filters=filters.ChatType.GROUPS,
+        ))
         self.app.add_handler(MessageHandler(
             filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
             self._on_message,
+        ))
+        self.app.add_handler(MessageHandler(
+            filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
+            self._on_group_message,
         ))
 
     # --- lifecycle -----------------------------------------------------------
@@ -97,10 +175,12 @@ class TelegramInterface(BaseInterface):
         try:
             await self.app.initialize()
 
-            # nice-to-have sanity check: the configured deep-link username
-            # should belong to this token's bot
+            # nice-to-have sanity check: chordial's deep-link username should
+            # belong to its token's bot (link codes point at chordial's bot).
+            # only meaningful for chordial - other helpers have their own handle.
             me = await self.app.bot.get_me()
-            if Config.TELEGRAM_BOT_USERNAME and me.username != Config.TELEGRAM_BOT_USERNAME:
+            if (self.helper_id == "chordial" and Config.TELEGRAM_BOT_USERNAME
+                    and me.username != Config.TELEGRAM_BOT_USERNAME):
                 logger.warning(
                     "TELEGRAM_BOT_USERNAME=%r but the token belongs to @%s - "
                     "link-code deep links will point at the wrong bot!",
@@ -171,6 +251,9 @@ class TelegramInterface(BaseInterface):
             platform_user_id=str(user.id),
             platform="telegram",
             platform_message_id=str(message.message_id),
+            chat_scope="dm",
+            via_bot=self.helper_id,
+            dm_helper=self.helper_id,
             metadata={
                 "username": user.username,
                 "timestamp": message.date,
@@ -186,6 +269,73 @@ class TelegramInterface(BaseInterface):
                 await update.effective_chat.send_message(chunk)  # plain text, no parse_mode
                 if i < len(chunks) - 1:
                     await asyncio.sleep(_INTER_CHUNK_DELAY)
+
+    async def _on_group_message(self, update, context: ContextTypes.DEFAULT_TYPE):
+        """a human line in the shared crew group. delivered to every bot, so we
+        dedupe first; unknown senders are ignored (no user row, no reply); the
+        reply is delivered out-of-band by the orchestrator/router, so we send
+        nothing back here (chat_service returns None for group scope)."""
+        user = update.effective_user
+        message = update.message
+        chat = update.effective_chat
+        if user is None or message is None or not message.text or chat is None:
+            return
+
+        # N bots => N identical updates; only the first past the shared deduper
+        # is processed. keyed on (chat_id, message_id), stable across streams.
+        if self.deduper is not None and self.deduper.is_duplicate(chat.id, message.message_id):
+            return
+
+        # unknown senders in a group are ignored silently: no onboarding, no
+        # stranger line, no api spend (the group is a known-users-only room).
+        if not await self._is_known(str(user.id)):
+            return
+
+        mentioned = mentioned_helpers(message, self.handle_to_helper)
+
+        from src.models.unified_message import UnifiedMessage
+        unified_msg = UnifiedMessage(
+            content=message.text,
+            platform_user_id=str(user.id),
+            platform="telegram",
+            platform_message_id=str(message.message_id),
+            chat_scope="group",
+            group_chat_id=str(chat.id),
+            via_bot=self.helper_id,
+            mentioned=mentioned,
+            metadata={
+                "username": user.username,
+                "timestamp": message.date,
+            },
+        )
+
+        # group scope: the orchestrator delivers each speaker's line out-of-band
+        # via the router, so process_message returns None and we send nothing.
+        # (a returned string is an acceptable fallback, but the contract is None.)
+        response = await self.chat_service.process_message(unified_msg)
+        if response:
+            chunks = chunk_message(response, max_length=_TELEGRAM_MAX_LENGTH)
+            for i, chunk in enumerate(chunks):
+                await chat.send_message(chunk)
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(_INTER_CHUNK_DELAY)
+
+    async def _on_setup_group(self, update, context: ContextTypes.DEFAULT_TYPE):
+        """/setup_group in a group: a discovery helper. reply with the chat id
+        and how to persist it (set TELEGRAM_GROUP_CHAT_ID) - phase-2 keeps this
+        lightweight, since Dain creates the group manually and sets the env."""
+        message = update.message
+        chat = update.effective_chat
+        if message is None or chat is None:
+            return
+        # keep it deduped too: every bot in the group sees this command.
+        if self.deduper is not None and self.deduper.is_duplicate(chat.id, message.message_id):
+            return
+        await message.reply_text(
+            f"this group's chat id is `{chat.id}`.\n"
+            f"set TELEGRAM_GROUP_CHAT_ID={chat.id} in the environment and "
+            f"restart so the crew can speak here."
+        )
 
     async def _is_known(self, platform_user_id: str) -> bool:
         return not await self.user_manager.is_new_user("telegram", platform_user_id)

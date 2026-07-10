@@ -33,7 +33,17 @@ class HelperAgent:
         self.prompts = PromptService(persona=card)
 
     async def act(self, briefing: Briefing) -> AgentOutcome:
-        if briefing.kind == "scheduled_checkin":
+        if briefing.kind == "introduction":
+            request = await self.prompts.build_introduction_request(
+                conversation_history=briefing.events,
+                user_name=briefing.user_name,
+                user_uuid=briefing.user_uuid,
+                user_timezone=briefing.user_timezone,
+                tools=self.registry.definitions(),
+                ambient_context=briefing.ambient_context,
+            )
+            turn_kind = "introduction"
+        elif briefing.kind == "scheduled_checkin":
             request = await self.prompts.build_scheduled_request(
                 conversation_history=briefing.events,
                 user_name=briefing.user_name,
@@ -59,6 +69,7 @@ class HelperAgent:
             user_uuid=briefing.user_uuid,
             platform=briefing.platform,
             turn_kind=turn_kind,
+            acting_helper=self.name,
         )
         return AgentOutcome(
             text=result.text,
