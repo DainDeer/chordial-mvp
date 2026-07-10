@@ -13,6 +13,7 @@ from typing import Optional
 from src.providers.ai.base import BaseAIProvider
 from src.providers.ai.types import AIRequest, ChatTurn, Usage
 from src.services.tools import ToolRegistry
+from src.services.tools.context import acting_as
 from src.services.usage_recorder import UsageRecorder
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,23 @@ class AgentService:
         self.max_iterations = max_iterations
 
     async def run(
+        self,
+        request: AIRequest,
+        *,
+        user_uuid: Optional[str],
+        platform: Optional[str],
+        turn_kind: str,
+        acting_helper: str = "chordial",
+    ) -> AgentResult:
+        """`acting_helper` is the persona whose tool loop this is - it rides in a
+        contextvar so tools like save_memory attribute the right helper without
+        threading identity through every handler. defaults to 'chordial' (the
+        single-helper v2 world, unchanged)."""
+        with acting_as(acting_helper):
+            return await self._run(request, user_uuid=user_uuid,
+                                   platform=platform, turn_kind=turn_kind)
+
+    async def _run(
         self,
         request: AIRequest,
         *,

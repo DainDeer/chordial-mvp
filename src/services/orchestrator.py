@@ -19,35 +19,22 @@ never pollutes future context (long-standing invariant).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from src.agents.base import Agent, AgentOutcome, Briefing
 from src.managers.event_log import Event, EventLog
 from src.managers.user_manager import UserManager
 from src.providers.ai.types import ProviderError
+# Stimulus/Deliverable (and the v3 Script/ScriptLine) live in orchestration_types
+# so the platform adapter can construct them without importing the orchestrator.
+# re-exported here so existing `from src.services.orchestrator import Stimulus`
+# imports keep working.
+from src.services.orchestration_types import (
+    Deliverable, Script, ScriptLine, Stimulus,
+)
 from config import Config
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Stimulus:
-    """something that might make an agent act."""
-    kind: str                        # 'user_message' | 'scheduled_tick' | 'curation_due'
-    user_uuid: str
-    platform: Optional[str] = None
-    content: Optional[str] = None    # user_message only
-    user_name: Optional[str] = None
-    user_timezone: Optional[str] = None
-
-
-@dataclass
-class Deliverable:
-    """what the caller (platform adapter / scheduler) gets back."""
-    text: Optional[str] = None
-    refused: bool = False
-    errored: bool = False
 
 
 # the one-time courtesy sent to a platform the conversation just walked away

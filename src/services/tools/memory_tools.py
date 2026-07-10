@@ -10,12 +10,14 @@ import logging
 from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
 from src.providers.ai.types import ToolDef
 from .base import Tool
+from .context import current_helper
 
 logger = logging.getLogger(__name__)
 
 _memories = MemoriesManager()
 
 _VALID_TYPES = {t.value for t in MemoryType}
+_VALID_VISIBILITY = {"shared", "private"}
 
 
 async def _save_memory(tool_input: dict, user_uuid: str) -> str:
@@ -31,6 +33,13 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
     if isinstance(keywords, str):
         keywords = [k.strip() for k in keywords.split(",") if k.strip()]
 
+    # visibility: 'shared' (default) joins the pool every helper can see;
+    # 'private' stays between this helper and the user. attribution is always
+    # the acting helper (from the tool-loop context), even for shared rows.
+    visibility = (tool_input.get("visibility") or "shared").lower()
+    if visibility not in _VALID_VISIBILITY:
+        visibility = "shared"
+
     result = await _memories.upsert_memory(
         user_uuid=user_uuid,
         ai_instruction=instruction,
@@ -38,6 +47,8 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
         source=MemorySource.AI_INFERRED,
         keywords=keywords,
         core=is_core,
+        created_by=current_helper(),
+        visibility=visibility,
     )
 
     if result.action == "reinforced":
@@ -58,10 +69,22 @@ async def _search_memories(tool_input: dict, user_uuid: str) -> str:
     if not terms:
         return "no search keywords provided."
 
-    matches = await _memories.search_memories_by_keywords(user_uuid, terms)
+    # scoped to what this helper may see: the shared pool plus its own privates.
+    matches = await _memories.search_memories_by_keywords(
+        user_uuid, terms, helper_id=current_helper(),
+    )
     if not matches:
         return "no memories matched those keywords."
-    return "\n".join(f"- [{m.memory_type}] {m.ai_instruction}" for m in matches)
+    return "\n".join(_render_match(m) for m in matches)
+
+
+def _render_match(m) -> str:
+    """a search hit, tagged with its source helper when a SIBLING saved it -
+    'heard from aria that ...' is the shared-memory gossip channel made legible.
+    a helper's own memories render unattributed (it already knows they're its)."""
+    created_by = getattr(m, "created_by", None) or "chordial"
+    src = "" if created_by == current_helper() else f" (from {created_by})"
+    return f"- [{m.memory_type}]{src} {m.ai_instruction}"
 
 
 SAVE_MEMORY = Tool(
@@ -94,6 +117,11 @@ SAVE_MEMORY = Tool(
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "A few search keywords for later recall.",
+                },
+                "visibility": {
+                    "type": "string",
+                    "enum": ["shared", "private"],
+                    "description": "shared (default) = the whole crew can recall it; use it for real facts about the user's life. private = kept just between you and them, for relationship texture the others don't need.",
                 },
             },
             "required": ["instruction"],

@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,11 +64,43 @@ class Config:
 
     # telegram (second platform). bot token from @BotFather; username (no '@')
     # is used for link-code deep links (https://t.me/<username>?start=<code>).
+    # in v3 each helper runs as its OWN telegram bot: the token for helper X is
+    # TELEGRAM_TOKEN_<X> (e.g. TELEGRAM_TOKEN_TEMPO), with the bare TELEGRAM_TOKEN
+    # serving as chordial's (back-compat with the single-bot v2 deployment). the
+    # per-bot @username lives on the persona card (telegram_handle), not here.
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME")
     ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "false").lower() == "true"
+    # the shared group chat all the helper bots and the user sit in. captured
+    # once (env, or a /setup_group command that writes it back) - the delivery
+    # target for group-scope proactive/scripted messages. None = no group yet
+    # (helpers only reachable via 1:1 dms until it's set).
+    TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID")
     # how long a platform link code stays redeemable
     LINK_CODE_TTL_MINUTES = int(os.getenv("LINK_CODE_TTL_MINUTES", "15"))
+
+    @classmethod
+    def telegram_token_for(cls, helper_id: str) -> Optional[str]:
+        """the bot token a helper polls/sends on. chordial falls back to the
+        bare TELEGRAM_TOKEN so a single-bot v2 deployment keeps working
+        untouched; every other helper needs its own TELEGRAM_TOKEN_<HELPER>."""
+        specific = os.getenv(f"TELEGRAM_TOKEN_{helper_id.upper()}")
+        if specific:
+            return specific
+        if helper_id == "chordial":
+            return cls.TELEGRAM_TOKEN
+        return None
+
+    @classmethod
+    def telegram_helper_tokens(cls) -> "dict[str, str]":
+        """{helper_id: token} for every ENABLED helper that has a token set.
+        drives how many telegram interfaces main() spins up (one per bot)."""
+        out: dict[str, str] = {}
+        for helper_id in cls.ENABLED_HELPERS:
+            token = cls.telegram_token_for(helper_id)
+            if token:
+                out[helper_id] = token
+        return out
 
     @classmethod
     def telegram_linking_enabled(cls) -> bool:
