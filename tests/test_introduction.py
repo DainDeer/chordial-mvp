@@ -134,7 +134,24 @@ def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(db):
     assert "chordial" not in result  # never offers to introduce yourself
     for helper_id in ("tempo", "aria", "pep", "mochi", "poet"):
         assert helper_id in result
-        assert "t.me/" in result
+
+
+def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(db, monkeypatch):
+    """the real, registered @username (config) drives the deep link - never
+    the persona card's `telegram_handle` placeholder, which is essentially
+    never the name actually available at botfather. no config -> no (wrong)
+    link offered, rather than a link to someone else's bot."""
+    user_uuid = run(_make_user())
+
+    with acting_as("chordial"):
+        unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    assert "t.me/" not in unconfigured
+
+    monkeypatch.setenv("TELEGRAM_USERNAME_TEMPO", "chordial_mvp_v3_tempo_bot")
+    with acting_as("chordial"):
+        configured = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    assert "t.me/chordial_mvp_v3_tempo_bot?start=meet" in configured
+    assert "t.me/tempo_bot" not in configured  # the card's placeholder, never used
 
 
 def test_list_available_guides_excludes_active_and_declined(db):

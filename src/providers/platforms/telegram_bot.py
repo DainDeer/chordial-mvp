@@ -175,16 +175,21 @@ class TelegramInterface(BaseInterface):
         try:
             await self.app.initialize()
 
-            # nice-to-have sanity check: chordial's deep-link username should
-            # belong to its token's bot (link codes point at chordial's bot).
-            # only meaningful for chordial - other helpers have their own handle.
+            # nice-to-have sanity check: the configured @username (deep links,
+            # mention parsing - see Config.telegram_username_for) should
+            # actually belong to this token's bot. every helper's own handle
+            # is checked, not just chordial's - a mismatch here means deep
+            # links/mentions for THIS helper are silently pointing at the
+            # wrong bot (most likely: BotFather username != TELEGRAM_USERNAME_*).
             me = await self.app.bot.get_me()
-            if (self.helper_id == "chordial" and Config.TELEGRAM_BOT_USERNAME
-                    and me.username != Config.TELEGRAM_BOT_USERNAME):
+            if self.telegram_handle and me.username != self.telegram_handle:
                 logger.warning(
-                    "TELEGRAM_BOT_USERNAME=%r but the token belongs to @%s - "
-                    "link-code deep links will point at the wrong bot!",
-                    Config.TELEGRAM_BOT_USERNAME, me.username,
+                    "configured username for '%s' is %r but the token belongs "
+                    "to @%s - deep links/mentions for this helper will point "
+                    "at the wrong bot! fix TELEGRAM_USERNAME_%s (or "
+                    "TELEGRAM_BOT_USERNAME for chordial).",
+                    self.helper_id, self.telegram_handle, me.username,
+                    self.helper_id.upper(),
                 )
 
             await self.app.start()

@@ -10,6 +10,7 @@ offer introductions and hand over a working deep link.
 """
 import logging
 
+from config import Config
 from src.managers.helper_state_manager import HelperStateManager
 from src.personas import load_personas
 from src.providers.ai.types import ToolDef
@@ -98,10 +99,16 @@ async def _list_available_guides(tool_input: dict, user_uuid: str) -> str:
         state = await _helper_states.get(user_uuid, helper_id)
         if state.status in ("active", "declined"):
             continue
-        lines.append(
-            f"- {helper_id} ({card.archetype}) - {card.specialty} - "
-            f"meet them: {_deep_link(card.telegram_handle)}"
-        )
+        # the real, registered @username (config) - NEVER the persona card's
+        # telegram_handle placeholder, which is almost never the actual name
+        # a helper's bot got registered under (botfather names are globally
+        # unique). a helper with no telegram bot configured at all has no
+        # deep link to offer - still worth listing, just without one.
+        username = Config.telegram_username_for(helper_id)
+        bits = f"- {helper_id} ({card.archetype}) - {card.specialty}"
+        if username:
+            bits += f" - meet them: {_deep_link(username)}"
+        lines.append(bits)
 
     if not lines:
         return "no other guides left to introduce - everyone's already been met (or passed on)."

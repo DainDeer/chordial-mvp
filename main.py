@@ -21,14 +21,18 @@ def _build_interfaces(chat_service, link_service, user_manager):
     bots in a group each receive every human message; the deduper keeps the
     first) and one handle->helper map (for resolving @mentions). a single-bot
     deployment - only chordial's TELEGRAM_TOKEN set - yields exactly one
-    telegram interface, i.e. v2 behavior."""
+    telegram interface, i.e. v2 behavior.
+
+    the real @username (mention parsing, deep links) is config
+    (TELEGRAM_USERNAME_<HELPER>), never the persona card's `telegram_handle`
+    placeholder - BotFather names are globally unique, so the card's guess
+    ('tempo_bot') is rarely the name you actually got to register."""
     interfaces = []
     if Config.ENABLE_DISCORD:
         from src.providers.platforms.discord_bot import DiscordInterface
         interfaces.append(DiscordInterface(chat_service))
         logger.info("discord interface enabled")
     if Config.ENABLE_TELEGRAM:
-        from src.personas import load_personas
         from src.providers.platforms.telegram_bot import TelegramInterface, UpdateDeduper
 
         tokens = Config.telegram_helper_tokens()
@@ -37,20 +41,24 @@ def _build_interfaces(chat_service, link_service, user_manager):
                 "ENABLE_TELEGRAM is true but no helper has a telegram token "
                 "(set TELEGRAM_TOKEN for chordial and/or TELEGRAM_TOKEN_<HELPER>)"
             )
-        if not Config.TELEGRAM_BOT_USERNAME:
-            raise RuntimeError("ENABLE_TELEGRAM is true but TELEGRAM_BOT_USERNAME is not set")
+        missing_username = [h for h in tokens if not Config.telegram_username_for(h)]
+        if missing_username:
+            raise RuntimeError(
+                "ENABLE_TELEGRAM is true but these helpers have a token and no "
+                f"configured @username: {', '.join(missing_username)} (set "
+                "TELEGRAM_BOT_USERNAME for chordial and/or "
+                "TELEGRAM_USERNAME_<HELPER> for the rest - this must be the "
+                "REAL BotFather username, not the persona card's placeholder)"
+            )
 
-        cards = load_personas()
-        handle_to_helper = {
-            c.telegram_handle.lower(): c.id for c in cards.values() if c.telegram_handle
-        }
+        usernames = Config.telegram_helper_usernames()
+        handle_to_helper = {username.lower(): helper_id for helper_id, username in usernames.items()}
         deduper = UpdateDeduper()
         for helper_id, token in tokens.items():
-            card = cards[helper_id]
             interfaces.append(TelegramInterface(
                 helper_id=helper_id,
                 token=token,
-                telegram_handle=card.telegram_handle,
+                telegram_handle=usernames[helper_id],
                 chat_service=chat_service,
                 link_service=link_service,
                 user_manager=user_manager,
