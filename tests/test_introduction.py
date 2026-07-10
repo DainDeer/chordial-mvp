@@ -125,15 +125,28 @@ def test_complete_introduction_is_terminal_and_records():
 
 # --- list_available_guides tool ---------------------------------------------
 
-def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(db):
+def _clear_telegram_usernames(monkeypatch):
+    """hermetic env: a developer's real .env may have TELEGRAM_USERNAME_* set,
+    which would otherwise leak real deep links into these assertions."""
+    from config import Config
+    monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", None)
+    for hid in ("CHORDIAL", "TEMPO", "ARIA", "PEP", "MOCHI", "POET"):
+        monkeypatch.delenv(f"TELEGRAM_USERNAME_{hid}", raising=False)
+
+
+def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
     with acting_as("chordial"):
         result = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
 
-    assert "chordial" not in result  # never offers to introduce yourself
+    # each guide is one "- <id> (" list line; chordial never lists itself.
+    # (substring checks would false-positive on bot usernames like
+    # 'chordial_mvp_v3_aria_bot', hence the line-prefix form.)
+    assert "- chordial (" not in result
     for helper_id in ("tempo", "aria", "pep", "mochi", "poet"):
-        assert helper_id in result
+        assert f"- {helper_id} (" in result
 
 
 def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(db, monkeypatch):
@@ -141,6 +154,7 @@ def test_list_available_guides_deep_link_uses_configured_username_not_card_place
     the persona card's `telegram_handle` placeholder, which is essentially
     never the name actually available at botfather. no config -> no (wrong)
     link offered, rather than a link to someone else's bot."""
+    _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
     with acting_as("chordial"):
@@ -185,6 +199,7 @@ def _card(**overrides) -> PersonaCard:
         tools=None,
         persona_block="you are chordial, frozen persona text.",
         intro_block="you meet them in the forest and learn their name.",
+        intro_question="tell me something about yourself you'd want me to remember!",
     )
     defaults.update(overrides)
     return PersonaCard(**defaults)
@@ -205,8 +220,24 @@ def test_introduction_request_first_contact_has_no_current_message(db):
 
     volatile = request.messages[-1].content
     assert "you meet them in the forest and learn their name." in volatile
-    assert "introduction activation" in volatile
+    assert "representation ritual" in volatile          # the guided flow is present
+    assert "tell me something about yourself" in volatile  # the signature question rides along
     assert "begin the introduction now" in volatile
+
+
+def test_introduction_request_carries_the_personas_signature_question(db):
+    """each helper's own intro_question rides in the volatile turn - the guided
+    flow builds around one clear question instead of open-ended prompting."""
+    prompts = PromptService(
+        persona=_card(id="tempo", intro_question="what movement do you love?"),
+        enable_prompt_logging=False,
+    )
+    request = run(prompts.build_introduction_request(
+        conversation_history=[], user_name=None, user_uuid=None, user_timezone="UTC",
+    ))
+    volatile = request.messages[-1].content
+    assert "what movement do you love?" in volatile
+    assert "signature question" in volatile
 
 
 def test_introduction_request_folds_in_the_current_user_message(db):

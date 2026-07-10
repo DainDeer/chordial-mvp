@@ -32,6 +32,7 @@ _REQUIRED_FIELDS = (
     "tools",
     "persona_block",
     "intro_block",
+    "intro_question",
 )
 
 
@@ -47,6 +48,11 @@ class PersonaCard:
     tools: Optional[list[str]]
     persona_block: str
     intro_block: str
+    # the ONE signature question this helper leads its introduction with - the
+    # thing it most wants to know about a new person. asked in the helper's own
+    # voice, not read verbatim; the guided intro flow builds around it so the
+    # conversation has a clear job instead of open-ended "tell me about you".
+    intro_question: str
 
 
 _cache: Optional[dict[str, PersonaCard]] = None
@@ -93,6 +99,7 @@ def _load_card(path: Path) -> PersonaCard:
         tools=tools,
         persona_block=raw["persona_block"],
         intro_block=raw["intro_block"],
+        intro_question=raw["intro_question"],
     )
 
 
