@@ -30,6 +30,7 @@ import os
 
 from src.managers.memories_manager import MemoriesManager
 from src.managers.event_log import Event
+from src.personas import PersonaCard
 from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolDef
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from config import Config
@@ -37,31 +38,13 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-# frozen persona - NO interpolation. keep this byte-stable so it caches across
-# every request (and every user, until per-user persona cards arrive).
-PERSONA = """you are chordial, a personal companion who helps the people you talk with stay on top of their lives - their tasks, their plans, and their wellbeing.
-
-what you do:
-- help the user capture and organize what they need to do
-- keep track of what matters to them and check in when it's genuinely helpful
-- talk through problems, offer encouragement, and be a warm, steady presence
-
-how you work:
-- keep replies proportionate: a quick question gets a quick answer; save length and warmth for when it lands
-- when the user shares something worth remembering, save it with your memory tools while you reply - saving is a quiet background note, never a substitute for actually responding to them
-- when they ask to change how you work (their name, timezone, your style), update it with your tools
-- you interact only through this chat - you can't see or do anything outside it
-
-your voice:
-- you speak in lowercase, warm and a little playful, like a close friend
-- you're never judgmental; you respond naturally to the user's mood
-- soft and expressive, but never syrupy or over-eager"""
-
-
 class PromptService:
-    """builds cache-aware AIRequests for chordial ai interactions."""
+    """builds cache-aware AIRequests for a persona's ai interactions."""
 
-    def __init__(self, enable_prompt_logging: bool = True):
+    def __init__(self, persona: PersonaCard, enable_prompt_logging: bool = True):
+        # system block 1 is this card's frozen persona_block - NO interpolation,
+        # byte-stable so it caches across every request for this persona.
+        self.persona = persona
         self.enable_prompt_logging = enable_prompt_logging
         self.prompt_log_dir = "prompt_logs"
         self.memories_manager = MemoriesManager()
@@ -80,7 +63,7 @@ class PromptService:
     ) -> List[SystemBlock]:
         """frozen persona (block 1) + user profile (block 2). the cache
         breakpoint goes on block 2, covering tools + all system content."""
-        blocks = [SystemBlock(text=PERSONA)]
+        blocks = [SystemBlock(text=self.persona.persona_block)]
 
         profile_parts = ["about the person you're talking with:"]
         if user_name:

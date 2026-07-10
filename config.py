@@ -85,8 +85,6 @@ class Config:
 
     # scheduler
     DM_INTERVAL_MINUTES = int(os.getenv("DM_INTERVAL_MINUTES", "60"))
-    # DEPRECATED by the proactivity gate below - delete alongside its last use
-    DELAY_AFTER_IGNORED_HOURS = int(os.getenv("DELAY_AFTER_IGNORED_HOURS", "24"))
     QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "21"))
     QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
 

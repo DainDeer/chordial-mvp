@@ -177,6 +177,7 @@ def test_no_deliver_callback_disables_the_feature(db):
 
 def test_notice_is_invisible_to_scheduler_and_prompts(db):
     from src.managers.event_log import EventLog
+    from src.personas import load_personas
     from src.services.prompt_service import PromptService
 
     deliver = FakeDeliver()
@@ -190,7 +191,7 @@ def test_notice_is_invisible_to_scheduler_and_prompts(db):
 
     # prompt view: the note's text appears nowhere in rendered turns
     events = log.recent()
-    ps = PromptService(enable_prompt_logging=False)
+    ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
     req = run(ps.build_conversation_request(
         conversation_history=events, user_name="dain",
         user_uuid=None, user_timezone="UTC",

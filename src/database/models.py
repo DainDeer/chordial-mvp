@@ -237,11 +237,46 @@ class Memory(Base):
     curated_at = Column(DateTime, nullable=True)
     merged_into = Column(Integer, nullable=True)
 
+    # v3 multi-helper memory model: one shared pool plus per-helper privates.
+    # created_by is always set (attribution, even for shared rows - lets a
+    # sibling's memory render as "(from aria) ..."). visibility='shared' means
+    # every helper's search + core-memory rendering can see the row; 'private'
+    # restricts it to created_by only.
+    created_by = Column(String, default='chordial')
+    visibility = Column(String, default='shared')  # 'shared' | 'private'
+
     # relationships
     user = relationship("User", back_populates="memories")
 
     __table_args__ = (
         {'sqlite_autoincrement': True}
+    )
+
+
+class HelperState(Base):
+    """per-(user, helper) relationship state: has this helper been met, is it
+    enabled, and what identity did it take. one row per (user, helper) pair;
+    the director's cast is every row with status='active'."""
+    __tablename__ = 'helper_states'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    helper_id = Column(String, nullable=False)      # persona card id, e.g. 'tempo'
+
+    # not_met | introducing | active | declined | disabled
+    status = Column(String, default='not_met')
+
+    # chosen identity (layer 2, per-user) - denormalized from the shared-visibility
+    # identity core memory so the director's cast list is a plain column read.
+    persona_name = Column(String, nullable=True)    # e.g. 'Ember'
+    persona_form = Column(String, nullable=True)    # e.g. 'red panda' | 'no character'
+
+    introduced_at = Column(DateTime, nullable=True)
+    disabled_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('user_uuid', 'helper_id', name='uq_helper_state_user_helper'),
+        {'sqlite_autoincrement': True},
     )
 
 
@@ -287,6 +322,9 @@ class UsageLog(Base):
     id = Column(Integer, primary_key=True)
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=True)
     platform = Column(String, nullable=True)
+    # which helper this call was made on behalf of (v3 per-helper cost
+    # visibility); nullable/unset until later-phase writers start populating it.
+    helper_id = Column(String, nullable=True)
 
     provider = Column(String)   # 'anthropic' | 'openai'
     model = Column(String)
@@ -315,6 +353,9 @@ class AgentTrace(Base):
     id = Column(Integer, primary_key=True)
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=True)
     platform = Column(String, nullable=True)
+    # which helper this trace belongs to (v3 per-helper cost visibility);
+    # nullable/unset until later-phase writers start populating it.
+    helper_id = Column(String, nullable=True)
 
     turn_kind = Column(String)          # 'conversation' | 'scheduled'
     iterations = Column(Integer, default=0)

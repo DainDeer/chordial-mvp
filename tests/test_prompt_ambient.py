@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.personas import load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
 from src.utils.timezone_utils import utc_now  # noqa: E402
@@ -44,7 +45,7 @@ def _history():
 
 
 def _svc():
-    return PromptService(enable_prompt_logging=False)
+    return PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
 
 
 DIGEST = "notion agenda: today (1): \"book dentist\" [To do]"

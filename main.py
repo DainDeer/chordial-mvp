@@ -102,10 +102,23 @@ async def main():
     # model) and the curator (silent memory hygiene on the utility model).
     orchestrator = None
     if agent_service is not None:
-        from src.agents import CompanionAgent, CuratorAgent
+        from src.agents import HelperAgent, CuratorAgent
+        from src.personas import load_personas
         from src.services.orchestrator import Orchestrator
 
-        agents = {"chordial": CompanionAgent(agent_service, registry)}
+        # each enabled helper is a HelperAgent driven by its persona card. an
+        # unknown id in ENABLED_HELPERS is a startup crash (same fail-loudly
+        # style as the telegram config checks) - a mistyped helper should be
+        # loud, never a silently-absent persona.
+        cards = load_personas()
+        agents = {}
+        for helper_id in Config.ENABLED_HELPERS:
+            if helper_id not in cards:
+                raise RuntimeError(
+                    f"ENABLED_HELPERS lists unknown persona '{helper_id}' "
+                    f"(known: {', '.join(sorted(cards))})"
+                )
+            agents[helper_id] = HelperAgent(cards[helper_id], agent_service, registry)
 
         # one utility provider (haiku; thinking=False - it doesn't support
         # adaptive thinking) shared by the background utility jobs below

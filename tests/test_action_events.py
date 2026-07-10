@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.managers.event_log import Event, EventLog, format_action_line  # noqa: E402
+from src.personas import load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.agent_service import ExecutedAction  # noqa: E402
 from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
@@ -57,7 +58,7 @@ def _action(content, ts, author="chordial"):
 
 
 def _svc():
-    return PromptService(enable_prompt_logging=False)
+    return PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
 
 
 ACTION_LINE = 'create_task {"scheduled_date": "2026-07-10", "title": "Look into VR fitness club discord schedule"} -> created task "Look into VR fitness club discord schedule" (id=22e0e094)'

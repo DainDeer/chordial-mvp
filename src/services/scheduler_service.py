@@ -6,6 +6,7 @@ import logging
 from src.managers.user_manager import UserManager
 from src.managers.event_log import EventLog
 from src.services.orchestrator import Stimulus
+from src.services.proactivity_gate import ProactivityGate
 from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
 
@@ -30,9 +31,12 @@ class SchedulerService:
         # actually gets queried)
         self.agenda_service = agenda_service
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
-        self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
         self.quiet_hours_start = Config.QUIET_HOURS_START
         self.quiet_hours_end = Config.QUIET_HOURS_END
+        # the non-interaction guard: pure db arithmetic, checked before any
+        # generation. phase 1 has one helper ('chordial'); a later phase
+        # passes real per-helper candidates through here.
+        self.gate = ProactivityGate()
         self._running = False
 
     async def _check_last_message(self, user_uuid: str) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
@@ -53,7 +57,12 @@ class SchedulerService:
     async def should_send_scheduled_message(self, user_uuid: str) -> bool:
         """determine if we should send a scheduled message to this user now.
         the gate runs against the user's UNIFIED conversation - chatting on
-        any platform resets the recency clock for all of them."""
+        any platform resets the recency clock for all of them.
+
+        order: onboarding -> first contact -> quiet hours -> the
+        proactivity gate (the ignored-chain guard) -> regular interval. quiet
+        hours applies to every proactive send, including the ignored chain -
+        being ignored is not license to nag at 3am."""
         now = utc_now()
 
         # check if user has completed onboarding. LOAD-BEARING for the
@@ -67,40 +76,41 @@ class SchedulerService:
 
         # check last message in conversation
         last_role, last_message_time, last_message_type = await self._check_last_message(user_uuid)
-        
+
         # if no messages yet, send one
         if not last_role:
             logger.info(f"no messages found for user {user_uuid}, sending first scheduled message")
             return True
-        
-        # calculate time since last message
-        time_since_last = now - last_message_time if last_message_time else timedelta(hours=999)
-        
-        # if last message was a scheduled message (ignored by user)
+
+        # check if we're in quiet hours (in the user's own timezone) - applies
+        # to every proactive send, ignored-chain or fresh
+        user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+        if self._is_quiet_hours(user_timezone):
+            logger.debug(f"in quiet hours for user {user_uuid} (tz={user_timezone}), not sending scheduled message")
+            return False
+
+        # the non-interaction guard: crew cap, per-helper cap, exponential
+        # backoff - pure db arithmetic, no tokens spent on a denied tick
+        decision = self.gate.check(EventLog(user_uuid), "chordial")
+        if not decision.allowed:
+            logger.debug(f"proactivity gate denied user {user_uuid}: {decision.reason}")
+            return False
+
+        # gate is clear. if there's an active ignored chain (unanswered > 0)
+        # the gate's own backoff already governs timing - send now. otherwise
+        # this is fresh outreach after a real reply, so the regular interval
+        # still applies.
         if last_role == "assistant" and last_message_type == "scheduled":
-            # check if it's been 24 hours
-            if time_since_last < timedelta(hours=self.delay_after_ignored_hours):
-                logger.debug(f"last message was scheduled and sent {time_since_last} ago, waiting 24h")
-                return False
-            else:
-                logger.info(f"24h passed since ignored scheduled message for user {user_uuid}")
-                return True
-        
-        # last message was from user or was a conversation response
+            logger.info(f"proactivity gate clear for ignored chain, user {user_uuid}")
+            return True
+
+        time_since_last = now - last_message_time if last_message_time else timedelta(hours=999)
+        if time_since_last >= timedelta(minutes=self.default_interval_minutes):
+            logger.info(f"regular interval passed for active user {user_uuid}")
+            return True
         else:
-            # check if we're in quiet hours (in the user's own timezone)
-            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
-            if self._is_quiet_hours(user_timezone):
-                logger.debug(f"in quiet hours for user {user_uuid} (tz={user_timezone}), not sending scheduled message")
-                return False
-            
-            # check if enough time has passed for regular interval
-            if time_since_last >= timedelta(minutes=self.default_interval_minutes):
-                logger.info(f"regular interval passed for active user {user_uuid}")
-                return True
-            else:
-                logger.debug(f"only {time_since_last} since last user message, waiting")
-                return False
+            logger.debug(f"only {time_since_last} since last user message, waiting")
+            return False
     
     async def send_scheduled_message(
         self, user_uuid: str, platforms: Optional[List[str]] = None,
