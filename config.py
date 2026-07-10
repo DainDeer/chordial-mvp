@@ -85,9 +85,22 @@ class Config:
 
     # scheduler
     DM_INTERVAL_MINUTES = int(os.getenv("DM_INTERVAL_MINUTES", "60"))
+    # DEPRECATED by the proactivity gate below - delete alongside its last use
     DELAY_AFTER_IGNORED_HOURS = int(os.getenv("DELAY_AFTER_IGNORED_HOURS", "24"))
     QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "21"))
     QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
+
+    # v3 personas: every card in src/personas/*.yaml is loaded, but only these
+    # ids become live agents. one enabled helper = exactly v2 behavior.
+    ENABLED_HELPERS = [h.strip() for h in os.getenv("ENABLED_HELPERS", "chordial").split(",") if h.strip()]
+
+    # proactive-outreach gate (see services/proactivity_gate.py): hard caps on
+    # unanswered proactive messages plus exponential backoff between them.
+    # replaces the old single-step DELAY_AFTER_IGNORED_HOURS rule. checked
+    # BEFORE any generation - a denied tick costs zero tokens.
+    GATE_PER_HELPER_CAP = int(os.getenv("GATE_PER_HELPER_CAP", "3"))
+    GATE_CREW_CAP = int(os.getenv("GATE_CREW_CAP", "4"))
+    GATE_BASE_INTERVAL_HOURS = float(os.getenv("GATE_BASE_INTERVAL_HOURS", "3"))
 
     # compressor (legacy per-message compression; off by default in favor of
     # full-history context, which is both simpler and cache-friendly)
