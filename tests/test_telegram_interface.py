@@ -66,10 +66,15 @@ class FakeChatService:
     def __init__(self, reply="hi from chordial!"):
         self.reply = reply
         self.received = []
+        self.introductions = []  # (platform, platform_user_id, helper_id)
 
     async def process_message(self, unified):
         self.received.append(unified)
         return self.reply
+
+    async def begin_introduction(self, platform, platform_user_id, helper_id):
+        self.introductions.append((platform, platform_user_id, helper_id))
+        return f"hi, i'm {helper_id}!"
 
 
 class FakeUserManager:
@@ -231,6 +236,32 @@ def test_start_with_payload_redeems():
     run(iface._on_start(update, _ctx(args=["ABCD2345"])))
     assert links.redeemed[0][0] == "ABCD2345"
     assert update.message.replies == [LINKED_REPLY]
+
+
+def test_start_meet_known_user_begins_this_helpers_introduction():
+    """the meet-the-guides deep link (t.me/<bot>?start=meet): a known user
+    taps tempo's link and tempo introduces itself in dm - NOT a code redeem."""
+    chat = FakeChatService()
+    links = FakeLinkService()
+    iface = _interface(chat=chat, links=links, helper_id="tempo",
+                       users=FakeUserManager(known_ids={"777"}))
+    update = _update("/start")
+    run(iface._on_start(update, _ctx(args=["meet"])))
+
+    assert chat.introductions == [("telegram", "777", "tempo")]
+    assert links.redeemed == []                       # never treated as a code
+    assert update.effective_chat.sent == ["hi, i'm tempo!"]  # chunked send path
+
+
+def test_start_meet_stranger_gets_static_reply_and_no_introduction():
+    """a stranger can't meet a guide - they must link via chordial first."""
+    chat = FakeChatService()
+    iface = _interface(chat=chat, users=FakeUserManager(known_ids=set()))
+    update = _update("/start")
+    run(iface._on_start(update, _ctx(args=["meet"])))
+
+    assert chat.introductions == []
+    assert update.message.replies == [STRANGER_REPLY]
 
 
 def test_bare_start_stranger_vs_known():

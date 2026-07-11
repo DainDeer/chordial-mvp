@@ -85,6 +85,8 @@ COMPLETE_INTRODUCTION = Tool(
 
 
 def _deep_link(handle: str) -> str:
+    # the 'meet' payload is what the telegram interface routes to
+    # begin_introduction (telegram_bot._MEET_PAYLOAD) - keep them in sync.
     return f"https://t.me/{handle}?start=meet"
 
 

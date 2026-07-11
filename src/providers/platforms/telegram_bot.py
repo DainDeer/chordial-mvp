@@ -94,6 +94,9 @@ def mentioned_helpers(message, handle_to_helper: "dict[str, str] | None") -> lis
 _TELEGRAM_MAX_LENGTH = 4096
 _INTER_CHUNK_DELAY = 1.0   # stay under telegram's ~1 msg/sec per chat
 _LINK_CODE_RE = re.compile(r"^[A-Z2-9]{8}$")
+# the /start payload chordial's meet-the-guides deep links carry
+# (t.me/<bot>?start=<this>). MUST match the value intro_tools._deep_link builds.
+_MEET_PAYLOAD = "meet"
 
 STRANGER_REPLY = (
     "hi! i'm chordial — a personal companion, so i only chat with people i "
@@ -218,21 +221,50 @@ class TelegramInterface(BaseInterface):
     # --- inbound ---------------------------------------------------------------
 
     async def _on_start(self, update, context: ContextTypes.DEFAULT_TYPE):
-        """/start - possibly carrying a link-code payload from a deep link."""
+        """/start - carries one of two deep-link payloads, or none:
+        - `meet`: the meet-the-guides link (t.me/<bot>?start=meet) that chordial
+          hands out. a KNOWN user tapping it kicks off THIS helper's own
+          introduction in dm. (a stranger can't meet a guide - they link via
+          chordial first, so they fall through to the stranger line.)
+        - anything else: treated as a cross-platform link CODE to redeem (the
+          under-the-hood account-linking flow; the user never types these).
+        """
         user = update.effective_user
         if user is None or update.message is None:
             return
 
         payload = context.args[0] if context.args else None
+
+        if payload == _MEET_PAYLOAD:
+            if await self._is_known(str(user.id)):
+                await update.effective_chat.send_action(ChatAction.TYPING)
+                reply = await self.chat_service.begin_introduction(
+                    "telegram", str(user.id), self.helper_id,
+                )
+                await self._send_chunked(update, reply)
+            else:
+                await update.message.reply_text(STRANGER_REPLY)
+            return
+
         if payload:
-            reply = await self._redeem(payload, user)
-            await update.message.reply_text(reply)
+            await update.message.reply_text(await self._redeem(payload, user))
             return
 
         if await self._is_known(str(user.id)):
             await update.message.reply_text(ALREADY_LINKED_REPLY)
         else:
             await update.message.reply_text(STRANGER_REPLY)
+
+    async def _send_chunked(self, update, text) -> None:
+        """send a (possibly long) reply as telegram-sized chunks, paced under
+        the per-chat rate limit - the same shape _on_message uses."""
+        if not text:
+            return
+        chunks = chunk_message(text, max_length=_TELEGRAM_MAX_LENGTH)
+        for i, chunk in enumerate(chunks):
+            await update.effective_chat.send_message(chunk)
+            if i < len(chunks) - 1:
+                await asyncio.sleep(_INTER_CHUNK_DELAY)
 
     async def _on_message(self, update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
