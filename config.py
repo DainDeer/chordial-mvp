@@ -19,8 +19,14 @@ class Config:
     UTILITY_MODEL = os.getenv("UTILITY_MODEL", "claude-haiku-4-5")
     # effort for chat turns: low | medium | high (anthropic only; maps to output_config.effort)
     CHAT_EFFORT = os.getenv("CHAT_EFFORT", "low")
-    # max output tokens for a chat/scheduled turn (leaves headroom for adaptive thinking)
-    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
+    # max output tokens for a chat/scheduled turn. CRITICAL: with adaptive
+    # thinking on, this cap covers thinking + reply TOGETHER - at 2048 an
+    # instruction-heavy turn (e.g. an introduction) could burn the whole budget
+    # on thinking and emit ZERO reply text (stop_reason=max_tokens, empty
+    # response -> the user gets the error fallback). it's a ceiling you only pay
+    # for when tokens are actually generated, so keep it generous; a normal
+    # short reply still costs a few hundred tokens.
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "4096"))
 
     # openai (kept as an alternate provider)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
