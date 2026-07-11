@@ -128,6 +128,28 @@ def test_returning_active_user_gets_user_message_stimulus(db):
     assert stim.intro_helper is None
 
 
+def test_active_user_with_no_saved_name_is_not_re_introduced(db):
+    """regression: an active chordial whose preferred_name never got persisted
+    must NOT loop back into onboarding. keyed on status, not the name."""
+    chat, orchestrator, user_manager = _chat_service()
+    user_uuid, _ = run(user_manager.get_or_create_user("discord", "789"))
+    # deliberately DO NOT set preferred_name - reproduce the stuck state
+    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
+
+    run(chat.process_message(_msg("what's up", platform_user_id="789")))
+
+    assert orchestrator.calls[0].kind == "user_message"
+
+
+def test_still_introducing_rules():
+    from src.services.chat_service import _still_introducing
+    assert _still_introducing("active", None) is False      # the regression
+    assert _still_introducing("active", "Dain") is False
+    assert _still_introducing("introducing", "Dain") is True
+    assert _still_introducing("not_met", None) is True      # brand-new user
+    assert _still_introducing("not_met", "Dain") is False   # pre-v3, already named
+
+
 def test_group_scope_returns_none(db):
     chat, orchestrator, _ = _chat_service(deliverable=Deliverable(handled=True))
     reply = run(chat.process_message(_msg(

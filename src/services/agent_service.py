@@ -111,7 +111,7 @@ class AgentService:
             if not response.tool_calls:
                 final_text = self._join(collected_text)
                 self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
-                                 tool_trace, len(final_text), stop_reason, total)
+                                 tool_trace, len(final_text or ""), stop_reason, total)
                 return AgentResult(text=final_text, stop_reason=stop_reason,
                                    usage=total, actions=executed)
 
@@ -145,7 +145,7 @@ class AgentService:
             if collected_text and all_terminal:
                 final_text = self._join(collected_text)
                 self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
-                                 tool_trace, len(final_text), "terminal_tools", total)
+                                 tool_trace, len(final_text or ""), "terminal_tools", total)
                 return AgentResult(text=final_text, stop_reason="terminal_tools",
                                    usage=total, actions=executed)
 
@@ -161,7 +161,7 @@ class AgentService:
             collected_text.append(final.text)
         final_text = self._join(collected_text)
         self._save_trace(user_uuid, platform, turn_kind, self.max_iterations, True,
-                         tool_trace, len(final_text), stop_reason, total)
+                         tool_trace, len(final_text or ""), stop_reason, total)
         return AgentResult(
             text=None if refused else final_text,
             refused=refused,

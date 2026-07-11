@@ -32,9 +32,24 @@ logger = logging.getLogger(__name__)
 REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
 ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
 
-# a chordial relationship in either of these states means the user hasn't
-# finished the front-door introduction yet.
-_STILL_INTRODUCING = {"not_met", "introducing"}
+def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
+    """should this dm turn run the front-door introduction, or is it an
+    ordinary turn?
+
+    keyed on chordial's relationship status, NOT on preferred_name: once
+    chordial is 'active' the intro is DONE even if the name never got
+    persisted (otherwise a stuck None name re-loops onboarding forever - the
+    bug that shipped in the first phase-2 cut). the legacy `user_name is None`
+    signal only applies BEFORE any relationship exists (status 'not_met'), so
+    a pre-v3 user who already has a name isn't dragged back into the forest,
+    while a brand-new user with no name still gets introduced."""
+    if chordial_status == "active":
+        return False
+    if chordial_status == "introducing":
+        return True
+    # not_met (no row yet) or an odd declined/disabled front door: introduce
+    # only if we don't already know their name.
+    return user_name is None
 
 
 class ChatService:
@@ -76,13 +91,7 @@ class ChatService:
             intro_helper = None
             if chat_scope == "dm":
                 chordial_state = await self.helper_states.get(user_uuid, "chordial")
-                # legacy signal: a pre-v3 user who never got a HelperState row
-                # but also never finished the old name step - treat the same
-                # as "still introducing" so nobody gets stranded mid-migration.
-                still_introducing = (
-                    chordial_state.status in _STILL_INTRODUCING or user_name is None
-                )
-                if still_introducing:
+                if _still_introducing(chordial_state.status, user_name):
                     kind = "introduction"
                     intro_helper = dm_helper
                     if chordial_state.status != "active":
