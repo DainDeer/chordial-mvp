@@ -22,6 +22,7 @@ telegram facts this file leans on (verified against current docs):
   -> never /start-ed (permanent); RetryAfter carries a wait time; 4096-char
   message cap -> chunk; ≤1 msg/sec per chat -> pause between chunks.
 """
+
 import asyncio
 import logging
 import re
@@ -31,8 +32,12 @@ from typing import Optional
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, ContextTypes,
-    MessageHandler, filters,
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from .base import BaseInterface, UndeliverableError
@@ -78,7 +83,7 @@ def mentioned_helpers(message, handle_to_helper: "dict[str, str] | None") -> lis
     handle_to_helper = handle_to_helper or {}
     out: list[str] = []
     text = message.text or ""
-    for ent in (message.entities or []):
+    for ent in message.entities or []:
         helper: Optional[str] = None
         if ent.type == "mention":
             handle = text[ent.offset + 1 : ent.offset + ent.length]  # drop the '@'
@@ -91,8 +96,9 @@ def mentioned_helpers(message, handle_to_helper: "dict[str, str] | None") -> lis
             out.append(helper)
     return out
 
+
 _TELEGRAM_MAX_LENGTH = 4096
-_INTER_CHUNK_DELAY = 1.0   # stay under telegram's ~1 msg/sec per chat
+_INTER_CHUNK_DELAY = 1.0  # stay under telegram's ~1 msg/sec per chat
 _LINK_CODE_RE = re.compile(r"^[A-Z2-9]{8}$")
 # the /start payload chordial's meet-the-guides deep links carry
 # (t.me/<bot>?start=<this>). MUST match the value intro_tools._deep_link builds.
@@ -110,8 +116,7 @@ LINKED_REPLY = (
 )
 RELINKED_REPLY = "welcome back! 💜 this chat is connected again — say anything ✨"
 INVALID_CODE_REPLY = (
-    "that code doesn't look right — ask me for a fresh one on your usual "
-    "platform 💜"
+    "that code doesn't look right — ask me for a fresh one on your usual " "platform 💜"
 )
 EXPIRED_CODE_REPLY = (
     "that code's expired (they only last a few minutes) — grab a fresh one "
@@ -141,9 +146,18 @@ class TelegramInterface(BaseInterface):
 
     platform = "telegram"
 
-    def __init__(self, helper_id: str, token: str, telegram_handle: str, chat_service,
-                 link_service, user_manager, deduper, group_chat_id=None,
-                 handle_to_helper: "dict[str, str] | None" = None):
+    def __init__(
+        self,
+        helper_id: str,
+        token: str,
+        telegram_handle: str,
+        chat_service,
+        link_service,
+        user_manager,
+        deduper,
+        group_chat_id=None,
+        handle_to_helper: "dict[str, str] | None" = None,
+    ):
         super().__init__(chat_service)
         self.helper_id = helper_id
         self.token = token
@@ -157,17 +171,25 @@ class TelegramInterface(BaseInterface):
 
         self.app: Application = ApplicationBuilder().token(token).build()
         self.app.add_handler(CommandHandler("start", self._on_start))
-        self.app.add_handler(CommandHandler(
-            "setup_group", self._on_setup_group, filters=filters.ChatType.GROUPS,
-        ))
-        self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
-            self._on_message,
-        ))
-        self.app.add_handler(MessageHandler(
-            filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
-            self._on_group_message,
-        ))
+        self.app.add_handler(
+            CommandHandler(
+                "setup_group",
+                self._on_setup_group,
+                filters=filters.ChatType.GROUPS,
+            )
+        )
+        self.app.add_handler(
+            MessageHandler(
+                filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
+                self._on_message,
+            )
+        )
+        self.app.add_handler(
+            MessageHandler(
+                filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
+                self._on_group_message,
+            )
+        )
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -191,13 +213,15 @@ class TelegramInterface(BaseInterface):
                     "to @%s - deep links/mentions for this helper will point "
                     "at the wrong bot! fix TELEGRAM_USERNAME_%s (or "
                     "TELEGRAM_BOT_USERNAME for chordial).",
-                    self.helper_id, self.telegram_handle, me.username,
+                    self.helper_id,
+                    self.telegram_handle,
+                    me.username,
                     self.helper_id.upper(),
                 )
 
             await self.app.start()
             await self.app.updater.start_polling(
-                timeout=30,                 # long-poll hold, not sleep-polling
+                timeout=30,  # long-poll hold, not sleep-polling
                 drop_pending_updates=True,  # don't replay a backlog after downtime
             )
             logger.info("telegram interface polling as @%s", me.username)
@@ -239,7 +263,9 @@ class TelegramInterface(BaseInterface):
             if await self._is_known(str(user.id)):
                 await update.effective_chat.send_action(ChatAction.TYPING)
                 reply = await self.chat_service.begin_introduction(
-                    "telegram", str(user.id), self.helper_id,
+                    "telegram",
+                    str(user.id),
+                    self.helper_id,
                 )
                 await self._send_chunked(update, reply)
             else:
@@ -283,6 +309,7 @@ class TelegramInterface(BaseInterface):
             return
 
         from src.models.unified_message import UnifiedMessage
+
         unified_msg = UnifiedMessage(
             content=message.text,
             platform_user_id=str(user.id),
@@ -303,7 +330,9 @@ class TelegramInterface(BaseInterface):
         if response:
             chunks = chunk_message(response, max_length=_TELEGRAM_MAX_LENGTH)
             for i, chunk in enumerate(chunks):
-                await update.effective_chat.send_message(chunk)  # plain text, no parse_mode
+                await update.effective_chat.send_message(
+                    chunk
+                )  # plain text, no parse_mode
                 if i < len(chunks) - 1:
                     await asyncio.sleep(_INTER_CHUNK_DELAY)
 
@@ -318,9 +347,24 @@ class TelegramInterface(BaseInterface):
         if user is None or message is None or not message.text or chat is None:
             return
 
+        # The crew room contains personal context, so knowing the sender is not
+        # sufficient authorization: a known user may add a helper bot to any
+        # number of unrelated groups.  Fail closed until a room is configured,
+        # and only accept updates from that exact Telegram chat.
+        if not self._is_configured_group(chat.id):
+            logger.warning(
+                "ignoring group message for helper '%s' from unconfigured "
+                "telegram chat %s",
+                self.helper_id,
+                chat.id,
+            )
+            return
+
         # N bots => N identical updates; only the first past the shared deduper
         # is processed. keyed on (chat_id, message_id), stable across streams.
-        if self.deduper is not None and self.deduper.is_duplicate(chat.id, message.message_id):
+        if self.deduper is not None and self.deduper.is_duplicate(
+            chat.id, message.message_id
+        ):
             return
 
         # unknown senders in a group are ignored silently: no onboarding, no
@@ -331,6 +375,7 @@ class TelegramInterface(BaseInterface):
         mentioned = mentioned_helpers(message, self.handle_to_helper)
 
         from src.models.unified_message import UnifiedMessage
+
         unified_msg = UnifiedMessage(
             content=message.text,
             platform_user_id=str(user.id),
@@ -361,17 +406,34 @@ class TelegramInterface(BaseInterface):
         """/setup_group in a group: a discovery helper. reply with the chat id
         and how to persist it (set TELEGRAM_GROUP_CHAT_ID) - phase-2 keeps this
         lightweight, since Dain creates the group manually and sets the env."""
+        user = update.effective_user
         message = update.message
         chat = update.effective_chat
-        if message is None or chat is None:
+        if user is None or message is None or chat is None:
+            return
+
+        # Only an already-linked account may discover/configure the private
+        # crew room. Once a room is configured, do not disclose or suggest a
+        # replacement id from commands issued in another group.
+        if not await self._is_known(str(user.id)):
+            return
+        if self.group_chat_id is not None and not self._is_configured_group(chat.id):
             return
         # keep it deduped too: every bot in the group sees this command.
-        if self.deduper is not None and self.deduper.is_duplicate(chat.id, message.message_id):
+        if self.deduper is not None and self.deduper.is_duplicate(
+            chat.id, message.message_id
+        ):
             return
         await message.reply_text(
             f"this group's chat id is `{chat.id}`.\n"
             f"set TELEGRAM_GROUP_CHAT_ID={chat.id} in the environment and "
             f"restart so the crew can speak here."
+        )
+
+    def _is_configured_group(self, chat_id) -> bool:
+        """Whether ``chat_id`` is the explicitly configured private crew room."""
+        return self.group_chat_id is not None and str(chat_id) == str(
+            self.group_chat_id
         )
 
     async def _is_known(self, platform_user_id: str) -> bool:
@@ -382,7 +444,10 @@ class TelegramInterface(BaseInterface):
         if self.link_service is None:
             return STRANGER_REPLY
         outcome = await self.link_service.redeem(
-            code, "telegram", str(user.id), user.username,
+            code,
+            "telegram",
+            str(user.id),
+            user.username,
         )
         return {
             LinkResult.LINKED: LINKED_REPLY,
@@ -404,7 +469,9 @@ class TelegramInterface(BaseInterface):
             chat_id = int(platform_user_id)
             chunks = chunk_message(content, max_length=_TELEGRAM_MAX_LENGTH)
 
-            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await self.app.bot.send_chat_action(
+                chat_id=chat_id, action=ChatAction.TYPING
+            )
             for i, chunk in enumerate(chunks):
                 await self._send_chunk(chat_id, chunk)
                 if i < len(chunks) - 1:
@@ -431,7 +498,9 @@ class TelegramInterface(BaseInterface):
             return False
         except ValueError as e:
             # non-integer platform_user_id - malformed link, never deliverable
-            raise UndeliverableError(f"invalid telegram user id '{platform_user_id}'") from e
+            raise UndeliverableError(
+                f"invalid telegram user id '{platform_user_id}'"
+            ) from e
         except TelegramError as e:
             # transient (network, 5xx, a RetryAfter retry that failed again...)
             logger.error(f"transient telegram error sending to {platform_user_id}: {e}")
@@ -443,7 +512,9 @@ class TelegramInterface(BaseInterface):
             await self.app.bot.send_message(chat_id=chat_id, text=chunk)
         except RetryAfter as e:
             wait = e.retry_after
-            seconds = wait.total_seconds() if hasattr(wait, "total_seconds") else float(wait)
+            seconds = (
+                wait.total_seconds() if hasattr(wait, "total_seconds") else float(wait)
+            )
             logger.warning(f"telegram rate limit, retrying in {seconds:.1f}s")
             await asyncio.sleep(seconds + 0.5)
             await self.app.bot.send_message(chat_id=chat_id, text=chunk)

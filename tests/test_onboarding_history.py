@@ -9,6 +9,7 @@ begin_introduction deep-link entry point, with the orchestrator mocked out
 (what happens once an introduction stimulus reaches a real Orchestrator/
 HelperAgent is covered in tests/test_introduction.py).
 """
+
 import asyncio
 import sys
 import tempfile
@@ -36,7 +37,9 @@ def run(coro):
 @pytest.fixture()
 def db(monkeypatch):
     fd, path = tempfile.mkstemp(suffix=".db")
-    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{path}", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(bind=engine)
     TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
@@ -59,9 +62,11 @@ class RecordingOrchestrator:
 
 def _msg(content: str, **kwargs) -> UnifiedMessage:
     return UnifiedMessage(
-        content=content, platform_user_id=kwargs.pop("platform_user_id", "123"),
+        content=content,
+        platform_user_id=kwargs.pop("platform_user_id", "123"),
         platform=kwargs.pop("platform", "discord"),
-        platform_message_id="m1", metadata={"username": "tester"},
+        platform_message_id="m1",
+        metadata={"username": "tester"},
         **kwargs,
     )
 
@@ -69,10 +74,15 @@ def _msg(content: str, **kwargs) -> UnifiedMessage:
 def _chat_service(deliverable=None):
     user_manager = UserManager()
     orchestrator = RecordingOrchestrator(deliverable)
-    return ChatService(orchestrator=orchestrator, user_manager=user_manager), orchestrator, user_manager
+    return (
+        ChatService(orchestrator=orchestrator, user_manager=user_manager),
+        orchestrator,
+        user_manager,
+    )
 
 
 # --- routing decision --------------------------------------------------------
+
 
 def test_new_user_gets_introduction_stimulus(db):
     chat, orchestrator, _ = _chat_service()
@@ -93,6 +103,7 @@ def test_new_user_moves_chordial_state_to_introducing(db):
 
     with db() as s:
         from src.database.models import User
+
         user_uuid = s.query(User).first().uuid
 
     state = run(HelperStateManager().get(user_uuid, "chordial"))
@@ -141,21 +152,74 @@ def test_active_user_with_no_saved_name_is_not_re_introduced(db):
     assert orchestrator.calls[0].kind == "user_message"
 
 
+def test_specialist_dm_continues_that_helpers_introduction(db):
+    """Once a meet link starts Tempo's ritual, later Tempo DMs must keep
+    receiving introduction briefings even though chordial is already active."""
+    chat, orchestrator, user_manager = _chat_service()
+    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "tempo-intro"))
+    run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "Dain"}))
+    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
+    run(HelperStateManager().set_status(user_uuid, "tempo", "introducing"))
+
+    run(
+        chat.process_message(
+            _msg(
+                "I think a fox",
+                platform="telegram",
+                platform_user_id="tempo-intro",
+                dm_helper="tempo",
+            )
+        )
+    )
+
+    stim = orchestrator.calls[0]
+    assert stim.kind == "introduction"
+    assert stim.dm_helper == "tempo"
+    assert stim.intro_helper == "tempo"
+
+
+def test_unmet_specialist_dm_does_not_use_chordial_legacy_name_rule(db):
+    chat, orchestrator, user_manager = _chat_service()
+    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "tempo-unmet"))
+    run(HelperStateManager().set_status(user_uuid, "chordial", "introducing"))
+
+    run(
+        chat.process_message(
+            _msg(
+                "hello",
+                platform="telegram",
+                platform_user_id="tempo-unmet",
+                dm_helper="tempo",
+            )
+        )
+    )
+
+    assert orchestrator.calls[0].kind == "user_message"
+    assert orchestrator.calls[0].intro_helper is None
+
+
 def test_still_introducing_rules():
     from src.services.chat_service import _still_introducing
-    assert _still_introducing("active", None) is False      # the regression
+
+    assert _still_introducing("active", None) is False  # the regression
     assert _still_introducing("active", "Dain") is False
     assert _still_introducing("introducing", "Dain") is True
-    assert _still_introducing("not_met", None) is True      # brand-new user
-    assert _still_introducing("not_met", "Dain") is False   # pre-v3, already named
+    assert _still_introducing("not_met", None) is True  # brand-new user
+    assert _still_introducing("not_met", "Dain") is False  # pre-v3, already named
 
 
 def test_group_scope_returns_none(db):
     chat, orchestrator, _ = _chat_service(deliverable=Deliverable(handled=True))
-    reply = run(chat.process_message(_msg(
-        "@tempo how's my training plan",
-        chat_scope="group", group_chat_id="-100", dm_helper="chordial",
-    )))
+    reply = run(
+        chat.process_message(
+            _msg(
+                "@tempo how's my training plan",
+                chat_scope="group",
+                group_chat_id="-100",
+                dm_helper="chordial",
+            )
+        )
+    )
 
     assert reply is None
     assert orchestrator.calls[0].chat_scope == "group"
@@ -187,8 +251,11 @@ def test_echo_fallback_when_no_orchestrator(db):
 
 # --- begin_introduction (the meet-the-guides deep link) ----------------------
 
+
 def test_begin_introduction_sets_helper_introducing_and_returns_reply(db):
-    chat, orchestrator, user_manager = _chat_service(deliverable=Deliverable(text="hey, i'm tempo"))
+    chat, orchestrator, user_manager = _chat_service(
+        deliverable=Deliverable(text="hey, i'm tempo")
+    )
     user_uuid, _ = run(user_manager.get_or_create_user("telegram", "789", "dain"))
 
     reply = run(chat.begin_introduction("telegram", "789", "tempo"))
@@ -203,3 +270,104 @@ def test_begin_introduction_sets_helper_introducing_and_returns_reply(db):
 
     state = run(HelperStateManager().get(user_uuid, "tempo"))
     assert state.status == "introducing"
+
+
+def test_same_user_activations_are_serialized(db):
+    class BlockingOrchestrator:
+        def __init__(self):
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.active = 0
+            self.max_active = 0
+            self.calls = []
+
+        async def handle(self, stimulus):
+            self.calls.append(stimulus)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            if len(self.calls) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+            self.active -= 1
+            return Deliverable(text=stimulus.content)
+
+    async def exercise():
+        user_manager = UserManager()
+        user_uuid, _ = await user_manager.get_or_create_user("telegram", "serialized")
+        await user_manager.update_user_preferences(
+            user_uuid, {"preferred_name": "Dain"}
+        )
+        await HelperStateManager().set_status(user_uuid, "chordial", "active")
+        orchestrator = BlockingOrchestrator()
+        chat = ChatService(orchestrator=orchestrator, user_manager=user_manager)
+
+        first = asyncio.create_task(
+            chat.process_message(
+                _msg(
+                    "first",
+                    platform="telegram",
+                    platform_user_id="serialized",
+                )
+            )
+        )
+        await orchestrator.first_started.wait()
+        second = asyncio.create_task(
+            chat.process_message(
+                _msg(
+                    "second",
+                    platform="telegram",
+                    platform_user_id="serialized",
+                )
+            )
+        )
+        await asyncio.sleep(0)
+        assert len(orchestrator.calls) == 1
+        orchestrator.release_first.set()
+        assert await asyncio.gather(first, second) == ["first", "second"]
+        assert orchestrator.max_active == 1
+
+    run(exercise())
+
+
+def test_different_users_are_not_serialized(db):
+    class OverlapOrchestrator:
+        def __init__(self):
+            self.both_started = asyncio.Event()
+            self.started = 0
+
+        async def handle(self, stimulus):
+            self.started += 1
+            if self.started == 2:
+                self.both_started.set()
+            await asyncio.wait_for(self.both_started.wait(), timeout=1)
+            return Deliverable(text=stimulus.content)
+
+    async def exercise():
+        user_manager = UserManager()
+        hsm = HelperStateManager()
+        for platform_id in ("parallel-a", "parallel-b"):
+            user_uuid, _ = await user_manager.get_or_create_user(
+                "telegram", platform_id
+            )
+            await user_manager.update_user_preferences(
+                user_uuid, {"preferred_name": platform_id}
+            )
+            await hsm.set_status(user_uuid, "chordial", "active")
+        orchestrator = OverlapOrchestrator()
+        chat = ChatService(orchestrator=orchestrator, user_manager=user_manager)
+
+        replies = await asyncio.gather(
+            *(
+                chat.process_message(
+                    _msg(
+                        platform_id,
+                        platform="telegram",
+                        platform_user_id=platform_id,
+                    )
+                )
+                for platform_id in ("parallel-a", "parallel-b")
+            )
+        )
+        assert replies == ["parallel-a", "parallel-b"]
+
+    run(exercise())

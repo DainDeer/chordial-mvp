@@ -17,8 +17,11 @@ orchestrator routes that to the right helper with an introduction briefing,
 and the model runs the whole ritual conversationally, calling
 complete_introduction when it's done.
 """
-from typing import Optional
+
+import asyncio
 import logging
+from typing import Optional
+from weakref import WeakValueDictionary
 
 from src.models.unified_message import UnifiedMessage
 from src.managers.helper_state_manager import HelperStateManager
@@ -31,6 +34,7 @@ logger = logging.getLogger(__name__)
 # history (so they can't pollute future context).
 REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
 ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
+
 
 def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
     """should this dm turn run the front-door introduction, or is it an
@@ -64,13 +68,25 @@ class ChatService:
         self.orchestrator = orchestrator
         self.user_manager = user_manager or UserManager()
         self.helper_states = HelperStateManager()
+        # Serialize a user's complete turn across every platform/helper while
+        # still allowing different users to run concurrently. Weak values keep
+        # this registry from growing forever as one-off users come and go; a
+        # waiter/holder retains the lock strongly for as long as it is needed.
+        self._user_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+    def _lock_for_user(self, user_uuid: str) -> asyncio.Lock:
+        lock = self._user_locks.get(user_uuid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[user_uuid] = lock
+        return lock
 
     async def process_message(self, unified_message: UnifiedMessage) -> Optional[str]:
         """process an incoming message and generate a response.
 
-        returns None when the activation was handled out-of-band (group
-        scope - each speaker already delivered its own line via its own
-        bot); otherwise the reply string for the receiving interface to send.
+        returns None when the activation was delivered through the router
+        (production dms and group lines); otherwise returns the reply string
+        for an isolated/synchronous interface to send.
         """
         try:
             platform = unified_message.platform
@@ -82,39 +98,58 @@ class ChatService:
             dm_helper = getattr(unified_message, "dm_helper", None) or "chordial"
             mentioned = getattr(unified_message, "mentioned", None) or []
 
-            user_uuid, user_name = await self.user_manager.get_or_create_user(
+            user_uuid, _ = await self.user_manager.get_or_create_user(
                 platform, platform_user_id, username
             )
-            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+            async with self._lock_for_user(user_uuid):
+                # Refresh inside the lock: an earlier queued turn may have
+                # learned the user's name or timezone while this turn waited.
+                user_name, user_timezone = await self.user_manager.get_user_profile(
+                    user_uuid
+                )
 
-            kind = "user_message"
-            intro_helper = None
-            if chat_scope == "dm":
-                chordial_state = await self.helper_states.get(user_uuid, "chordial")
-                if _still_introducing(chordial_state.status, user_name):
-                    kind = "introduction"
-                    intro_helper = dm_helper
-                    if chordial_state.status != "active":
-                        await self.helper_states.set_status(user_uuid, "chordial", "introducing")
+                kind = "user_message"
+                intro_helper = None
+                if chat_scope == "dm":
+                    helper_state = await self.helper_states.get(user_uuid, dm_helper)
+                    if dm_helper == "chordial":
+                        is_introducing = _still_introducing(
+                            helper_state.status, user_name
+                        )
+                    else:
+                        # Preferred-name back compatibility belongs only to the
+                        # chordial front door. A specialist continues its own
+                        # multi-turn ritual only while its relationship says so.
+                        is_introducing = helper_state.status == "introducing"
+                    if is_introducing:
+                        kind = "introduction"
+                        intro_helper = dm_helper
+                        if helper_state.status != "introducing":
+                            await self.helper_states.set_status(
+                                user_uuid, dm_helper, "introducing"
+                            )
 
-            if not self.orchestrator:
-                return f"echo: {unified_message.content}"
+                if not self.orchestrator:
+                    return f"echo: {unified_message.content}"
 
-            deliverable = await self.orchestrator.handle(Stimulus(
-                kind=kind,
-                user_uuid=user_uuid,
-                platform=platform,
-                content=unified_message.content,
-                user_name=user_name,
-                user_timezone=user_timezone,
-                chat_scope=chat_scope,
-                group_chat_id=group_chat_id,
-                dm_helper=dm_helper,
-                mentioned=mentioned,
-                intro_helper=intro_helper,
-            ))
+                deliverable = await self.orchestrator.handle(
+                    Stimulus(
+                        kind=kind,
+                        user_uuid=user_uuid,
+                        platform=platform,
+                        content=unified_message.content,
+                        delivery_target_id=platform_user_id,
+                        user_name=user_name,
+                        user_timezone=user_timezone,
+                        chat_scope=chat_scope,
+                        group_chat_id=group_chat_id,
+                        dm_helper=dm_helper,
+                        mentioned=mentioned,
+                        intro_helper=intro_helper,
+                    )
+                )
 
-            return self._reply_for(deliverable)
+                return self._reply_for(deliverable)
 
         except Exception as e:
             logger.error(f"error processing message: {e}")
@@ -129,29 +164,35 @@ class ChatService:
         helper's relationship to 'introducing' and runs the activation.
         """
         try:
-            user_uuid, user_name = await self.user_manager.get_or_create_user(
+            user_uuid, _ = await self.user_manager.get_or_create_user(
                 platform, platform_user_id
             )
-            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+            async with self._lock_for_user(user_uuid):
+                user_name, user_timezone = await self.user_manager.get_user_profile(
+                    user_uuid
+                )
 
-            await self.helper_states.set_status(user_uuid, helper_id, "introducing")
+                await self.helper_states.set_status(user_uuid, helper_id, "introducing")
 
-            if not self.orchestrator:
-                return f"echo: meet {helper_id}"
+                if not self.orchestrator:
+                    return f"echo: meet {helper_id}"
 
-            deliverable = await self.orchestrator.handle(Stimulus(
-                kind="introduction",
-                user_uuid=user_uuid,
-                platform=platform,
-                content=None,
-                user_name=user_name,
-                user_timezone=user_timezone,
-                chat_scope="dm",
-                dm_helper=helper_id,
-                intro_helper=helper_id,
-            ))
+                deliverable = await self.orchestrator.handle(
+                    Stimulus(
+                        kind="introduction",
+                        user_uuid=user_uuid,
+                        platform=platform,
+                        content=None,
+                        delivery_target_id=platform_user_id,
+                        user_name=user_name,
+                        user_timezone=user_timezone,
+                        chat_scope="dm",
+                        dm_helper=helper_id,
+                        intro_helper=helper_id,
+                    )
+                )
 
-            return self._reply_for(deliverable)
+                return self._reply_for(deliverable)
 
         except Exception as e:
             logger.error(f"error beginning introduction for helper {helper_id}: {e}")
@@ -160,8 +201,8 @@ class ChatService:
     @staticmethod
     def _reply_for(deliverable) -> Optional[str]:
         """map a Deliverable to what the platform interface should send.
-        `handled` (group scope: each line already went out via its own bot)
-        means nothing more to send from here."""
+        `handled` means the router already confirmed delivery, so the calling
+        interface must not send a duplicate."""
         if deliverable.handled:
             return None
         if deliverable.refused:

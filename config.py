@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class Config:
     # discord
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -15,8 +16,13 @@ class Config:
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     # chat model: the persona-facing model the user talks to
     CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-sonnet-5")
-    # utility model: cheap model for background jobs (summaries, classification, etc)
-    UTILITY_MODEL = os.getenv("UTILITY_MODEL", "claude-haiku-4-5")
+    # utility models: cheap models for background jobs (summaries,
+    # classification, etc). UTILITY_MODEL remains a backwards-compatible
+    # override for deployments that predate provider-specific settings.
+    _LEGACY_UTILITY_MODEL = os.getenv("UTILITY_MODEL")
+    ANTHROPIC_UTILITY_MODEL = os.getenv(
+        "ANTHROPIC_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "claude-haiku-4-5"
+    )
     # effort for chat turns: low | medium | high (anthropic only; maps to output_config.effort)
     CHAT_EFFORT = os.getenv("CHAT_EFFORT", "low")
     # max output tokens for a chat/scheduled turn. CRITICAL: with adaptive
@@ -31,7 +37,21 @@ class Config:
     # openai (kept as an alternate provider)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_UTILITY_MODEL = os.getenv(
+        "OPENAI_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "gpt-4o-mini"
+    )
+    # Public legacy attribute retained for callers outside this repository.
+    UTILITY_MODEL = _LEGACY_UTILITY_MODEL or ANTHROPIC_UTILITY_MODEL
     COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-4o-mini")
+
+    @classmethod
+    def utility_model_for(cls, provider_name: str) -> str:
+        """Return a utility model that belongs to the selected provider."""
+        if provider_name == "anthropic":
+            return cls.ANTHROPIC_UTILITY_MODEL
+        if provider_name == "openai":
+            return cls.OPENAI_UTILITY_MODEL
+        raise ValueError(f"unknown AI provider: {provider_name}")
 
     # notion (the dainframe workspace)
     # an internal integration token: https://www.notion.so/my-integrations
@@ -41,9 +61,15 @@ class Config:
     NOTION_API_VERSION = os.getenv("NOTION_API_VERSION", "2022-06-28")
     # database ids default to the dainframe's tasks/projects/cycles; override
     # via env if the integration points at a different workspace.
-    NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID", "9d5b5399-f284-481b-8d2a-e4797c6db18a")
-    NOTION_PROJECTS_DB_ID = os.getenv("NOTION_PROJECTS_DB_ID", "0af777e5-3988-4a65-b9a0-1672524d9952")
-    NOTION_CYCLES_DB_ID = os.getenv("NOTION_CYCLES_DB_ID", "c21c7869-4672-4bf1-8cd1-d5af73282572")
+    NOTION_TASKS_DB_ID = os.getenv(
+        "NOTION_TASKS_DB_ID", "9d5b5399-f284-481b-8d2a-e4797c6db18a"
+    )
+    NOTION_PROJECTS_DB_ID = os.getenv(
+        "NOTION_PROJECTS_DB_ID", "0af777e5-3988-4a65-b9a0-1672524d9952"
+    )
+    NOTION_CYCLES_DB_ID = os.getenv(
+        "NOTION_CYCLES_DB_ID", "c21c7869-4672-4bf1-8cd1-d5af73282572"
+    )
     # cap rows returned by any single list_* call (keeps prompts lean)
     NOTION_MAX_PAGE_SIZE = int(os.getenv("NOTION_MAX_PAGE_SIZE", "25"))
 
@@ -165,7 +191,11 @@ class Config:
 
     # v3 personas: every card in src/personas/*.yaml is loaded, but only these
     # ids become live agents. one enabled helper = exactly v2 behavior.
-    ENABLED_HELPERS = [h.strip() for h in os.getenv("ENABLED_HELPERS", "chordial").split(",") if h.strip()]
+    ENABLED_HELPERS = [
+        h.strip()
+        for h in os.getenv("ENABLED_HELPERS", "chordial").split(",")
+        if h.strip()
+    ]
 
     # proactive-outreach gate (see services/proactivity_gate.py): hard caps on
     # unanswered proactive messages plus exponential backoff between them.

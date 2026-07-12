@@ -11,6 +11,7 @@ covers the three code-side pieces of the "thin state spine":
 the prose/pacing itself is the model's job and isn't tested here - only the
 state transitions and prompt shape code is responsible for.
 """
+
 import asyncio
 import sys
 import tempfile
@@ -29,12 +30,13 @@ from src.managers.user_manager import UserManager  # noqa: E402
 from src.agents.base import Briefing  # noqa: E402
 from src.agents.helper import HelperAgent  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
-from src.personas import PersonaCard  # noqa: E402
+from src.personas import PersonaCard, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.tools.base import ToolRegistry  # noqa: E402
 from src.services.tools.context import acting_as  # noqa: E402
 from src.services.tools.intro_tools import (  # noqa: E402
-    COMPLETE_INTRODUCTION, LIST_AVAILABLE_GUIDES,
+    COMPLETE_INTRODUCTION,
+    LIST_AVAILABLE_GUIDES,
 )
 
 
@@ -45,7 +47,9 @@ def run(coro):
 @pytest.fixture()
 def db(monkeypatch):
     fd, path = tempfile.mkstemp(suffix=".db")
-    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{path}", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(bind=engine)
     TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
@@ -54,55 +58,93 @@ def db(monkeypatch):
 
 
 async def _make_user(platform="discord", platform_user_id="1") -> str:
-    user_uuid, _ = await UserManager().get_or_create_user(platform, platform_user_id, "tester")
+    user_uuid, _ = await UserManager().get_or_create_user(
+        platform, platform_user_id, "tester"
+    )
     return user_uuid
 
 
 # --- private identity is invisible to siblings (the core-memory privacy filter) ---
+
 
 def test_helper_identity_memory_is_private_to_that_helper(db):
     """a helper's own form/name, saved core+private, renders as a core memory
     in ITS OWN prompt but never in a sibling's - the fix for one helper reading
     another's 'you are a red panda' identity as its own."""
     from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
+
     mem = MemoriesManager()
     user_uuid = run(_make_user())
 
     # chordial's private identity + a shared fact about the user
-    run(mem.upsert_memory(user_uuid, "to dain, you are matcha the red panda",
-                          MemoryType.FACT, MemorySource.AI_INFERRED, core=True,
-                          created_by="chordial", visibility="private"))
-    run(mem.upsert_memory(user_uuid, "dain is a pink deer building chordial",
-                          MemoryType.FACT, MemorySource.AI_INFERRED, core=True,
-                          created_by="chordial", visibility="shared"))
+    run(
+        mem.upsert_memory(
+            user_uuid,
+            "to dain, you are matcha the red panda",
+            MemoryType.FACT,
+            MemorySource.AI_INFERRED,
+            core=True,
+            created_by="chordial",
+            visibility="private",
+        )
+    )
+    run(
+        mem.upsert_memory(
+            user_uuid,
+            "dain is a pink deer building chordial",
+            MemoryType.FACT,
+            MemorySource.AI_INFERRED,
+            core=True,
+            created_by="chordial",
+            visibility="shared",
+        )
+    )
 
     def profile_for(helper_id):
         card = _card(id=helper_id)
-        req = run(PromptService(persona=card, enable_prompt_logging=False)
-                  .build_conversation_request(
-                      conversation_history=[Event(author_type="user", author="user",
-                                                  kind="message", content="hi")],
-                      user_name="Dain", user_uuid=user_uuid, user_timezone="UTC"))
+        req = run(
+            PromptService(
+                persona=card, enable_prompt_logging=False
+            ).build_conversation_request(
+                conversation_history=[
+                    Event(
+                        author_type="user", author="user", kind="message", content="hi"
+                    )
+                ],
+                user_name="Dain",
+                user_uuid=user_uuid,
+                user_timezone="UTC",
+            )
+        )
         return req.system[1].text
 
     chordial_profile = profile_for("chordial")
     tempo_profile = profile_for("tempo")
 
-    assert "matcha the red panda" in chordial_profile      # its own identity
-    assert "matcha the red panda" not in tempo_profile     # NOT leaked to tempo
-    assert "pink deer" in chordial_profile and "pink deer" in tempo_profile  # shared fact everywhere
+    assert "matcha the red panda" in chordial_profile  # its own identity
+    assert "matcha the red panda" not in tempo_profile  # NOT leaked to tempo
+    assert (
+        "pink deer" in chordial_profile and "pink deer" in tempo_profile
+    )  # shared fact everywhere
 
 
 # --- complete_introduction tool ---------------------------------------------
+
 
 def test_complete_introduction_accepted_sets_active_and_identity(db):
     user_uuid = run(_make_user())
 
     with acting_as("chordial"):
-        result = run(COMPLETE_INTRODUCTION.handler(
-            {"accepted": True, "persona_name": "Ember", "persona_form": "red panda"},
-            user_uuid,
-        ))
+        result = run(
+            COMPLETE_INTRODUCTION.handler(
+                {
+                    "accepted": True,
+                    "persona_name": "Ember",
+                    "persona_form": "red panda",
+                },
+                user_uuid,
+            )
+        )
 
     assert "ember" in result.lower()
     state = run(HelperStateManager().get(user_uuid, "chordial"))
@@ -116,10 +158,12 @@ def test_complete_introduction_declined_sets_declined_status(db):
     user_uuid = run(_make_user())
 
     with acting_as("tempo"):
-        result = run(COMPLETE_INTRODUCTION.handler(
-            {"accepted": False, "persona_name": None, "persona_form": None},
-            user_uuid,
-        ))
+        result = run(
+            COMPLETE_INTRODUCTION.handler(
+                {"accepted": False, "persona_name": None, "persona_form": None},
+                user_uuid,
+            )
+        )
 
     assert "declined" in result.lower()
     state = run(HelperStateManager().get(user_uuid, "tempo"))
@@ -145,9 +189,12 @@ def test_complete_introduction_attributes_the_acting_helper(db):
 def test_complete_introduction_blank_strings_normalize_to_none(db):
     user_uuid = run(_make_user())
     with acting_as("chordial"):
-        run(COMPLETE_INTRODUCTION.handler(
-            {"accepted": True, "persona_name": "  ", "persona_form": ""}, user_uuid,
-        ))
+        run(
+            COMPLETE_INTRODUCTION.handler(
+                {"accepted": True, "persona_name": "  ", "persona_form": ""},
+                user_uuid,
+            )
+        )
     state = run(HelperStateManager().get(user_uuid, "chordial"))
     assert state.persona_name is None
     assert state.persona_form is None
@@ -160,16 +207,20 @@ def test_complete_introduction_is_terminal_and_records():
 
 # --- list_available_guides tool ---------------------------------------------
 
+
 def _clear_telegram_usernames(monkeypatch):
     """hermetic env: a developer's real .env may have TELEGRAM_USERNAME_* set,
     which would otherwise leak real deep links into these assertions."""
     from config import Config
+
     monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", None)
     for hid in ("CHORDIAL", "TEMPO", "ARIA", "PEP", "MOCHI", "POET"):
         monkeypatch.delenv(f"TELEGRAM_USERNAME_{hid}", raising=False)
 
 
-def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(db, monkeypatch):
+def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(
+    db, monkeypatch
+):
     _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
@@ -184,7 +235,9 @@ def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(db, mon
         assert f"- {helper_id} (" in result
 
 
-def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(db, monkeypatch):
+def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(
+    db, monkeypatch
+):
     """the real, registered @username (config) drives the deep link - never
     the persona card's `telegram_handle` placeholder, which is essentially
     never the name actually available at botfather. no config -> no (wrong)
@@ -205,10 +258,12 @@ def test_list_available_guides_deep_link_uses_configured_username_not_card_place
 
 def test_list_available_guides_excludes_active_and_declined(db):
     user_uuid = run(_make_user())
-    run(HelperStateManager().complete_introduction(
-        user_uuid, "tempo", accepted=True, persona_name="Dash", persona_form="fox"))
-    run(HelperStateManager().complete_introduction(
-        user_uuid, "mochi", accepted=False))
+    run(
+        HelperStateManager().complete_introduction(
+            user_uuid, "tempo", accepted=True, persona_name="Dash", persona_form="fox"
+        )
+    )
+    run(HelperStateManager().complete_introduction(user_uuid, "mochi", accepted=False))
 
     with acting_as("chordial"):
         result = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
@@ -223,6 +278,31 @@ def test_list_available_guides_is_read_only():
 
 
 # --- PromptService.build_introduction_request -------------------------------
+
+
+def test_live_persona_intros_share_the_cozy_forest_discovery_frame(db):
+    cards = load_personas()
+    for card in cards.values():
+        lowered = card.intro_block.lower()
+        assert "forest" in lowered
+        assert "presence" in lowered
+
+    chordial = cards["chordial"]
+    assert "cozy, calm" in chordial.intro_block.lower()
+    assert "lantern" not in chordial.intro_block.lower()
+
+    request = run(
+        PromptService(chordial, enable_prompt_logging=False).build_introduction_request(
+            conversation_history=[],
+            user_name=None,
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
+    guidance = request.messages[-1].content.lower()
+    assert "wandered into a cozy, calm forest" in guidance
+    assert "gradually becomes aware of your presence" in guidance
+
 
 def _card(**overrides) -> PersonaCard:
     defaults = dict(
@@ -242,12 +322,14 @@ def _card(**overrides) -> PersonaCard:
 
 def test_introduction_request_first_contact_has_no_current_message(db):
     prompts = PromptService(persona=_card(), enable_prompt_logging=False)
-    request = run(prompts.build_introduction_request(
-        conversation_history=[],
-        user_name=None,
-        user_uuid=None,
-        user_timezone="UTC",
-    ))
+    request = run(
+        prompts.build_introduction_request(
+            conversation_history=[],
+            user_name=None,
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
 
     # system blocks are the ordinary frozen persona + profile - unaware this
     # is an introduction (cache-stability requirement).
@@ -255,8 +337,10 @@ def test_introduction_request_first_contact_has_no_current_message(db):
 
     volatile = request.messages[-1].content
     assert "you meet them in the forest and learn their name." in volatile
-    assert "representation ritual" in volatile          # the guided flow is present
-    assert "tell me something about yourself" in volatile  # the signature question rides along
+    assert "representation ritual" in volatile  # the guided flow is present
+    assert (
+        "tell me something about yourself" in volatile
+    )  # the signature question rides along
     assert "begin the introduction now" in volatile
 
 
@@ -267,9 +351,14 @@ def test_introduction_request_carries_the_personas_signature_question(db):
         persona=_card(id="tempo", intro_question="what movement do you love?"),
         enable_prompt_logging=False,
     )
-    request = run(prompts.build_introduction_request(
-        conversation_history=[], user_name=None, user_uuid=None, user_timezone="UTC",
-    ))
+    request = run(
+        prompts.build_introduction_request(
+            conversation_history=[],
+            user_name=None,
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
     volatile = request.messages[-1].content
     assert "what movement do you love?" in volatile
     assert "signature question" in volatile
@@ -277,15 +366,23 @@ def test_introduction_request_carries_the_personas_signature_question(db):
 
 def test_introduction_request_folds_in_the_current_user_message(db):
     prompts = PromptService(persona=_card(), enable_prompt_logging=False)
-    history = [Event(author_type="user", author="user", kind="message",
-                      content="hi there, i wandered in")]
+    history = [
+        Event(
+            author_type="user",
+            author="user",
+            kind="message",
+            content="hi there, i wandered in",
+        )
+    ]
 
-    request = run(prompts.build_introduction_request(
-        conversation_history=history,
-        user_name=None,
-        user_uuid=None,
-        user_timezone="UTC",
-    ))
+    request = run(
+        prompts.build_introduction_request(
+            conversation_history=history,
+            user_name=None,
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
 
     volatile = request.messages[-1].content
     assert volatile.endswith("hi there, i wandered in")
@@ -299,15 +396,22 @@ def test_introduction_request_renders_prior_history_for_a_returning_user(db):
     prompts = PromptService(persona=_card(id="tempo"), enable_prompt_logging=False)
     history = [
         Event(author_type="user", author="user", kind="message", content="hey tempo"),
-        Event(author_type="agent", author="tempo", kind="message", content="hi! good to meet you"),
+        Event(
+            author_type="agent",
+            author="tempo",
+            kind="message",
+            content="hi! good to meet you",
+        ),
     ]
 
-    request = run(prompts.build_introduction_request(
-        conversation_history=history,
-        user_name="Dain",
-        user_uuid=None,
-        user_timezone="UTC",
-    ))
+    request = run(
+        prompts.build_introduction_request(
+            conversation_history=history,
+            user_name="Dain",
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
 
     rendered = [m.content for m in request.messages[:-1]]
     assert any("hey tempo" in c for c in rendered)
@@ -320,19 +424,30 @@ def test_introduction_request_keeps_system_blocks_byte_identical_to_conversation
     card = _card()
     prompts = PromptService(persona=card, enable_prompt_logging=False)
 
-    convo = run(prompts.build_conversation_request(
-        conversation_history=[Event(author_type="user", author="user", kind="message", content="hi")],
-        user_name="Dain", user_uuid=None, user_timezone="UTC",
-    ))
-    intro = run(prompts.build_introduction_request(
-        conversation_history=[],
-        user_name="Dain", user_uuid=None, user_timezone="UTC",
-    ))
+    convo = run(
+        prompts.build_conversation_request(
+            conversation_history=[
+                Event(author_type="user", author="user", kind="message", content="hi")
+            ],
+            user_name="Dain",
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
+    intro = run(
+        prompts.build_introduction_request(
+            conversation_history=[],
+            user_name="Dain",
+            user_uuid=None,
+            user_timezone="UTC",
+        )
+    )
 
     assert [b.text for b in convo.system] == [b.text for b in intro.system]
 
 
 # --- HelperAgent.act introduction branch ------------------------------------
+
 
 class _StubLoop:
     """stands in for AgentService: records how it was called."""
@@ -340,11 +455,18 @@ class _StubLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, request, *, user_uuid, platform, turn_kind, acting_helper="chordial"):
-        self.calls.append(dict(
-            request=request, user_uuid=user_uuid, platform=platform,
-            turn_kind=turn_kind, acting_helper=acting_helper,
-        ))
+    async def run(
+        self, request, *, user_uuid, platform, turn_kind, acting_helper="chordial"
+    ):
+        self.calls.append(
+            dict(
+                request=request,
+                user_uuid=user_uuid,
+                platform=platform,
+                turn_kind=turn_kind,
+                acting_helper=acting_helper,
+            )
+        )
 
         class _Result:
             text = "hello, i'm tempo"
@@ -391,8 +513,12 @@ def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):
 
     agent = HelperAgent(card, loop, registry)
     briefing = Briefing(
-        kind="user_message", user_uuid="u1", platform="telegram",
-        user_name="Dain", user_timezone="UTC", events=[],
+        kind="user_message",
+        user_uuid="u1",
+        platform="telegram",
+        user_name="Dain",
+        user_timezone="UTC",
+        events=[],
     )
     run(agent.act(briefing))
 

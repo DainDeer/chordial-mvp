@@ -4,6 +4,7 @@ no database - the router's collaborators (interface, user_manager) are faked so
 these stay pure-logic and fast. follows the repo's plain-asyncio test style
 (no pytest-asyncio dependency).
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -21,8 +22,14 @@ def run(coro):
 
 
 class FakeInterface(BaseInterface):
-    def __init__(self, platform: str, *, helper_id=None, raise_exc: Exception = None,
-                 ok: bool = True):
+    def __init__(
+        self,
+        platform: str,
+        *,
+        helper_id=None,
+        raise_exc: Exception = None,
+        ok: bool = True,
+    ):
         self.platform = platform
         if helper_id is not None:
             self.helper_id = helper_id
@@ -116,6 +123,7 @@ def test_register_requires_a_platform_name():
 
 # --- v3: per-helper interfaces + speaker-aware delivery ---------------------------
 
+
 def test_deliver_as_routes_to_the_speakers_bot():
     router = MessageRouter(FakeUserManager())
     tempo = FakeInterface("telegram", helper_id="tempo")
@@ -127,7 +135,7 @@ def test_deliver_as_routes_to_the_speakers_bot():
 
     assert ok is True
     assert tempo.sent == [("-100", "hi from tempo")]
-    assert aria.sent == []   # only the addressed speaker's bot sent
+    assert aria.sent == []  # only the addressed speaker's bot sent
 
 
 def test_deliver_as_falls_back_to_single_bot_platform():
@@ -143,16 +151,17 @@ def test_deliver_as_falls_back_to_single_bot_platform():
     assert discord.sent == [("42", "hi")]
 
 
-def test_deliver_as_falls_back_to_any_interface_for_the_platform():
-    # no exact speaker match and no (platform, None) entry -> any telegram bot.
+def test_deliver_as_fails_closed_when_speakers_bot_is_unavailable():
+    # no exact speaker match and no (platform, None) entry: do not impersonate
+    # mochi through tempo's distinct Telegram bot account.
     router = MessageRouter(FakeUserManager())
     tempo = FakeInterface("telegram", helper_id="tempo")
     router.register(tempo)
 
     ok = run(router.deliver_as("telegram", "-100", "hi", speaker="mochi"))
 
-    assert ok is True
-    assert tempo.sent == [("-100", "hi")]
+    assert ok is False
+    assert tempo.sent == []
 
 
 def test_deliver_defaults_speaker_to_chordial():
@@ -181,8 +190,11 @@ def test_platforms_dedupes_across_per_helper_interfaces():
 def test_deliver_as_deactivates_link_on_permanent_failure():
     users = FakeUserManager()
     router = MessageRouter(users)
-    router.register(FakeInterface("telegram", helper_id="tempo",
-                                  raise_exc=UndeliverableError("blocked")))
+    router.register(
+        FakeInterface(
+            "telegram", helper_id="tempo", raise_exc=UndeliverableError("blocked")
+        )
+    )
 
     ok = run(router.deliver_as("telegram", "dead", "hi", speaker="tempo"))
 

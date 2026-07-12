@@ -7,6 +7,7 @@ adapter that CONSTRUCTS stimuli and the orchestrator that CONSUMES them can
 share one definition without importing each other's logic. see
 docs/V3_DESIGN.md section 6 (the director) and section 1 (group vs dm routing).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,17 +17,22 @@ from typing import List, Optional
 @dataclass
 class Stimulus:
     """something that might make one or more helpers act."""
-    kind: str                        # 'user_message' | 'scheduled_tick' | 'introduction' | 'curation_due'
+
+    kind: str  # 'user_message' | 'scheduled_tick' | 'introduction' | 'curation_due'
     user_uuid: str
     platform: Optional[str] = None
-    content: Optional[str] = None    # user_message only
+    content: Optional[str] = None  # user_message only
+    # concrete destination for synchronous DM/introduction delivery. Supplying
+    # it lets the orchestrator confirm platform success before it commits the
+    # assistant line as shared conversational reality.
+    delivery_target_id: Optional[str] = None
     user_name: Optional[str] = None
     user_timezone: Optional[str] = None
 
     # --- v3 group/dm routing --------------------------------------------------
-    # where this happened. 'dm' = a private 1:1 with one helper (the receiving
-    # bot IS the speaker, so the reply returns synchronously). 'group' = the
-    # shared channel (replies are delivered out-of-band, each via its own bot).
+    # where this happened. 'dm' = a private 1:1 with one helper; 'group' = the
+    # shared channel. Production replies are delivered through the router so
+    # the event log can wait for a real success signal.
     chat_scope: str = "dm"
     # delivery target for chat_scope='group' (the telegram group's chat id).
     group_chat_id: Optional[str] = None
@@ -44,9 +50,10 @@ class Stimulus:
 class ScriptLine:
     """one turn in the director's script: who speaks, and the stage direction
     for them. `style='brief'` asks for a short reaction rather than a full reply."""
-    speaker: str                     # helper id
-    cue: Optional[str] = None        # one-line "why you're speaking / what angle"
-    style: str = "full"              # 'full' | 'brief'
+
+    speaker: str  # helper id
+    cue: Optional[str] = None  # one-line "why you're speaking / what angle"
+    style: str = "full"  # 'full' | 'brief'
 
 
 @dataclass
@@ -54,6 +61,7 @@ class Script:
     """the ordered sequence of speakers for one activation. delivered in order;
     each speaker is briefed AFTER the previous line is recorded, so a later
     speaker genuinely reacts to an earlier one."""
+
     lines: List[ScriptLine] = field(default_factory=list)
 
 
@@ -61,11 +69,14 @@ class Script:
 class Deliverable:
     """what the caller (platform adapter / scheduler) gets back.
 
-    a dm/single-speaker activation returns `text` for the receiving interface
-    to send. a group activation delivers each line out-of-band through the
-    speaker-aware router and comes back `handled=True` with text=None - the
-    interface sends nothing, because the bots already spoke for themselves."""
+    Confirmed router delivery returns `handled=True`. Scheduled generation (and
+    isolated adapters without a delivery hook) returns `text`; the scheduler
+    finalizes its event only after the platform callback succeeds."""
+
     text: Optional[str] = None
     refused: bool = False
     errored: bool = False
     handled: bool = False
+    # speaker retained for deferred scheduled delivery. The scheduler records
+    # the line only after its platform callback reports success.
+    speaker: Optional[str] = None

@@ -30,10 +30,14 @@ def _build_interfaces(chat_service, link_service, user_manager):
     interfaces = []
     if Config.ENABLE_DISCORD:
         from src.providers.platforms.discord_bot import DiscordInterface
+
         interfaces.append(DiscordInterface(chat_service))
         logger.info("discord interface enabled")
     if Config.ENABLE_TELEGRAM:
-        from src.providers.platforms.telegram_bot import TelegramInterface, UpdateDeduper
+        from src.providers.platforms.telegram_bot import (
+            TelegramInterface,
+            UpdateDeduper,
+        )
 
         tokens = Config.telegram_helper_tokens()
         if not tokens:
@@ -52,20 +56,24 @@ def _build_interfaces(chat_service, link_service, user_manager):
             )
 
         usernames = Config.telegram_helper_usernames()
-        handle_to_helper = {username.lower(): helper_id for helper_id, username in usernames.items()}
+        handle_to_helper = {
+            username.lower(): helper_id for helper_id, username in usernames.items()
+        }
         deduper = UpdateDeduper()
         for helper_id, token in tokens.items():
-            interfaces.append(TelegramInterface(
-                helper_id=helper_id,
-                token=token,
-                telegram_handle=usernames[helper_id],
-                chat_service=chat_service,
-                link_service=link_service,
-                user_manager=user_manager,
-                deduper=deduper,
-                group_chat_id=Config.TELEGRAM_GROUP_CHAT_ID,
-                handle_to_helper=handle_to_helper,
-            ))
+            interfaces.append(
+                TelegramInterface(
+                    helper_id=helper_id,
+                    token=token,
+                    telegram_handle=usernames[helper_id],
+                    chat_service=chat_service,
+                    link_service=link_service,
+                    user_manager=user_manager,
+                    deduper=deduper,
+                    group_chat_id=Config.TELEGRAM_GROUP_CHAT_ID,
+                    handle_to_helper=handle_to_helper,
+                )
+            )
         logger.info("telegram interfaces enabled for helpers: %s", ", ".join(tokens))
     return interfaces
 
@@ -76,38 +84,103 @@ def _build_provider(provider_name: str, model: str = None, thinking: bool = True
     `thinking=False` for models that don't support adaptive thinking (haiku)."""
     if provider_name == "anthropic":
         from src.providers.ai.anthropic_provider import AnthropicProvider
+
         return AnthropicProvider(model=model, thinking=thinking)
     if provider_name == "openai":
         from src.providers.ai.openai_provider import OpenAIProvider
+
         return OpenAIProvider(model=model) if model else OpenAIProvider()
-    logger.error(f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')")
+    logger.error(
+        f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')"
+    )
     return None
+
 
 # setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+async def _run_services(interfaces, scheduler_service, router):
+    """Supervise long-running services as one failure domain.
+
+    A platform task returning normally is still unexpected while the process
+    is running. Stop and cancel its siblings so a dead interface can never be
+    hidden by the scheduler's infinite loop.
+    """
+    named_tasks = {
+        asyncio.create_task(
+            interface.start()
+        ): f"{getattr(interface, 'platform', type(interface).__name__)} interface"
+        for interface in interfaces
+    }
+    scheduler_task = asyncio.create_task(
+        scheduler_service.run_scheduling_loop(
+            platforms=router.platforms(),
+            message_callback=router.deliver,
+        )
+    )
+    named_tasks[scheduler_task] = "scheduler"
+    logger.info("scheduler service started")
+
+    try:
+        done, _ = await asyncio.wait(named_tasks, return_when=asyncio.FIRST_COMPLETED)
+        task = next(iter(done))
+        service_name = named_tasks[task]
+        exception = task.exception()
+        if exception is not None:
+            raise RuntimeError(f"{service_name} stopped unexpectedly") from exception
+        raise RuntimeError(f"{service_name} stopped unexpectedly")
+    finally:
+        scheduler_service.stop()
+        for interface in interfaces:
+            try:
+                await interface.stop()
+            except Exception:
+                logger.exception(
+                    "failed to stop %s interface",
+                    getattr(interface, "platform", type(interface).__name__),
+                )
+        for task in named_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*named_tasks, return_exceptions=True)
+
+
+async def _close_provider(provider):
+    """Close an SDK's async HTTP client when it exposes a close hook."""
+    if provider is None:
+        return
+    close = getattr(getattr(provider, "client", None), "close", None)
+    if close is not None:
+        result = close()
+        if asyncio.iscoroutine(result):
+            await result
+
 
 async def main():
     """main entry point for chordial"""
     logger.info("starting chordial...")
-    
+
     # initialize database
     init_db()
-    
+
     # initialize core services
     user_manager = UserManager()
 
     # initialize ai provider + agent loop
     provider_name = Config.AI_PROVIDER
     provider = _build_provider(provider_name)
+    utility_provider = None
     registry = build_default_registry()
     agent_service = None
     if provider is not None:
         if await provider.is_available():
-            logger.info(f"{provider_name} provider initialized (model={provider.model})")
+            logger.info(
+                f"{provider_name} provider initialized (model={provider.model})"
+            )
             agent_service = AgentService(
                 provider=provider,
                 registry=registry,
@@ -124,6 +197,7 @@ async def main():
     agenda_service = None
     if Config.agenda_enabled():
         from src.services.notion.snapshot_service import AgendaSnapshotService
+
         agenda_service = AgendaSnapshotService()
         logger.info("agenda snapshot service enabled")
 
@@ -160,24 +234,34 @@ async def main():
         # one utility provider (haiku; thinking=False - it doesn't support
         # adaptive thinking) shared by the background utility jobs below
         utility_provider = _build_provider(
-            provider_name, model=Config.UTILITY_MODEL, thinking=False,
+            provider_name,
+            model=Config.utility_model_for(provider_name),
+            thinking=False,
         )
 
         if utility_provider is not None:
             from src.services.memory_curator import MemoryCuratorService
-            agents["curator"] = CuratorAgent(MemoryCuratorService(
-                provider=utility_provider,
-                provider_name=provider_name,
-                usage_recorder=UsageRecorder(),
-            ))
+
+            agents["curator"] = CuratorAgent(
+                MemoryCuratorService(
+                    provider=utility_provider,
+                    provider_name=provider_name,
+                    usage_recorder=UsageRecorder(),
+                )
+            )
             logger.info(f"memory curator initialized (model={utility_provider.model})")
 
         # completion reconciler: marks tasks done that the user mentioned
         # finishing in passing. needs the agenda (for the open-task list) and
         # the utility model.
         reconciler = None
-        if agenda_service is not None and utility_provider is not None and Config.RECONCILER_ENABLED:
+        if (
+            agenda_service is not None
+            and utility_provider is not None
+            and Config.RECONCILER_ENABLED
+        ):
             from src.services.completion_reconciler import CompletionReconcilerService
+
             reconciler = CompletionReconcilerService(
                 provider=utility_provider,
                 provider_name=provider_name,
@@ -219,6 +303,7 @@ async def main():
     # the link-code service: chat-first account linking across platforms
     # (minted by the link_platform tool, redeemed by the telegram interface)
     from src.services.platform_link_service import PlatformLinkService
+
     link_service = PlatformLinkService(user_manager)
 
     # build interfaces and register them with the outbound router. the router
@@ -228,30 +313,13 @@ async def main():
     for interface in interfaces:
         router.register(interface)
 
-    # start all interfaces
-    tasks = [asyncio.create_task(interface.start()) for interface in interfaces]
-
-    # start the scheduler service - it drives its loop off whatever platforms
-    # actually have a live interface, and delivers through the router.
-    scheduler_task = asyncio.create_task(
-        scheduler_service.run_scheduling_loop(
-            platforms=router.platforms(),
-            message_callback=router.deliver,
-        )
-    )
-    tasks.append(scheduler_task)
-    logger.info("scheduler service started")
-    
     try:
-        # keep running until interrupted
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
+        await _run_services(interfaces, scheduler_service, router)
+    finally:
         logger.info("shutting down chordial...")
-        # stop scheduler
-        scheduler_service.stop()
-        # stop all interfaces
-        for interface in interfaces:
-            await interface.stop()
+        await _close_provider(utility_provider)
+        await _close_provider(provider)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

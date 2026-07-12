@@ -15,6 +15,7 @@ router keys on `(platform, helper_id)` - the interface's `helper_id` attr, or
 resolves the speaking helper's bot; the legacy 3-arg `deliver` speaks as
 chordial.
 """
+
 import logging
 from typing import Dict, Optional, Tuple
 
@@ -40,11 +41,11 @@ class MessageRouter:
         helper_id = getattr(interface, "helper_id", None)
         key = (platform, helper_id)
         if key in self._interfaces:
-            logger.warning(
-                "overwriting already-registered interface for %s", key
-            )
+            logger.warning("overwriting already-registered interface for %s", key)
         self._interfaces[key] = interface
-        logger.info("registered interface for platform '%s' (helper=%s)", platform, helper_id)
+        logger.info(
+            "registered interface for platform '%s' (helper=%s)", platform, helper_id
+        )
 
     def platforms(self) -> list[str]:
         """distinct platforms that currently have a live interface - the
@@ -56,32 +57,35 @@ class MessageRouter:
                 seen.append(platform)
         return seen
 
-    def _resolve(self, platform: str, speaker: Optional[str]) -> Optional[BaseInterface]:
+    def _resolve(
+        self, platform: str, speaker: Optional[str]
+    ) -> Optional[BaseInterface]:
         """find the interface that should send as `speaker` on `platform`:
-        the exact (platform, speaker) bot, else the single-bot (platform, None)
-        interface, else any interface registered for that platform."""
+        the exact (platform, speaker) bot, else the platform's single-bot
+        (platform, None) interface. Platforms with helper-specific interfaces
+        fail closed if the requested speaker is unavailable, rather than
+        impersonating that helper through a different bot account."""
         interface = self._interfaces.get((platform, speaker))
         if interface is not None:
             return interface
         interface = self._interfaces.get((platform, None))
         if interface is not None:
             return interface
-        for (p, _helper_id), iface in self._interfaces.items():
-            if p == platform:
-                return iface
         return None
 
-    async def deliver_as(self, platform: str, target_id: str, message: str,
-                         speaker: str) -> bool:
+    async def deliver_as(
+        self, platform: str, target_id: str, message: str, speaker: str
+    ) -> bool:
         """send `message` to `target_id` on `platform` AS `speaker` (a helper
-        id). resolves the speaker's bot (falling back to the platform's
-        single-bot / any interface), returns True on success. on a permanent
+        id). resolves the speaker's bot (falling back only to the platform's
+        single-bot interface), returns True on success. on a permanent
         failure, deactivates the platform link and returns False."""
         interface = self._resolve(platform, speaker)
         if interface is None:
             logger.error(
                 "no interface registered for platform '%s' (speaker=%s)",
-                platform, speaker,
+                platform,
+                speaker,
             )
             return False
 
@@ -90,7 +94,10 @@ class MessageRouter:
         except UndeliverableError as e:
             logger.warning(
                 "permanent delivery failure for %s:%s (speaker=%s) - %s; deactivating link",
-                platform, target_id, speaker, e,
+                platform,
+                target_id,
+                speaker,
+                e,
             )
             await self._user_manager.deactivate_platform_identity(platform, target_id)
             return False
@@ -99,4 +106,6 @@ class MessageRouter:
         """send `message` to `platform_user_id` on `platform`, as chordial. the
         legacy 3-arg hook the scheduler and the orchestrator's switch-notice
         call; delegates to deliver_as with the default speaker."""
-        return await self.deliver_as(platform, platform_user_id, message, speaker="chordial")
+        return await self.deliver_as(
+            platform, platform_user_id, message, speaker="chordial"
+        )
