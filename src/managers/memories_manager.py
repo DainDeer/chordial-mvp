@@ -6,11 +6,18 @@ import re
 import json
 import logging
 
+from sqlalchemy import or_
+
 from src.database.database import get_db
 from src.database.models import Memory, User
 from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+# v3 multi-helper memory model: one shared pool plus per-helper privates.
+# 'shared' rows are visible to every helper; 'private' rows only to created_by.
+_VALID_VISIBILITIES = {"shared", "private"}
 
 
 # --- dedup/reinforcement tuning -------------------------------------------
@@ -89,16 +96,20 @@ class MemoriesManager:
         core: bool = False,
         ttl_seconds: Optional[int] = None,
         embedding: Optional[List[float]] = None,
-        memory_metadata: Optional[Dict[str, Any]] = None
+        memory_metadata: Optional[Dict[str, Any]] = None,
+        created_by: str = 'chordial',
+        visibility: str = 'shared',
     ) -> Memory:
         """create a new memory for a user"""
-        
+        if visibility not in _VALID_VISIBILITIES:
+            raise ValueError(f"invalid visibility '{visibility}' - must be one of {_VALID_VISIBILITIES}")
+
         with get_db() as db:
             # check if user exists
             user = db.query(User).filter(User.uuid == user_uuid).first()
             if not user:
                 raise ValueError(f"user {user_uuid} not found")
-            
+
             # prepare memory data
             memory_data = {
                 "user_uuid": user_uuid,
@@ -110,7 +121,9 @@ class MemoriesManager:
                 "core": core,
                 "ttl": ttl_seconds,
                 "embedding": embedding if embedding else None,  # stored as json
-                "memory_metadata": memory_metadata or {}
+                "memory_metadata": memory_metadata or {},
+                "created_by": created_by,
+                "visibility": visibility,
             }
             
             memory = Memory(**memory_data)
@@ -133,24 +146,37 @@ class MemoriesManager:
         source: MemorySource,
         keywords: Optional[List[str]] = None,
         core: bool = False,
+        created_by: str = 'chordial',
+        visibility: str = 'shared',
     ) -> UpsertResult:
         """save a memory, reinforcing an existing near-duplicate instead of
         inserting a second copy. reinforcement bumps the row's weight (so facts
         mentioned repeatedly rise in importance), unions the keywords, and marks
-        it for re-curation. matching is scoped to the same memory_type.
+        it for re-curation. matching is scoped to the same memory_type AND the
+        same visibility scope (a private row only reinforces another private row
+        from the same helper; a shared row only reinforces another shared row) -
+        the shared-pool-plus-privates model never lets a save from one helper's
+        private scope quietly absorb into another's, or into the shared pool.
 
         core memories are always inserted verbatim - they're deliberate, and we
         never want dedup logic quietly folding one into another."""
+        if visibility not in _VALID_VISIBILITIES:
+            raise ValueError(f"invalid visibility '{visibility}' - must be one of {_VALID_VISIBILITIES}")
+
         cand_keywords = _keyword_set(",".join(keywords) if keywords else "")
 
         if not core:
             with get_db() as db:
-                candidates = db.query(Memory).filter(
+                query = db.query(Memory).filter(
                     Memory.user_uuid == user_uuid,
                     Memory.is_active == True,
                     Memory.core == False,
                     Memory.memory_type == memory_type.value,
-                ).all()
+                    Memory.visibility == visibility,
+                )
+                if visibility == 'private':
+                    query = query.filter(Memory.created_by == created_by)
+                candidates = query.all()
 
                 cand_words = _word_set(ai_instruction)
                 best = None
@@ -204,6 +230,8 @@ class MemoriesManager:
                 weighting=self.core_memory_weight if core else self.default_weighting,
                 core=core,
                 memory_metadata={},
+                created_by=created_by,
+                visibility=visibility,
             )
             db.add(memory)
             db.flush()  # populate memory.id before the session closes
@@ -227,28 +255,42 @@ class MemoriesManager:
         self,
         user_uuid: str,
         memory_type: Optional[MemoryType] = None,
-        include_expired: bool = False
+        include_expired: bool = False,
+        helper_id: Optional[str] = None,
     ) -> List[Memory]:
-        """get all active memories for a user"""
-        
+        """get all active memories for a user.
+
+        helper_id, when given, applies the shared-pool-plus-privates filter:
+        (visibility == 'shared') | (created_by == helper_id). None (the
+        default) applies no visibility filter - backward compatible for
+        callers that haven't gone multi-helper yet."""
+
         with get_db() as db:
             query = db.query(Memory).filter(
                 Memory.user_uuid == user_uuid,
                 Memory.is_active == True
             )
-            
+
             # filter by type if specified
             if memory_type:
                 query = query.filter(Memory.memory_type == memory_type.value)
-            
+
+            # shared-pool-plus-privates: every helper sees shared rows, plus
+            # only their own private rows
+            if helper_id is not None:
+                query = query.filter(
+                    or_(Memory.visibility == 'shared', Memory.created_by == helper_id)
+                )
+
             # filter out expired memories unless requested
             if not include_expired:
                 now = utc_now()
                 # this is a bit tricky with sqlalchemy, so we'll filter in python
                 memories = query.all()
-                
+
                 # filter out expired ttl memories
                 active_memories = []
+                newly_expired_ids = []
                 for memory in memories:
                     if memory.ttl is None:  # no ttl = permanent
                         active_memories.append(memory)
@@ -259,12 +301,28 @@ class MemoriesManager:
                         else:
                             # mark as inactive for next time
                             memory.is_active = False
-                            db.commit()
-                            logger.info(f"memory {memory.id} expired, marking inactive")
-                
+                            newly_expired_ids.append(memory.id)
+
+                # detach the rows we're about to return BEFORE committing the
+                # ttl-expiry writes: get_db() commits (and expire_on_commit
+                # clears every attribute of every object still tracked by the
+                # session) on exit, so returning attached instances makes them
+                # raise DetachedInstanceError the moment a caller reads them
+                # after this function returns. expunge first so their
+                # already-loaded values survive the session closing.
+                for memory in active_memories:
+                    db.expunge(memory)
+
+                if newly_expired_ids:
+                    db.commit()
+                    for mid in newly_expired_ids:
+                        logger.info(f"memory {mid} expired, marking inactive")
+
                 return active_memories
-            
-            return query.all()
+
+            rows = query.all()
+            db.expunge_all()
+            return rows
     
     async def get_core_memories(self, user_uuid: str) -> List[Memory]:
         """get all core memories for a user (always included).
@@ -280,32 +338,54 @@ class MemoriesManager:
                 Memory.is_active == True
             ).all()
 
-    async def get_core_memories_for_prompt(self, user_uuid: str) -> List[Dict[str, Any]]:
+    async def get_core_memories_for_prompt(
+        self, user_uuid: str, helper_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """core memories as detached-safe dicts, sorted by id for deterministic
         (cacheable) ordering.
 
         extracts the fields WHILE the session is open. get_db() commits on exit,
         which expires the orm instances - returning Memory objects and reading
         their attributes afterwards raises DetachedInstanceError.
+
+        helper_id, when given, applies the shared-pool-plus-privates filter
+        (see get_active_memories); None (default) is unfiltered, for backward
+        compatibility with callers that haven't gone multi-helper yet. the
+        returned dicts always carry created_by so a later phase can render
+        sibling attribution ("(from aria) ...") - the currently-rendered
+        prompt string itself is unchanged (cache-sensitive bytes).
         """
         with get_db() as db:
-            rows = db.query(Memory).filter(
+            query = db.query(Memory).filter(
                 Memory.user_uuid == user_uuid,
                 Memory.core == True,
                 Memory.is_active == True
-            ).order_by(Memory.id).all()
-            return [{"id": m.id, "instruction": m.ai_instruction} for m in rows]
+            )
+            if helper_id is not None:
+                query = query.filter(
+                    or_(Memory.visibility == 'shared', Memory.created_by == helper_id)
+                )
+            rows = query.order_by(Memory.id).all()
+            return [
+                {"id": m.id, "instruction": m.ai_instruction, "created_by": m.created_by}
+                for m in rows
+            ]
     
     async def search_memories_by_keywords(
         self,
         user_uuid: str,
-        search_terms: List[str]
+        search_terms: List[str],
+        helper_id: Optional[str] = None,
     ) -> List[Memory]:
-        """search memories by keywords"""
-        
+        """search memories by keywords.
+
+        helper_id, when given, applies the shared-pool-plus-privates filter
+        (see get_active_memories); None (default) is unfiltered - backward
+        compatible until phase-2 callers start passing helper ids."""
+
         with get_db() as db:
-            memories = await self.get_active_memories(user_uuid)
-            
+            memories = await self.get_active_memories(user_uuid, helper_id=helper_id)
+
             # simple keyword matching for now
             matches = []
             for memory in memories:
@@ -325,20 +405,29 @@ class MemoriesManager:
         self,
         user_uuid: str,
         max_count: int = 10,
-        include_core: bool = True
+        include_core: bool = True,
+        helper_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """get memories formatted for inclusion in ai prompts"""
-        
+        """get memories formatted for inclusion in ai prompts.
+
+        helper_id, when given, applies the shared-pool-plus-privates filter
+        (see get_active_memories); None (default) is unfiltered - backward
+        compatible until phase-2 callers start passing helper ids."""
+
         formatted = []
         memory_ids_to_track = []
-        
+
         with get_db() as db:
             # build base query
             query = db.query(Memory).filter(
                 Memory.user_uuid == user_uuid,
                 Memory.is_active == True
             )
-            
+            if helper_id is not None:
+                query = query.filter(
+                    or_(Memory.visibility == 'shared', Memory.created_by == helper_id)
+                )
+
             # get all active memories
             all_memories = query.all()
             
@@ -376,7 +465,8 @@ class MemoriesManager:
                     "type": memory.memory_type,
                     "instruction": memory.ai_instruction,
                     "core": memory.core,
-                    "source": memory.source
+                    "source": memory.source,
+                    "created_by": memory.created_by,
                 })
                 
                 # collect ids to track access later

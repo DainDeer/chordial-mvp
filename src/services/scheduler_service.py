@@ -6,6 +6,7 @@ import logging
 from src.managers.user_manager import UserManager
 from src.managers.event_log import EventLog
 from src.services.orchestrator import Stimulus
+from src.services.proactivity_gate import ProactivityGate
 from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
 
@@ -19,8 +20,9 @@ class SchedulerService:
     platforms they're on); delivery targets the platform the user most
     recently spoke on, falling back to any other live link."""
 
-    def __init__(self, orchestrator=None, user_manager: UserManager = None,
-                 agenda_service=None):
+    def __init__(
+        self, orchestrator=None, user_manager: UserManager = None, agenda_service=None
+    ):
         # the orchestrator generates scheduled check-ins and runs the curation
         # pass; None (e.g. no ai provider configured) disables both quietly
         self.orchestrator = orchestrator
@@ -30,12 +32,17 @@ class SchedulerService:
         # actually gets queried)
         self.agenda_service = agenda_service
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
-        self.delay_after_ignored_hours = Config.DELAY_AFTER_IGNORED_HOURS  # delay N hours if scheduled message was ignored
         self.quiet_hours_start = Config.QUIET_HOURS_START
         self.quiet_hours_end = Config.QUIET_HOURS_END
+        # the non-interaction guard: pure db arithmetic, checked before any
+        # generation. phase 1 has one helper ('chordial'); a later phase
+        # passes real per-helper candidates through here.
+        self.gate = ProactivityGate()
         self._running = False
 
-    async def _check_last_message(self, user_uuid: str) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
+    async def _check_last_message(
+        self, user_uuid: str
+    ) -> tuple[Optional[str], Optional[datetime], Optional[str]]:
         """check who sent the last message, when, and what type. reads the
         event log's last MESSAGE event - tool-action and note events are
         invisible here by construction, so a trailing action or switch notice
@@ -44,16 +51,23 @@ class SchedulerService:
         if event:
             return event.role, event.created_at, event.message_type
         return None, None, None
-    
+
     def _is_quiet_hours(self, user_timezone: str) -> bool:
         """check if it's currently quiet hours (default: after 9pm or before 8am) in the user's local time"""
         local_hour = get_user_local_hour(utc_now(), user_timezone)
-        return is_within_quiet_hours(local_hour, self.quiet_hours_start, self.quiet_hours_end)
+        return is_within_quiet_hours(
+            local_hour, self.quiet_hours_start, self.quiet_hours_end
+        )
 
     async def should_send_scheduled_message(self, user_uuid: str) -> bool:
         """determine if we should send a scheduled message to this user now.
         the gate runs against the user's UNIFIED conversation - chatting on
-        any platform resets the recency clock for all of them."""
+        any platform resets the recency clock for all of them.
+
+        order: onboarding -> first contact -> quiet hours -> the
+        proactivity gate (the ignored-chain guard) -> regular interval. quiet
+        hours applies to every proactive send, including the ignored chain -
+        being ignored is not license to nag at 3am."""
         now = utc_now()
 
         # check if user has completed onboarding. LOAD-BEARING for the
@@ -62,48 +76,63 @@ class SchedulerService:
         # the only thing keeping scheduled sends away from mid-onboarding users.
         needs_onboarding = await self.user_manager.needs_onboarding(user_uuid)
         if needs_onboarding:
-            logger.debug(f"user {user_uuid} needs onboarding, skipping scheduled message")
+            logger.debug(
+                f"user {user_uuid} needs onboarding, skipping scheduled message"
+            )
             return False
 
         # check last message in conversation
-        last_role, last_message_time, last_message_type = await self._check_last_message(user_uuid)
-        
-        # if no messages yet, send one
+        last_role, last_message_time, last_message_type = (
+            await self._check_last_message(user_uuid)
+        )
+
+        # check if we're in quiet hours (in the user's own timezone) - applies
+        # to every proactive send, including the very first one
+        user_timezone = await self.user_manager.get_user_timezone(user_uuid)
+        if self._is_quiet_hours(user_timezone):
+            logger.debug(
+                f"in quiet hours for user {user_uuid} (tz={user_timezone}), not sending scheduled message"
+            )
+            return False
+
+        # if no messages yet, send one -- but only after the universal quiet-
+        # hours guard above. an imported/onboarded user with an empty event log
+        # should not get their first hello at 3am.
         if not last_role:
-            logger.info(f"no messages found for user {user_uuid}, sending first scheduled message")
+            logger.info(
+                f"no messages found for user {user_uuid}, sending first scheduled message"
+            )
             return True
-        
-        # calculate time since last message
-        time_since_last = now - last_message_time if last_message_time else timedelta(hours=999)
-        
-        # if last message was a scheduled message (ignored by user)
+
+        # the non-interaction guard: crew cap, per-helper cap, exponential
+        # backoff - pure db arithmetic, no tokens spent on a denied tick
+        decision = self.gate.check(EventLog(user_uuid), "chordial")
+        if not decision.allowed:
+            logger.debug(f"proactivity gate denied user {user_uuid}: {decision.reason}")
+            return False
+
+        # gate is clear. if there's an active ignored chain (unanswered > 0)
+        # the gate's own backoff already governs timing - send now. otherwise
+        # this is fresh outreach after a real reply, so the regular interval
+        # still applies.
         if last_role == "assistant" and last_message_type == "scheduled":
-            # check if it's been 24 hours
-            if time_since_last < timedelta(hours=self.delay_after_ignored_hours):
-                logger.debug(f"last message was scheduled and sent {time_since_last} ago, waiting 24h")
-                return False
-            else:
-                logger.info(f"24h passed since ignored scheduled message for user {user_uuid}")
-                return True
-        
-        # last message was from user or was a conversation response
+            logger.info(f"proactivity gate clear for ignored chain, user {user_uuid}")
+            return True
+
+        time_since_last = (
+            now - last_message_time if last_message_time else timedelta(hours=999)
+        )
+        if time_since_last >= timedelta(minutes=self.default_interval_minutes):
+            logger.info(f"regular interval passed for active user {user_uuid}")
+            return True
         else:
-            # check if we're in quiet hours (in the user's own timezone)
-            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
-            if self._is_quiet_hours(user_timezone):
-                logger.debug(f"in quiet hours for user {user_uuid} (tz={user_timezone}), not sending scheduled message")
-                return False
-            
-            # check if enough time has passed for regular interval
-            if time_since_last >= timedelta(minutes=self.default_interval_minutes):
-                logger.info(f"regular interval passed for active user {user_uuid}")
-                return True
-            else:
-                logger.debug(f"only {time_since_last} since last user message, waiting")
-                return False
-    
+            logger.debug(f"only {time_since_last} since last user message, waiting")
+            return False
+
     async def send_scheduled_message(
-        self, user_uuid: str, platforms: Optional[List[str]] = None,
+        self,
+        user_uuid: str,
+        platforms: Optional[List[str]] = None,
     ) -> Optional[tuple[str, str, str]]:
         """generate a scheduled message if appropriate, targeted at the
         platform the user most recently spoke on (falling back to any other
@@ -118,20 +147,32 @@ class SchedulerService:
 
         active = EventLog(user_uuid).active_platform()
         target = await self.user_manager.resolve_delivery_identity(
-            user_uuid, active, platforms,
+            user_uuid,
+            active,
+            platforms,
         )
         if target is None:
             logger.debug(f"no deliverable platform for user {user_uuid}, skipping")
             return None
         platform, platform_user_id = target
 
-        deliverable = await self.orchestrator.handle(Stimulus(
-            kind="scheduled_tick", user_uuid=user_uuid, platform=platform,
-        ))
-        message = deliverable.text if not (deliverable.refused or deliverable.errored) else None
+        deliverable = await self.orchestrator.handle(
+            Stimulus(
+                kind="scheduled_tick",
+                user_uuid=user_uuid,
+                platform=platform,
+            )
+        )
+        message = (
+            deliverable.text
+            if not (deliverable.refused or deliverable.errored)
+            else None
+        )
 
         if message:
-            logger.info(f"generated scheduled message for user {user_uuid} -> {platform}: {message[:50]}...")
+            logger.info(
+                f"generated scheduled message for user {user_uuid} -> {platform}: {message[:50]}..."
+            )
             return platform, platform_user_id, message
         return None
 
@@ -140,7 +181,7 @@ class SchedulerService:
         platforms is one schedule slot, not two). `platforms` is the set with
         a live interface - delivery targeting is restricted to it."""
         self._running = True
-        check_interval = 60*5  # check every 5 minutes
+        check_interval = 60 * 5  # check every 5 minutes
 
         while self._running:
             try:
@@ -149,8 +190,9 @@ class SchedulerService:
                     await self._refresh_agenda(user_uuid)
                     result = await self.send_scheduled_message(user_uuid, platforms)
                     if result:
-                        # use the callback to actually send the message
-                        await message_callback(*result)
+                        await self._deliver_scheduled_result(
+                            user_uuid, result, message_callback
+                        )
 
                 # piggyback the memory-cleanup pass on the same cycle
                 await self._run_curation_pass()
@@ -159,6 +201,29 @@ class SchedulerService:
                 logger.error(f"error in scheduling loop: {e}")
 
             await asyncio.sleep(check_interval)
+
+    async def _deliver_scheduled_result(self, user_uuid, result, message_callback):
+        """Deliver then finalize one generated proactive line.
+
+        Failed sends stay out of the event log, so they neither appear in future
+        conversation context nor consume the user's non-interaction allowance.
+        """
+        platform, target_id, message = result
+        delivered = await message_callback(platform, target_id, message)
+        if delivered:
+            await self.orchestrator.record_delivered_message(
+                user_uuid=user_uuid,
+                platform=platform,
+                speaker="chordial",
+                text=message,
+                message_type="scheduled",
+            )
+        else:
+            logger.warning(
+                "scheduled message for user %s was not delivered; "
+                "leaving it out of conversation history",
+                user_uuid,
+            )
 
     async def _refresh_agenda(self, user_uuid: str) -> None:
         """refresh this user's notion agenda snapshot if it's stale/expired -
@@ -185,10 +250,12 @@ class SchedulerService:
         try:
             user_uuids = await self.orchestrator.curation_candidates()
             for user_uuid in user_uuids:
-                await self.orchestrator.handle(Stimulus(kind="curation_due", user_uuid=user_uuid))
+                await self.orchestrator.handle(
+                    Stimulus(kind="curation_due", user_uuid=user_uuid)
+                )
         except Exception as e:
             logger.error(f"error in memory curation pass: {e}")
-    
+
     def stop(self):
         """stop the scheduling loop"""
         self._running = False

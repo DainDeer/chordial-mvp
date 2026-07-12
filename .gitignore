@@ -6,10 +6,9 @@ __pycache__/
 .env
 .cache/
 .poetry/
-chordial.db
+*.db
 *.db-wal
 *.db-shm
-chordial_dev.db
 *.db-journal
 prompt_logs/
 *.log

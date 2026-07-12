@@ -4,6 +4,7 @@ keeping the snapshot warm then. it should still refresh normally outside
 quiet hours, and one 5-min cycle after quiet hours end (not wait for the full
 ttl) so the digest is caught up well before a human says good morning.
 """
+
 import asyncio
 import sys
 import tempfile
@@ -34,10 +35,20 @@ class FakeAgendaService:
         self.refreshed_uuids.append(user_uuid)
 
 
+class RecordingOrchestrator:
+    def __init__(self):
+        self.recorded = []
+
+    async def record_delivered_message(self, **kwargs):
+        self.recorded.append(kwargs)
+
+
 @pytest.fixture()
 def db(monkeypatch):
     fd, path = tempfile.mkstemp(suffix=".db")
-    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{path}", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(bind=engine)
     TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
@@ -61,7 +72,8 @@ def test_refresh_skipped_during_quiet_hours(db, monkeypatch):
     user_uuid = _make_user(db, "America/New_York")
     fake_agenda = FakeAgendaService()
     scheduler = SchedulerService(
-        user_manager=UserManager(), agenda_service=fake_agenda,
+        user_manager=UserManager(),
+        agenda_service=fake_agenda,
     )
 
     run(scheduler._refresh_agenda(user_uuid))
@@ -77,7 +89,8 @@ def test_refresh_runs_outside_quiet_hours(db, monkeypatch):
     user_uuid = _make_user(db, "Asia/Tokyo")
     fake_agenda = FakeAgendaService()
     scheduler = SchedulerService(
-        user_manager=UserManager(), agenda_service=fake_agenda,
+        user_manager=UserManager(),
+        agenda_service=fake_agenda,
     )
 
     run(scheduler._refresh_agenda(user_uuid))
@@ -93,3 +106,51 @@ def test_refresh_is_noop_without_agenda_service(db, monkeypatch):
     scheduler = SchedulerService(user_manager=UserManager())  # no agenda_service
 
     run(scheduler._refresh_agenda(user_uuid))  # must not raise
+
+
+def test_first_proactive_message_still_respects_quiet_hours(db, monkeypatch):
+    """An onboarded user with no event history is not a quiet-hours exception."""
+    fixed_utc = datetime(2026, 6, 15, 6, 0, 0)  # 1am in New York
+    monkeypatch.setattr("src.services.scheduler_service.utc_now", lambda: fixed_utc)
+
+    user_uuid = _make_user(db, "America/New_York")
+    scheduler = SchedulerService(user_manager=UserManager())
+
+    assert run(scheduler.should_send_scheduled_message(user_uuid)) is False
+
+
+def test_scheduled_result_is_finalized_only_after_successful_delivery():
+    orchestrator = RecordingOrchestrator()
+    scheduler = SchedulerService(orchestrator=orchestrator)
+
+    async def failed(*args):
+        return False
+
+    run(
+        scheduler._deliver_scheduled_result(
+            "u1",
+            ("telegram", "42", "hello"),
+            failed,
+        )
+    )
+    assert orchestrator.recorded == []
+
+    async def succeeded(*args):
+        return True
+
+    run(
+        scheduler._deliver_scheduled_result(
+            "u1",
+            ("telegram", "42", "hello"),
+            succeeded,
+        )
+    )
+    assert orchestrator.recorded == [
+        {
+            "user_uuid": "u1",
+            "platform": "telegram",
+            "speaker": "chordial",
+            "text": "hello",
+            "message_type": "scheduled",
+        }
+    ]

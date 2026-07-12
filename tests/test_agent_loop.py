@@ -5,6 +5,7 @@ the same turn, the reply must survive - not get discarded and replaced by a thin
 second-call closer. uses a scripted fake provider (no network) and follows the
 repo's plain-asyncio test style.
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -14,7 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.services.agent_service import AgentService  # noqa: E402
 from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
 from src.providers.ai.types import (  # noqa: E402
-    AIRequest, AIResponse, ChatTurn, SystemBlock, ToolCall, ToolDef, Usage,
+    AIRequest,
+    AIResponse,
+    ChatTurn,
+    SystemBlock,
+    ToolCall,
+    ToolDef,
+    Usage,
 )
 
 
@@ -24,6 +31,7 @@ def run(coro):
 
 class ScriptedProvider:
     """returns a pre-scripted AIResponse per call, recording how many calls it got."""
+
     model = "fake-model"
 
     def __init__(self, responses):
@@ -57,16 +65,26 @@ def _registry(*, save_terminal=True):
         calls.append(("search_memories", tool_input))
         return "found: user likes tea"
 
-    reg.register(Tool(
-        definition=ToolDef(name="save_memory", description="save", input_schema={"type": "object"}),
-        handler=_save,
-        terminal=save_terminal,
-    ))
-    reg.register(Tool(
-        definition=ToolDef(name="search_memories", description="search", input_schema={"type": "object"}),
-        handler=_search,
-        terminal=False,
-    ))
+    reg.register(
+        Tool(
+            definition=ToolDef(
+                name="save_memory", description="save", input_schema={"type": "object"}
+            ),
+            handler=_save,
+            terminal=save_terminal,
+        )
+    )
+    reg.register(
+        Tool(
+            definition=ToolDef(
+                name="search_memories",
+                description="search",
+                input_schema={"type": "object"},
+            ),
+            handler=_search,
+            terminal=False,
+        )
+    )
     return reg, calls
 
 
@@ -81,29 +99,48 @@ def _request():
 def _agent(provider, reg):
     # usage_recorder writes to the db; a no-op double keeps this test db-free
     class _NoUsage:
-        def record_call(self, **k): pass
-        def record_trace(self, **k): pass
+        def record_call(self, **k):
+            pass
+
+        def record_trace(self, **k):
+            pass
+
     return AgentService(provider, reg, "fake", usage_recorder=_NoUsage())
 
 
 def test_reply_alongside_save_memory_is_kept_without_a_second_call():
     reg, calls = _registry()
     # one turn: a full reply PLUS a save_memory call
-    provider = ScriptedProvider([
-        _resp(
-            "that sounds like a rough night, i'm glad the morning felt better 💛",
-            tool_calls=[ToolCall(id="t1", name="save_memory", input={"instruction": "slept better"})],
-            stop_reason="tool_use",
-        ),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                "that sounds like a rough night, i'm glad the morning felt better 💛",
+                tool_calls=[
+                    ToolCall(
+                        id="t1",
+                        name="save_memory",
+                        input={"instruction": "slept better"},
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     # the memory was saved...
     assert calls == [("save_memory", {"instruction": "slept better"})]
     # ...the reply survived...
-    assert result.text == "that sounds like a rough night, i'm glad the morning felt better 💛"
+    assert (
+        result.text
+        == "that sounds like a rough night, i'm glad the morning felt better 💛"
+    )
     # ...and we did NOT make a second api call to regenerate a reply
     assert provider.calls == 1
 
@@ -112,15 +149,25 @@ def test_silent_save_still_round_trips_to_get_a_reply():
     """if the model saves with NO accompanying text, we must still round-trip so
     the user isn't left with silence."""
     reg, calls = _registry()
-    provider = ScriptedProvider([
-        _resp(None,
-              tool_calls=[ToolCall(id="t1", name="save_memory", input={"instruction": "x"})],
-              stop_reason="tool_use"),
-        _resp("noted! anything else on your mind?"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                None,
+                tool_calls=[
+                    ToolCall(id="t1", name="save_memory", input={"instruction": "x"})
+                ],
+                stop_reason="tool_use",
+            ),
+            _resp("noted! anything else on your mind?"),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert result.text == "noted! anything else on your mind?"
     assert provider.calls == 2  # had to round-trip for the reply
@@ -129,36 +176,61 @@ def test_silent_save_still_round_trips_to_get_a_reply():
 def test_non_terminal_tool_round_trips_and_keeps_all_text():
     """search_memories result matters, so we round-trip; preamble text is not lost."""
     reg, _ = _registry()
-    provider = ScriptedProvider([
-        _resp("let me check what i remember...",
-              tool_calls=[ToolCall(id="t1", name="search_memories", input={"keywords": ["tea"]})],
-              stop_reason="tool_use"),
-        _resp("right - you're a tea person 🍵"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                "let me check what i remember...",
+                tool_calls=[
+                    ToolCall(
+                        id="t1", name="search_memories", input={"keywords": ["tea"]}
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            _resp("right - you're a tea person 🍵"),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert provider.calls == 2
-    assert result.text == "let me check what i remember...\n\nright - you're a tea person 🍵"
+    assert (
+        result.text
+        == "let me check what i remember...\n\nright - you're a tea person 🍵"
+    )
 
 
 def test_mixed_terminal_and_non_terminal_round_trips():
     """save_memory (terminal) + search_memories (not) in one turn must NOT
     short-circuit - the search result still needs a response."""
     reg, calls = _registry()
-    provider = ScriptedProvider([
-        _resp("one sec",
-              tool_calls=[
-                  ToolCall(id="t1", name="save_memory", input={"instruction": "x"}),
-                  ToolCall(id="t2", name="search_memories", input={"keywords": ["x"]}),
-              ],
-              stop_reason="tool_use"),
-        _resp("all set"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                "one sec",
+                tool_calls=[
+                    ToolCall(id="t1", name="save_memory", input={"instruction": "x"}),
+                    ToolCall(
+                        id="t2", name="search_memories", input={"keywords": ["x"]}
+                    ),
+                ],
+                stop_reason="tool_use",
+            ),
+            _resp("all set"),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert provider.calls == 2
     assert ("save_memory", {"instruction": "x"}) in calls
@@ -170,7 +242,11 @@ def test_plain_reply_no_tools_unchanged():
     provider = ScriptedProvider([_resp("just a normal reply")])
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert result.text == "just a normal reply"
     assert provider.calls == 1
@@ -181,18 +257,28 @@ def test_executed_actions_are_returned_in_order():
     """the loop reports every executed call (reads, terminals, everything) with
     its result content - the caller decides what to persist."""
     reg, _ = _registry()
-    provider = ScriptedProvider([
-        _resp("one sec",
-              tool_calls=[
-                  ToolCall(id="t1", name="save_memory", input={"instruction": "x"}),
-                  ToolCall(id="t2", name="search_memories", input={"keywords": ["x"]}),
-              ],
-              stop_reason="tool_use"),
-        _resp("all set"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                "one sec",
+                tool_calls=[
+                    ToolCall(id="t1", name="save_memory", input={"instruction": "x"}),
+                    ToolCall(
+                        id="t2", name="search_memories", input={"keywords": ["x"]}
+                    ),
+                ],
+                stop_reason="tool_use",
+            ),
+            _resp("all set"),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert [(a.name, a.input) for a in result.actions] == [
         ("save_memory", {"instruction": "x"}),
@@ -207,14 +293,58 @@ def test_executed_actions_are_returned_in_order():
 
 def test_terminal_short_circuit_still_reports_actions():
     reg, _ = _registry()
-    provider = ScriptedProvider([
-        _resp("saved it!",
-              tool_calls=[ToolCall(id="t1", name="save_memory", input={"instruction": "y"})],
-              stop_reason="tool_use"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(
+                "saved it!",
+                tool_calls=[
+                    ToolCall(id="t1", name="save_memory", input={"instruction": "y"})
+                ],
+                stop_reason="tool_use",
+            ),
+        ]
+    )
     agent = _agent(provider, reg)
 
-    result = run(agent.run(_request(), user_uuid="u", platform="discord", turn_kind="conversation"))
+    result = run(
+        agent.run(
+            _request(), user_uuid="u", platform="discord", turn_kind="conversation"
+        )
+    )
 
     assert result.stop_reason == "terminal_tools"
-    assert [(a.name, a.result_content) for a in result.actions] == [("save_memory", "saved")]
+    assert [(a.name, a.result_content) for a in result.actions] == [
+        ("save_memory", "saved")
+    ]
+
+
+def test_usage_and_trace_are_attributed_to_acting_helper():
+    reg, _ = _registry()
+    provider = ScriptedProvider([_resp("on it")])
+
+    class CapturingUsage:
+        def __init__(self):
+            self.calls = []
+            self.traces = []
+
+        def record_call(self, **kwargs):
+            self.calls.append(kwargs)
+
+        def record_trace(self, **kwargs):
+            self.traces.append(kwargs)
+
+    usage = CapturingUsage()
+    agent = AgentService(provider, reg, "fake", usage_recorder=usage)
+
+    run(
+        agent.run(
+            _request(),
+            user_uuid="u",
+            platform="telegram",
+            turn_kind="conversation",
+            acting_helper="tempo",
+        )
+    )
+
+    assert usage.calls[0]["helper_id"] == "tempo"
+    assert usage.traces[0]["helper_id"] == "tempo"

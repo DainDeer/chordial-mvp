@@ -5,6 +5,7 @@ cost guard against runaway loops - on the final iteration tools are removed so
 the user always gets a text answer. all tool results from one response go back
 in a single user turn (splitting them degrades parallel tool use).
 """
+
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Optional
 from src.providers.ai.base import BaseAIProvider
 from src.providers.ai.types import AIRequest, ChatTurn, Usage
 from src.services.tools import ToolRegistry
+from src.services.tools.context import acting_as
 from src.services.usage_recorder import UsageRecorder
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ class ExecutedAction:
     be recorded into the conversation event log. the loop captures ALL
     executed calls (reads, errors, everything) - which ones get persisted is
     the recorder's policy, not the loop's."""
+
     name: str
     input: dict
     result_content: str
@@ -63,6 +66,29 @@ class AgentService:
         user_uuid: Optional[str],
         platform: Optional[str],
         turn_kind: str,
+        acting_helper: str = "chordial",
+    ) -> AgentResult:
+        """`acting_helper` is the persona whose tool loop this is - it rides in a
+        contextvar so tools like save_memory attribute the right helper without
+        threading identity through every handler. defaults to 'chordial' (the
+        single-helper v2 world, unchanged)."""
+        with acting_as(acting_helper):
+            return await self._run(
+                request,
+                user_uuid=user_uuid,
+                platform=platform,
+                turn_kind=turn_kind,
+                acting_helper=acting_helper,
+            )
+
+    async def _run(
+        self,
+        request: AIRequest,
+        *,
+        user_uuid: Optional[str],
+        platform: Optional[str],
+        turn_kind: str,
+        acting_helper: str,
     ) -> AgentResult:
         total = Usage()
         tool_trace: list = []
@@ -78,43 +104,82 @@ class AgentService:
         for i in range(self.max_iterations):
             response = await self.provider.create_message(request)
             total = total + response.usage
-            self._record_call(user_uuid, platform, turn_kind, response.usage)
+            self._record_call(
+                user_uuid, platform, turn_kind, response.usage, acting_helper
+            )
             stop_reason = response.stop_reason
 
             if response.stop_reason == "refusal":
-                self._save_trace(user_uuid, platform, turn_kind, i, False,
-                                 tool_trace, 0, stop_reason, total)
-                return AgentResult(text=None, refused=True,
-                                   stop_reason=stop_reason, usage=total, actions=executed)
+                self._save_trace(
+                    user_uuid,
+                    platform,
+                    turn_kind,
+                    i,
+                    False,
+                    tool_trace,
+                    0,
+                    stop_reason,
+                    total,
+                    acting_helper,
+                )
+                return AgentResult(
+                    text=None,
+                    refused=True,
+                    stop_reason=stop_reason,
+                    usage=total,
+                    actions=executed,
+                )
 
             if response.text:
                 collected_text.append(response.text)
 
             if not response.tool_calls:
                 final_text = self._join(collected_text)
-                self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
-                                 tool_trace, len(final_text), stop_reason, total)
-                return AgentResult(text=final_text, stop_reason=stop_reason,
-                                   usage=total, actions=executed)
+                self._save_trace(
+                    user_uuid,
+                    platform,
+                    turn_kind,
+                    i + 1,
+                    False,
+                    tool_trace,
+                    len(final_text or ""),
+                    stop_reason,
+                    total,
+                    acting_helper,
+                )
+                return AgentResult(
+                    text=final_text,
+                    stop_reason=stop_reason,
+                    usage=total,
+                    actions=executed,
+                )
 
             # append the assistant turn (with its raw blocks) then run tools
             request.messages.append(response.assistant_turn)
-            results = await asyncio.gather(*[
-                self.registry.execute(call, user_uuid) for call in response.tool_calls
-            ])
+            results = await asyncio.gather(
+                *[
+                    self.registry.execute(call, user_uuid)
+                    for call in response.tool_calls
+                ]
+            )
             request.messages.append(ChatTurn(role="user", tool_results=list(results)))
 
-            tool_trace.append({
-                "iteration": i,
-                "calls": [
-                    {"name": c.name, "input": c.input, "is_error": r.is_error}
-                    for c, r in zip(response.tool_calls, results)
-                ],
-            })
+            tool_trace.append(
+                {
+                    "iteration": i,
+                    "calls": [
+                        {"name": c.name, "input": c.input, "is_error": r.is_error}
+                        for c, r in zip(response.tool_calls, results)
+                    ],
+                }
+            )
             executed.extend(
                 ExecutedAction(
-                    name=c.name, input=c.input, result_content=r.content,
-                    is_error=r.is_error, terminal=self.registry.is_terminal(c.name),
+                    name=c.name,
+                    input=c.input,
+                    result_content=r.content,
+                    is_error=r.is_error,
+                    terminal=self.registry.is_terminal(c.name),
                 )
                 for c, r in zip(response.tool_calls, results)
             )
@@ -123,27 +188,55 @@ class AgentService:
             # and every tool it called is a fire-and-forget side effect (now run).
             # keep that reply instead of spending another call to regenerate one -
             # this is what stops a memory-save from replacing the response.
-            all_terminal = all(self.registry.is_terminal(c.name) for c in response.tool_calls)
+            all_terminal = all(
+                self.registry.is_terminal(c.name) for c in response.tool_calls
+            )
             if collected_text and all_terminal:
                 final_text = self._join(collected_text)
-                self._save_trace(user_uuid, platform, turn_kind, i + 1, False,
-                                 tool_trace, len(final_text), "terminal_tools", total)
-                return AgentResult(text=final_text, stop_reason="terminal_tools",
-                                   usage=total, actions=executed)
+                self._save_trace(
+                    user_uuid,
+                    platform,
+                    turn_kind,
+                    i + 1,
+                    False,
+                    tool_trace,
+                    len(final_text or ""),
+                    "terminal_tools",
+                    total,
+                    acting_helper,
+                )
+                return AgentResult(
+                    text=final_text,
+                    stop_reason="terminal_tools",
+                    usage=total,
+                    actions=executed,
+                )
 
         # iteration cap reached: force a final answer with tools disabled
-        logger.warning("agent hit iteration cap (%s) for user %s", self.max_iterations, user_uuid)
+        logger.warning(
+            "agent hit iteration cap (%s) for user %s", self.max_iterations, user_uuid
+        )
         request.tools = []
         final = await self.provider.create_message(request)
         total = total + final.usage
-        self._record_call(user_uuid, platform, turn_kind, final.usage)
+        self._record_call(user_uuid, platform, turn_kind, final.usage, acting_helper)
         stop_reason = final.stop_reason
         refused = final.stop_reason == "refusal"
         if final.text:
             collected_text.append(final.text)
         final_text = self._join(collected_text)
-        self._save_trace(user_uuid, platform, turn_kind, self.max_iterations, True,
-                         tool_trace, len(final_text), stop_reason, total)
+        self._save_trace(
+            user_uuid,
+            platform,
+            turn_kind,
+            self.max_iterations,
+            True,
+            tool_trace,
+            len(final_text or ""),
+            stop_reason,
+            total,
+            acting_helper,
+        )
         return AgentResult(
             text=None if refused else final_text,
             refused=refused,
@@ -160,7 +253,9 @@ class AgentService:
         cleaned = [p.strip() for p in parts if p and p.strip()]
         return "\n\n".join(cleaned) if cleaned else None
 
-    def _record_call(self, user_uuid, platform, turn_kind, usage) -> None:
+    def _record_call(
+        self, user_uuid, platform, turn_kind, usage, acting_helper
+    ) -> None:
         self.usage.record_call(
             user_uuid=user_uuid,
             platform=platform,
@@ -168,10 +263,22 @@ class AgentService:
             model=self.provider.model,
             role=turn_kind,
             usage=usage,
+            helper_id=acting_helper,
         )
 
-    def _save_trace(self, user_uuid, platform, turn_kind, iterations, hit_cap,
-                    tool_trace, text_len, stop_reason, total) -> None:
+    def _save_trace(
+        self,
+        user_uuid,
+        platform,
+        turn_kind,
+        iterations,
+        hit_cap,
+        tool_trace,
+        text_len,
+        stop_reason,
+        total,
+        acting_helper,
+    ) -> None:
         self.usage.record_trace(
             user_uuid=user_uuid,
             platform=platform,
@@ -182,4 +289,5 @@ class AgentService:
             final_text_length=text_len,
             stop_reason=stop_reason,
             total_usage=total,
+            helper_id=acting_helper,
         )

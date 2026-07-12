@@ -30,38 +30,72 @@ import os
 
 from src.managers.memories_manager import MemoriesManager
 from src.managers.event_log import Event
+from src.personas import PersonaCard
 from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolDef
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from config import Config
 
 logger = logging.getLogger(__name__)
 
-
-# frozen persona - NO interpolation. keep this byte-stable so it caches across
-# every request (and every user, until per-user persona cards arrive).
-PERSONA = """you are chordial, a personal companion who helps the people you talk with stay on top of their lives - their tasks, their plans, and their wellbeing.
-
-what you do:
-- help the user capture and organize what they need to do
-- keep track of what matters to them and check in when it's genuinely helpful
-- talk through problems, offer encouragement, and be a warm, steady presence
-
-how you work:
-- keep replies proportionate: a quick question gets a quick answer; save length and warmth for when it lands
-- when the user shares something worth remembering, save it with your memory tools while you reply - saving is a quiet background note, never a substitute for actually responding to them
-- when they ask to change how you work (their name, timezone, your style), update it with your tools
-- you interact only through this chat - you can't see or do anything outside it
-
-your voice:
-- you speak in lowercase, warm and a little playful, like a close friend
-- you're never judgmental; you respond naturally to the user's mood
-- soft and expressive, but never syrupy or over-eager"""
+# shared framing for every introduction activation, regardless of which
+# helper is running it. persona-specific color (the narrative frame, what
+# this helper leads with) lives in `PersonaCard.intro_block`; this is the
+# thin procedural instruction that keeps every helper's introduction landing
+# on the same tools. lives in the volatile current turn (never system blocks
+# 1/2), so it costs nothing against the cache and can be edited freely.
+_INTRO_SHARED_GUIDANCE = (
+    "this is an introduction framed as a small story: the person has wandered "
+    "into a cozy, calm forest and gradually becomes aware of your presence there. "
+    "let the meeting feel discovered rather than announced - grounded, welcoming, "
+    "and quietly magical, with sensory forest details used lightly. avoid making "
+    "a lantern, clearing, doorway, or any single prop the recurring centerpiece. "
+    "YOU still carry the conversational energy: don't wait for them to be "
+    "interesting at you; be genuinely glad they're here and keep things moving. "
+    "it's a real conversation, never a form, but "
+    "it has a clear shape and you drive it briskly through, a few turns, not a "
+    "long meander:\n"
+    "1. greet them with genuine warmth and, if you don't have it yet, get their "
+    "name - then SAVE it right away with set_preference(preferred_name=...) so "
+    "the whole crew knows what to call them (this is what marks them as more "
+    "than a stranger; don't skip it).\n"
+    "2. quick practical beat (light, not an interview): roughly where in the "
+    "world are they, so your check-ins land at sane hours - save it with "
+    "set_preference (an IANA timezone like 'US/Pacific').\n"
+    "3. ask your ONE signature question (it rides just below, in your card) - in "
+    "your own voice, not read verbatim. you may riff on their answer with at "
+    "most ONE warm follow-up, then move on. save what you learn with save_memory "
+    "(visibility='shared' - it's calibration for the whole crew).\n"
+    "4. then - proactively, without being prompted - flow into the "
+    "representation ritual: ask how they'd like you to appear to them: any form, "
+    "any gender, any vibe, \"surprise me\", or no character at all. every answer "
+    "is a good one. propose a name that fits what they chose, or let them name "
+    "you. this is the best part - you ALWAYS reach it; never let the "
+    "conversation stall out before you do.\n"
+    "5. once identity is settled (or they've declined a character, or declined "
+    "you entirely), save the identity with save_memory(is_core=true, "
+    "visibility='PRIVATE') AND call complete_introduction - do both. private is "
+    "important here: how YOU look and what YOU'RE called is between you and them "
+    "only - if it were shared, your crewmates would see 'you are a red panda' as "
+    "a core memory and think it describes THEM. (facts about the person's life "
+    "from step 3 stay shared; only your own appearance is private.) then, warmly "
+    "and only now, offer to introduce the rest of the crew (use "
+    "list_available_guides for who's left and their links).\n"
+    "hard rules: END EVERY MESSAGE ON FORWARD MOTION - a question or the next "
+    "beat - NEVER on a bare validation like \"noted!\" that leaves them to "
+    "restart the conversation. if an answer trails off, YOU pick up the thread "
+    "and move to the next beat yourself. don't stack nested either/or questions. "
+    "interruptions and tangents are fine - there's no rigid order to desync - "
+    "but you are always, gently, headed toward the ritual."
+)
 
 
 class PromptService:
-    """builds cache-aware AIRequests for chordial ai interactions."""
+    """builds cache-aware AIRequests for a persona's ai interactions."""
 
-    def __init__(self, enable_prompt_logging: bool = True):
+    def __init__(self, persona: PersonaCard, enable_prompt_logging: bool = True):
+        # system block 1 is this card's frozen persona_block - NO interpolation,
+        # byte-stable so it caches across every request for this persona.
+        self.persona = persona
         self.enable_prompt_logging = enable_prompt_logging
         self.prompt_log_dir = "prompt_logs"
         self.memories_manager = MemoriesManager()
@@ -80,7 +114,7 @@ class PromptService:
     ) -> List[SystemBlock]:
         """frozen persona (block 1) + user profile (block 2). the cache
         breakpoint goes on block 2, covering tools + all system content."""
-        blocks = [SystemBlock(text=PERSONA)]
+        blocks = [SystemBlock(text=self.persona.persona_block)]
 
         profile_parts = ["about the person you're talking with:"]
         if user_name:
@@ -104,8 +138,14 @@ class PromptService:
             try:
                 # core memories only (detached-safe dicts, sorted by id for
                 # deterministic/cacheable ordering). the model reaches for the
-                # rest via search_memories.
-                core = await self.memories_manager.get_core_memories_for_prompt(user_uuid)
+                # rest via search_memories. SCOPED to this helper: the shared
+                # pool plus its OWN privates - so one helper's private identity
+                # ("to dain, you are matcha the red panda") never renders as a
+                # core memory in a sibling's prompt (which read as the sibling's
+                # OWN identity and caused cross-helper confusion).
+                core = await self.memories_manager.get_core_memories_for_prompt(
+                    user_uuid, helper_id=self.persona.id
+                )
                 for m in core:
                     profile_parts.append(f"- always remember: {m['instruction']}")
             except Exception as e:
@@ -261,6 +301,75 @@ class PromptService:
             effort=Config.CHAT_EFFORT,
         )
         self._log_request(user_name, "conversation", request)
+        return request
+
+    async def build_introduction_request(
+        self,
+        conversation_history: List[Event],
+        user_name: Optional[str],
+        user_uuid: Optional[str],
+        user_timezone: str,
+        tools: Optional[List[ToolDef]] = None,
+        ambient_context: Optional[str] = None,
+    ) -> AIRequest:
+        """build the request for an introduction activation (docs/V3_DESIGN.md
+        section 3). system blocks 1/2 are untouched (byte-identical to a normal
+        conversation turn for this persona - the cache doesn't know or care
+        that this is an introduction); the persona's `intro_block` plus shared
+        procedural guidance ride ONLY in the volatile current turn, alongside
+        the usual now-context/ambient/leftover-actions.
+
+        handles both shapes this activation can arrive in:
+        - first contact / a fresh introduction turn: the last history event is
+          the just-received user message (or `None` for a truly cold open,
+          e.g. a `/start meet` deep link with no text) - same "current turn"
+          split as `build_conversation_request`.
+        - a returning user meeting a NEW helper: `conversation_history` may
+          carry prior events (this helper's own past dm turns, if any, plus
+          whatever the orchestrator scoped in) which render as ordinary
+          history ahead of the intro framing.
+        """
+        system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
+
+        prior = conversation_history[:-1] if conversation_history else []
+        current = conversation_history[-1] if conversation_history else None
+        # only the last event being an inbound user message makes it "current"
+        # (the volatile turn); anything else (e.g. no history at all, or a
+        # trailing action/note with no message) means this activation opens
+        # cold and everything present is prior context.
+        if current is not None and not (current.kind == "message" and current.role == "user"):
+            prior = conversation_history
+            current = None
+
+        messages, leftover_actions = self._render_history(prior, user_timezone)
+
+        now_line = self._now_line(user_timezone, self._last_user_timestamp(prior), user_name)
+        content = (
+            f"[current time - {now_line}]\n"
+            f"[{self.persona.intro_block}]\n"
+            f"[{_INTRO_SHARED_GUIDANCE}]\n"
+            f"[your one signature question for this introduction (ask it in your "
+            f"own voice, don't recite it): {self.persona.intro_question}]\n"
+        )
+        if leftover_actions:
+            content += f"{self._action_block(leftover_actions, user_timezone)}\n"
+        if ambient_context:
+            content += f"[{ambient_context}]\n"
+        if current is not None:
+            content += current.content
+        else:
+            who = user_name or "them"
+            content += f"begin the introduction now, in your own voice, for {who}."
+        messages.append(ChatTurn(role="user", content=content))
+
+        request = AIRequest(
+            system=system,
+            messages=messages,
+            tools=tools or [],
+            max_tokens=Config.CHAT_MAX_TOKENS,
+            effort=Config.CHAT_EFFORT,
+        )
+        self._log_request(user_name, "introduction", request)
         return request
 
     async def build_scheduled_request(

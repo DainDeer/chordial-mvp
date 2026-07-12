@@ -175,6 +175,11 @@ class MemoryCuratorService:
                 "core": bool(m.core),
                 "reinforced_count": m.reinforced_count or 0,
                 "curated": m.curated_at is not None,
+                # not sent to the model (the curator payload below is unchanged,
+                # cache-sensitive prose) - kept only so the executor can guard
+                # merges against crossing the shared-pool-plus-privates boundary.
+                "visibility": m.visibility or 'shared',
+                "created_by": m.created_by or 'chordial',
             } for m in rows]
 
     def _build_request(self, memories: List[dict]) -> AIRequest:
@@ -265,6 +270,21 @@ class MemoryCuratorService:
             not self._valid_target(i, by_id, core_ids, allow_core=False) for i in absorb_ids
         ):
             result.rejected.append({"op": op, "reason": "bad absorb_ids"})
+            return
+
+        # shared-pool-plus-privates guard: a merge can never blend rows from
+        # different visibility scopes (a private row absorbed into a shared
+        # canonical, or vice versa) or private rows from two different
+        # helpers - the curator's payload doesn't carry visibility, so this is
+        # enforced here rather than trusted from the model's proposal.
+        canonical_scope = by_id[canonical_id]
+        if any(
+            by_id[i]["visibility"] != canonical_scope["visibility"]
+            or (canonical_scope["visibility"] == "private"
+                and by_id[i]["created_by"] != canonical_scope["created_by"])
+            for i in absorb_ids
+        ):
+            result.rejected.append({"op": op, "reason": "scope mismatch: cannot merge across visibility/helper boundaries"})
             return
 
         canonical = db.query(Memory).filter(Memory.id == canonical_id).first()

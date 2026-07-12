@@ -42,7 +42,35 @@ automatically:
 Codes expire after 15 minutes (`LINK_CODE_TTL_MINUTES`) and are single-use.
 Strangers who find the bot get a polite one-liner and are never onboarded.
 
-## 4. Dev bot (important!)
+## 4. Multiple helpers (v3)
+
+Each helper (chordial, tempo, aria, pep, mochi, poet) runs as its own
+BotFather bot. Repeat step 1 per helper you want live, then set:
+
+```
+TELEGRAM_TOKEN_TEMPO=123456:ABC-tempos-token
+TELEGRAM_USERNAME_TEMPO=chordial_mvp_tempo_bot   # no @ - whatever you actually got
+```
+
+(chordial keeps using the bare `TELEGRAM_TOKEN`/`TELEGRAM_BOT_USERNAME` from
+step 2 — no `_CHORDIAL` suffix needed.) Add the helper's id to
+`ENABLED_HELPERS` (comma-separated, e.g. `ENABLED_HELPERS=chordial,tempo`) or
+it won't get an interface even with a token configured.
+
+**The username must be the bot's REAL, registered handle — never guess.**
+Persona cards (`src/personas/*.yaml`) carry a `telegram_handle` placeholder
+(`tempo_bot`, `aria_bot`, ...) for readability, but those short names are
+almost certainly already taken on Telegram (BotFather usernames are global).
+Startup fails loudly if a helper has a token but no configured username, and
+logs a warning (once connected) if the configured username doesn't match
+what the token's bot actually registered as — both mean mention-parsing and
+the meet-the-guides deep links would otherwise point at the wrong bot.
+
+Optional: `TELEGRAM_GROUP_CHAT_ID` for the shared group all the helpers and
+you sit in together — see the design doc for the group flow. Not required to
+test 1:1 DMs with any helper.
+
+## 5. Dev bot (important!)
 
 **Never run two chordial processes against the same Telegram token** — Telegram
 allows exactly one poller per token; the second gets `409 Conflict` and both

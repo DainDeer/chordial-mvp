@@ -59,7 +59,9 @@ class FakeDeliver:
         self.ok = ok
         self.sent = []  # (platform, platform_user_id, message)
 
-    async def __call__(self, platform, platform_user_id, message):
+    async def __call__(self, platform, platform_user_id, message, speaker="chordial"):
+        # speaker-aware in v3 (deliver_as); the switch notice always speaks as
+        # chordial, so the default keeps these assertions unchanged.
         self.sent.append((platform, platform_user_id, message))
         return self.ok
 
@@ -177,6 +179,7 @@ def test_no_deliver_callback_disables_the_feature(db):
 
 def test_notice_is_invisible_to_scheduler_and_prompts(db):
     from src.managers.event_log import EventLog
+    from src.personas import load_personas
     from src.services.prompt_service import PromptService
 
     deliver = FakeDeliver()
@@ -190,7 +193,7 @@ def test_notice_is_invisible_to_scheduler_and_prompts(db):
 
     # prompt view: the note's text appears nowhere in rendered turns
     events = log.recent()
-    ps = PromptService(enable_prompt_logging=False)
+    ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
     req = run(ps.build_conversation_request(
         conversation_history=events, user_name="dain",
         user_uuid=None, user_timezone="UTC",

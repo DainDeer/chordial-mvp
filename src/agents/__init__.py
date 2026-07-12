@@ -1,12 +1,12 @@
 """agents: named actors the orchestrator briefs.
 
-the contract lives in base (Briefing / AgentOutcome / Agent); the cast so far
-is the companion (chordial's chat persona) and the curator (silent memory
-hygiene). v3 personas join by implementing act(briefing) and registering with
-the orchestrator - nothing else changes.
+the contract lives in base (Briefing / AgentOutcome / Agent); the cast is the
+helpers (each a persona's chat agent, driven by a PersonaCard) and the curator
+(silent memory hygiene). a new persona joins by dropping a card in src/personas
+and enabling its id - the HelperAgent is the same for all of them.
 """
 from .base import Agent, AgentOutcome, Briefing
-from .companion import CompanionAgent
+from .helper import HelperAgent
 from .curator import CuratorAgent
 
-__all__ = ["Agent", "AgentOutcome", "Briefing", "CompanionAgent", "CuratorAgent"]
+__all__ = ["Agent", "AgentOutcome", "Briefing", "HelperAgent", "CuratorAgent"]

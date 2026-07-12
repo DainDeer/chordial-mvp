@@ -1,18 +1,31 @@
 """the platform adapter: the boundary between platform interfaces and the
 orchestrator.
 
-owns what's platform-shaped - unwrapping UnifiedMessage, the onboarding state
-machine, and the in-character copy for non-answers. everything about deciding
-who speaks and recording what happened lives in the Orchestrator; everything
-about how the persona thinks lives in its agent.
+owns what's platform-shaped - unwrapping UnifiedMessage, deciding whether an
+activation is a fresh introduction or an ordinary turn, and the in-character
+copy for non-answers. everything about deciding who speaks and recording what
+happened lives in the Orchestrator; everything about how a persona thinks
+lives in its agent; everything about how the storytelling introduction is
+run lives in the model, guided by PromptService.build_introduction_request.
+
+v1's rigid onboarding state machine (name -> timezone -> memory) is retired.
+"completeness" is no longer tracked here at all: it's chordial's own
+HelperState.status, exactly like any other helper's relationship state. a
+brand-new user (or one whose chordial relationship hasn't reached 'active'
+yet) gets an `introduction` stimulus instead of a `user_message` one; the
+orchestrator routes that to the right helper with an introduction briefing,
+and the model runs the whole ritual conversationally, calling
+complete_introduction when it's done.
 """
-from typing import Optional
+
+import asyncio
 import logging
+from typing import Optional
+from weakref import WeakValueDictionary
 
 from src.models.unified_message import UnifiedMessage
-from src.managers.event_log import EventLog
+from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
-from src.services.onboarding_service import OnboardingService
 from src.services.orchestrator import Stimulus
 
 logger = logging.getLogger(__name__)
@@ -22,12 +35,30 @@ logger = logging.getLogger(__name__)
 REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
 ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
 
-# onboarding replies are authored by the chat persona
-AGENT_AUTHOR = "chordial"
+
+def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
+    """should this dm turn run the front-door introduction, or is it an
+    ordinary turn?
+
+    keyed on chordial's relationship status, NOT on preferred_name: once
+    chordial is 'active' the intro is DONE even if the name never got
+    persisted (otherwise a stuck None name re-loops onboarding forever - the
+    bug that shipped in the first phase-2 cut). the legacy `user_name is None`
+    signal only applies BEFORE any relationship exists (status 'not_met'), so
+    a pre-v3 user who already has a name isn't dragged back into the forest,
+    while a brand-new user with no name still gets introduced."""
+    if chordial_status == "active":
+        return False
+    if chordial_status == "introducing":
+        return True
+    # not_met (no row yet) or an odd declined/disabled front door: introduce
+    # only if we don't already know their name.
+    return user_name is None
 
 
 class ChatService:
-    """handles incoming platform messages: onboarding, then orchestration."""
+    """handles incoming platform messages: introduction vs. ordinary turns,
+    then orchestration."""
 
     def __init__(
         self,
@@ -36,110 +67,146 @@ class ChatService:
     ):
         self.orchestrator = orchestrator
         self.user_manager = user_manager or UserManager()
-        self.onboarding_service = OnboardingService(self.user_manager)
+        self.helper_states = HelperStateManager()
+        # Serialize a user's complete turn across every platform/helper while
+        # still allowing different users to run concurrently. Weak values keep
+        # this registry from growing forever as one-off users come and go; a
+        # waiter/holder retains the lock strongly for as long as it is needed.
+        self._user_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
-    async def _prepare_for_interaction(
-        self,
-        platform: str,
-        platform_user_id: str,
-        platform_user_name: Optional[str] = None,
-        content: Optional[str] = None
-    ) -> tuple[str, Optional[str], bool, Optional[str], str]:
-        """
-        helper function to handle user creation and onboarding flow.
-
-        returns a tuple containing:
-        - the user uuid (string)
-        - the user's preferred name (string)
-        - whether the interaction should continue (True) or stop due to onboarding (False)
-        - an optional response message (e.g., welcome message or onboarding response)
-        - the user's timezone (string), resolved once here so downstream
-          callers don't each re-fetch it from the database for the same
-          interaction
-        """
-        # check if this is a brand new user
-        is_new = await self.user_manager.is_new_user(platform, platform_user_id)
-
-        # get or create user (returns user id string and preferred name if it exists)
-        user_uuid, user_name = await self.user_manager.get_or_create_user(
-            platform,
-            platform_user_id,
-            platform_user_name
-        )
-
-        # resolve once per interaction; passed down explicitly from here on
-        user_timezone = await self.user_manager.get_user_timezone(user_uuid)
-
-        # handle brand new users
-        if is_new:
-            self.onboarding_service.start_onboarding(platform, platform_user_id)
-            return user_uuid, None, False, self.onboarding_service.get_welcome_message(), user_timezone
-
-        # check if user needs onboarding (no preferred name set)
-        needs_onboarding = user_name is None
-
-        # check if user is in onboarding flow
-        if self.onboarding_service.is_user_onboarding(platform, platform_user_id) or needs_onboarding:
-            if content is not None:
-                user_name, response = await self.onboarding_service.handle_onboarding_response(
-                    user_uuid,
-                    platform,
-                    platform_user_id,
-                    content
-                )
-                return user_uuid, user_name, False, response, user_timezone
-            else:
-                logger.info(f"skipping interaction for {platform_user_name} - in onboarding but no content to process")
-                return user_uuid, None, False, None, user_timezone
-
-        # user is fully onboarded, continue with normal flow
-        return user_uuid, user_name, True, None, user_timezone
+    def _lock_for_user(self, user_uuid: str) -> asyncio.Lock:
+        lock = self._user_locks.get(user_uuid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[user_uuid] = lock
+        return lock
 
     async def process_message(self, unified_message: UnifiedMessage) -> Optional[str]:
-        """process an incoming message and generate a response"""
+        """process an incoming message and generate a response.
+
+        returns None when the activation was delivered through the router
+        (production dms and group lines); otherwise returns the reply string
+        for an isolated/synchronous interface to send.
+        """
         try:
-            user_uuid, user_name, should_continue, response, user_timezone = await self._prepare_for_interaction(
-                platform=unified_message.platform,
-                platform_user_id=unified_message.platform_user_id,
-                platform_user_name=unified_message.metadata.get('username'),
-                content=unified_message.content
+            platform = unified_message.platform
+            platform_user_id = unified_message.platform_user_id
+            username = (unified_message.metadata or {}).get("username")
+
+            chat_scope = getattr(unified_message, "chat_scope", "dm") or "dm"
+            group_chat_id = getattr(unified_message, "group_chat_id", None)
+            dm_helper = getattr(unified_message, "dm_helper", None) or "chordial"
+            mentioned = getattr(unified_message, "mentioned", None) or []
+
+            user_uuid, _ = await self.user_manager.get_or_create_user(
+                platform, platform_user_id, username
             )
+            async with self._lock_for_user(user_uuid):
+                # Refresh inside the lock: an earlier queued turn may have
+                # learned the user's name or timezone while this turn waited.
+                user_name, user_timezone = await self.user_manager.get_user_profile(
+                    user_uuid
+                )
 
-            if not should_continue:
-                if user_name:
-                    logger.info(f"user {user_name} successfully onboarded")
-                # persist the onboarding exchange like any other turn. without
-                # this, the event log stays empty through onboarding, so the
-                # scheduler's "no messages yet" rule can't tell "brand new
-                # user" apart from "just finished onboarding" - and fires a
-                # scheduled check-in within minutes of onboarding completing.
-                log = EventLog(user_uuid)
-                if unified_message.content:
-                    log.append_message("user", "user", unified_message.content,
-                                       platform=unified_message.platform)
-                if response:
-                    log.append_message("agent", AGENT_AUTHOR, response,
-                                       platform=unified_message.platform)
-                return response
+                kind = "user_message"
+                intro_helper = None
+                if chat_scope == "dm":
+                    helper_state = await self.helper_states.get(user_uuid, dm_helper)
+                    if dm_helper == "chordial":
+                        is_introducing = _still_introducing(
+                            helper_state.status, user_name
+                        )
+                    else:
+                        # Preferred-name back compatibility belongs only to the
+                        # chordial front door. A specialist continues its own
+                        # multi-turn ritual only while its relationship says so.
+                        is_introducing = helper_state.status == "introducing"
+                    if is_introducing:
+                        kind = "introduction"
+                        intro_helper = dm_helper
+                        if helper_state.status != "introducing":
+                            await self.helper_states.set_status(
+                                user_uuid, dm_helper, "introducing"
+                            )
 
-            if not self.orchestrator:
-                return f"echo: {unified_message.content}"
+                if not self.orchestrator:
+                    return f"echo: {unified_message.content}"
 
-            deliverable = await self.orchestrator.handle(Stimulus(
-                kind="user_message",
-                user_uuid=user_uuid,
-                platform=unified_message.platform,
-                content=unified_message.content,
-                user_name=user_name,
-                user_timezone=user_timezone,
-            ))
+                deliverable = await self.orchestrator.handle(
+                    Stimulus(
+                        kind=kind,
+                        user_uuid=user_uuid,
+                        platform=platform,
+                        content=unified_message.content,
+                        delivery_target_id=platform_user_id,
+                        user_name=user_name,
+                        user_timezone=user_timezone,
+                        chat_scope=chat_scope,
+                        group_chat_id=group_chat_id,
+                        dm_helper=dm_helper,
+                        mentioned=mentioned,
+                        intro_helper=intro_helper,
+                    )
+                )
 
-            if deliverable.refused:
-                return REFUSAL_REPLY
-            if deliverable.errored or not deliverable.text:
-                return ERROR_REPLY
-            return deliverable.text
+                return self._reply_for(deliverable)
 
         except Exception as e:
             logger.error(f"error processing message: {e}")
             return "sorry, i encountered an error processing your message."
+
+    async def begin_introduction(
+        self, platform: str, platform_user_id: str, helper_id: str
+    ) -> Optional[str]:
+        """entry point for the meet-the-guides deep link (`t.me/<bot>?start=meet`):
+        a user already known on `platform` taps a guide's link, which opens
+        that helper's dm and should kick off ITS introduction. flips the
+        helper's relationship to 'introducing' and runs the activation.
+        """
+        try:
+            user_uuid, _ = await self.user_manager.get_or_create_user(
+                platform, platform_user_id
+            )
+            async with self._lock_for_user(user_uuid):
+                user_name, user_timezone = await self.user_manager.get_user_profile(
+                    user_uuid
+                )
+
+                await self.helper_states.set_status(user_uuid, helper_id, "introducing")
+
+                if not self.orchestrator:
+                    return f"echo: meet {helper_id}"
+
+                deliverable = await self.orchestrator.handle(
+                    Stimulus(
+                        kind="introduction",
+                        user_uuid=user_uuid,
+                        platform=platform,
+                        content=None,
+                        delivery_target_id=platform_user_id,
+                        user_name=user_name,
+                        user_timezone=user_timezone,
+                        chat_scope="dm",
+                        dm_helper=helper_id,
+                        intro_helper=helper_id,
+                    )
+                )
+
+                return self._reply_for(deliverable)
+
+        except Exception as e:
+            logger.error(f"error beginning introduction for helper {helper_id}: {e}")
+            return "sorry, i encountered an error processing your message."
+
+    @staticmethod
+    def _reply_for(deliverable) -> Optional[str]:
+        """map a Deliverable to what the platform interface should send.
+        `handled` means the router already confirmed delivery, so the calling
+        interface must not send a duplicate."""
+        if deliverable.handled:
+            return None
+        if deliverable.refused:
+            return REFUSAL_REPLY
+        if deliverable.errored or not deliverable.text:
+            return ERROR_REPLY
+        return deliverable.text

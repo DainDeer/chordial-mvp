@@ -271,12 +271,13 @@ class TestContextBuilderSpecialContext:
         # description (which used to leak into replies).
         from src.services import prompt_service as ps_mod
         from src.services.prompt_service import PromptService
+        from src.personas import load_personas
         from src.managers.event_log import Event
 
         now = datetime(2026, 7, 7, 19, 0)  # fixed utc
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
-        ps = PromptService(enable_prompt_logging=False)
+        ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
         history = [
             Event(author_type="user", author="user", kind="message",
                   content="earlier", created_at=now - timedelta(hours=2)),
@@ -306,12 +307,13 @@ class TestContextBuilderSpecialContext:
         # never sees (and imitates) "[day mon dd h:mmam] <reply>".
         from src.services import prompt_service as ps_mod
         from src.services.prompt_service import PromptService
+        from src.personas import load_personas
         from src.managers.event_log import Event
 
         now = datetime(2026, 7, 7, 19, 0)
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
-        ps = PromptService(enable_prompt_logging=False)
+        ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
         history = [
             Event(author_type="user", author="user", kind="message",
                   content="hello there", created_at=now - timedelta(minutes=5)),
@@ -337,13 +339,15 @@ class TestContextBuilderSpecialContext:
 
     def test_persona_block_is_frozen_and_vibe_free(self, monkeypatch):
         from src.services import prompt_service as ps_mod
-        from src.services.prompt_service import PromptService, PERSONA
+        from src.services.prompt_service import PromptService
+        from src.personas import load_personas
         from src.managers.event_log import Event
 
         tuesday_midday = datetime(2025, 7, 1, 12, 0)  # ordinary time, no vibe
         monkeypatch.setattr(ps_mod, "utc_now", lambda: tuesday_midday)
 
-        ps = PromptService(enable_prompt_logging=False)
+        card = load_personas()["chordial"]
+        ps = PromptService(persona=card, enable_prompt_logging=False)
         history = [Event(author_type="user", author="user", kind="message",
                          content="hi", created_at=tuesday_midday)]
 
@@ -357,7 +361,7 @@ class TestContextBuilderSpecialContext:
 
         request = asyncio.run(run())
         # persona is present, frozen, and identical regardless of the clock
-        assert request.system[0].text == PERSONA
+        assert request.system[0].text == card.persona_block
         # the current turn still carries a "now" marker even with no special vibe
         assert request.messages[-1].content.startswith("[current time")
 
