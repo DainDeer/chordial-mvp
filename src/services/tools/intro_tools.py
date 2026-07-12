@@ -55,9 +55,11 @@ COMPLETE_INTRODUCTION = Tool(
             "once they've made clear they don't want this helper around. This "
             "stamps the relationship state the rest of the crew (and the "
             "director) reads. It does NOT save the identity itself: separately "
-            "call save_memory(is_core=true, visibility='shared') with something "
+            "call save_memory(is_core=true, visibility='private') with something "
             "like \"to <user>, you are <name>, a <form>\" (or a note that they "
-            "chose no character) so every helper remembers it - do both."
+            "chose no character) - do both. Use visibility='private': your own "
+            "look/name is between you and this person, so your crewmates don't "
+            "see 'you are a red panda' and mistake it for their OWN identity."
         ),
         input_schema={
             "type": "object",

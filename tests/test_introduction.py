@@ -58,6 +58,41 @@ async def _make_user(platform="discord", platform_user_id="1") -> str:
     return user_uuid
 
 
+# --- private identity is invisible to siblings (the core-memory privacy filter) ---
+
+def test_helper_identity_memory_is_private_to_that_helper(db):
+    """a helper's own form/name, saved core+private, renders as a core memory
+    in ITS OWN prompt but never in a sibling's - the fix for one helper reading
+    another's 'you are a red panda' identity as its own."""
+    from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
+    mem = MemoriesManager()
+    user_uuid = run(_make_user())
+
+    # chordial's private identity + a shared fact about the user
+    run(mem.upsert_memory(user_uuid, "to dain, you are matcha the red panda",
+                          MemoryType.FACT, MemorySource.AI_INFERRED, core=True,
+                          created_by="chordial", visibility="private"))
+    run(mem.upsert_memory(user_uuid, "dain is a pink deer building chordial",
+                          MemoryType.FACT, MemorySource.AI_INFERRED, core=True,
+                          created_by="chordial", visibility="shared"))
+
+    def profile_for(helper_id):
+        card = _card(id=helper_id)
+        req = run(PromptService(persona=card, enable_prompt_logging=False)
+                  .build_conversation_request(
+                      conversation_history=[Event(author_type="user", author="user",
+                                                  kind="message", content="hi")],
+                      user_name="Dain", user_uuid=user_uuid, user_timezone="UTC"))
+        return req.system[1].text
+
+    chordial_profile = profile_for("chordial")
+    tempo_profile = profile_for("tempo")
+
+    assert "matcha the red panda" in chordial_profile      # its own identity
+    assert "matcha the red panda" not in tempo_profile     # NOT leaked to tempo
+    assert "pink deer" in chordial_profile and "pink deer" in tempo_profile  # shared fact everywhere
+
+
 # --- complete_introduction tool ---------------------------------------------
 
 def test_complete_introduction_accepted_sets_active_and_identity(db):

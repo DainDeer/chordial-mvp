@@ -68,7 +68,11 @@ _INTRO_SHARED_GUIDANCE = (
     "conversation stall out before you do.\n"
     "5. once identity is settled (or they've declined a character, or declined "
     "you entirely), save the identity with save_memory(is_core=true, "
-    "visibility='shared') AND call complete_introduction - do both. then, warmly "
+    "visibility='PRIVATE') AND call complete_introduction - do both. private is "
+    "important here: how YOU look and what YOU'RE called is between you and them "
+    "only - if it were shared, your crewmates would see 'you are a red panda' as "
+    "a core memory and think it describes THEM. (facts about the person's life "
+    "from step 3 stay shared; only your own appearance is private.) then, warmly "
     "and only now, offer to introduce the rest of the crew (use "
     "list_available_guides for who's left and their links).\n"
     "hard rules: END EVERY MESSAGE ON FORWARD MOTION - a question or the next "
@@ -129,8 +133,14 @@ class PromptService:
             try:
                 # core memories only (detached-safe dicts, sorted by id for
                 # deterministic/cacheable ordering). the model reaches for the
-                # rest via search_memories.
-                core = await self.memories_manager.get_core_memories_for_prompt(user_uuid)
+                # rest via search_memories. SCOPED to this helper: the shared
+                # pool plus its OWN privates - so one helper's private identity
+                # ("to dain, you are matcha the red panda") never renders as a
+                # core memory in a sibling's prompt (which read as the sibling's
+                # OWN identity and caused cross-helper confusion).
+                core = await self.memories_manager.get_core_memories_for_prompt(
+                    user_uuid, helper_id=self.persona.id
+                )
                 for m in core:
                     profile_parts.append(f"- always remember: {m['instruction']}")
             except Exception as e:
