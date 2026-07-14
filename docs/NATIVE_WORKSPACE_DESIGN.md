@@ -6,13 +6,18 @@ implementation plan for moving the task workspace out of Notion and into
 chordial's own database. All user-interface work is explicitly stubbed —
 chat remains the only surface.*
 
+*Revised 2026-07-13: added the lifecycle convention (§2.0), `notes` (§2.7),
+`occasions` (§2.8), and `plans.last_activity_at`. Execution sequencing —
+including the Postgres move this now rides with — lives in
+`NATIVE_MIGRATION_PLAN.md`.*
+
 ---
 
 ## 0. Summary & goals
 
 **Goal:** chordial's own DB becomes the system of record for the user's
-workspace (plans, goals, tasks, cycles, wins, check-ins). The Notion
-integration is retired after a one-time import of the dainframe.
+workspace (plans, goals, tasks, cycles, wins, check-ins, notes, occasions).
+The Notion integration is retired after a one-time import of the dainframe.
 
 **Strategy in one line:** implement the *v3* schema natively (not the legacy
 dainframe shape), keep the model-facing tool contract byte-compatible where
@@ -69,6 +74,35 @@ canonical lowercase-snake values; the tool layer accepts legacy display
 strings case-insensitively ("To do", "In progress") and renders the display
 form, so the model-facing vocabulary doesn't change.
 
+### 2.0 Lifecycle convention (uniform across closable entities)
+
+Rows persist forever; they are marked historical, never deleted. Stated once
+here, applied everywhere:
+
+1. **Every closable entity's status vocab splits into an *open* set and a
+   *closed* set, and the closed set always distinguishes *completed* from
+   *released*.** Done and let-go are emotionally different endings and both
+   are fine endings — the schema encodes that, matching the vocab that
+   already exists (`renegotiated` goals, `deprioritized` tasks). Plans gain
+   a `released` terminal status for this reason (`paused` is not terminal).
+2. **One nullable `closed_at` datetime per closable entity**, stamped by the
+   store whenever status enters the closed set, cleared if reopened. This
+   replaces the earlier draft's mixed mechanisms (`plans.archived_at`,
+   `tasks.completed_at`): one column, meaning derived from status. (Wins
+   analytics read `closed_at where status='done'`.)
+3. **List tools and the agenda default to open items**; every `list_*` tool
+   takes an `include_closed` filter (subsumes the old §11.3 question about a
+   `deprioritized` filter — answer: yes, via this).
+4. **Nothing hard-deletes.** No delete tools exist. (The multi-user
+   "delete my data" account command is a different, whole-account concern.)
+
+Open/closed sets: plans `proposed/active/paused` | `complete/released` ·
+goals `not_started/in_progress` | `done/renegotiated` · tasks
+`todo/in_progress` | `done/deprioritized` · cycles `upcoming/active` |
+`complete` · notes `active` | `promoted/archived`. Wins, check-ins, and
+occasions have no lifecycle — the first two are immutable history; occasions
+simply pass with the calendar.
+
 ### 2.1 `plans` (evolves Projects — V3_DESIGN §5.1)
 
 | column | type | notes |
@@ -77,14 +111,15 @@ form, so the model-facing vocabulary doesn't change.
 | user_uuid | str FK users, indexed | |
 | title | str, not null | |
 | helper | str, not null | archetype id (chordial/tempo/aria/pep/mochi/poet) — steward |
-| status | str | `proposed` / `active` / `paused` / `complete` |
+| status | str | `proposed` / `active` / `paused` / `complete` / `released` |
 | why | text, null | user's own motivation, their words |
 | success_criteria | text, null | "success looks like" |
 | horizon_start / horizon_end | date, null | soft range |
 | cadence | str, null | `daily` / `weekly` / `loose` |
 | legacy_area | str, null | preserved dainframe `Area` (audit/formatting nicety) |
 | notion_page_id | str, null | provenance from import; never used at runtime |
-| created_at / updated_at / archived_at | datetime | archived = soft delete |
+| last_activity_at | datetime, null | stamped by `WorkspaceStore` as a side effect of any related write: task under the plan created/updated/closed, win logged against it, note attached, check-in touching it, goal changed, direct plan update. Powers dormancy queries ("it's been three weeks since the album came up") without any streak machinery. Mentions that produce no write can stamp it too via the reconciliation engine — later, if write-driven proves too weak |
+| created_at / updated_at / closed_at | datetime | `closed_at` per §2.0 |
 
 ### 2.2 `goals` (V3_DESIGN §5.2)
 
@@ -96,7 +131,7 @@ form, so the model-facing vocabulary doesn't change.
 | status | str | `not_started` / `in_progress` / `done` / `renegotiated` |
 | target | date, null | |
 | done_means | text, null | the anti-vagueness field |
-| created_at / updated_at | | |
+| created_at / updated_at / closed_at | | `closed_at` per §2.0 |
 
 ### 2.3 `tasks` (evolves the dainframe Tasks db in place — V3_DESIGN §5.3)
 
@@ -115,9 +150,8 @@ form, so the model-facing vocabulary doesn't change.
 | helper | str, null | who assigned/nudges |
 | reschedules | int default 0 | bumped on each `scheduled` slip; renegotiate at 2–3 |
 | description | text, null | |
-| completed_at | datetime, null | set when status→done (Wins/analytics need it) |
 | notion_page_id | str, null | import provenance |
-| created_at / updated_at | | |
+| created_at / updated_at / closed_at | | `closed_at` per §2.0 stamps both endings; wins/analytics read it `where status='done'` (replaces the earlier `completed_at`) |
 
 Indexes: `(user_uuid, status)`, `(user_uuid, scheduled)` — the agenda's two
 query shapes.
@@ -135,7 +169,7 @@ FKs are singular; the importer takes the first relation and logs any extras.
 | start_date / end_date | date | |
 | goal | text, null | today's "cycle goal" |
 | focus | text, null | v3: pep's negotiated balance statement |
-| created_at / updated_at | | |
+| created_at / updated_at / closed_at | | `closed_at` per §2.0 (uniformity; ≈ when it was marked complete) |
 
 ### 2.5 `wins` (new — the anti-diminishment ledger)
 
@@ -164,13 +198,72 @@ FKs are singular; the importer takes the first relation and logs any extras.
 | created_at | | |
 | *unique* | `(user_uuid, date, kind)` for morning/evening | adhoc unlimited |
 
-### 2.7 Public IDs
+### 2.7 `notes` (new — non-committal creative capture + plan detail)
+
+The schema above is a commitment engine; this is the one deliberately
+*non-committal* container. Two shapes, one table: a loose idea ("video idea:
+X", a melody fragment) has no `plan_id`; project detail ("story idea for
+chapter 3") has one. Unified because loose ideas frequently become attached —
+in one table that's a column update, not a migration between concepts.
+
+| column | type | notes |
+|---|---|---|
+| id, user_uuid | | |
+| body | text, not null | the jot itself, user's words — the only required field |
+| title | str, null | auto-derived from the first line when absent |
+| plan_id | int FK plans, null | attached ⇒ plan detail; null ⇒ loose idea. No `task_id` by design: tasks are pomodoro-sized, detail belongs on the plan |
+| tags | JSON, default [] | medium lives here: `writing` / `music` / `video` / `lyric` / … (freeform; `checkins.plan_ids` precedent) |
+| helper | str, null | domain steward (aria/poet/…); injected from the acting-helper contextvar like `log_win` |
+| status | str | `active` / `promoted` / `archived` — no "done"; ideas are never overdue |
+| promoted_plan_id / promoted_task_id | int FK, null | provenance when an idea grows up; set alongside status→`promoted` |
+| created_at / updated_at / closed_at | | `closed_at` per §2.0 |
+
+Behavioral rules (these matter more than the columns):
+
+- **Never in the agenda.** No dates, no status pressure, nothing overdue.
+  Notes surface when *work starts on their plan* — a check-in or
+  conversation touching a plan is the steward's cue to pull `list_notes`
+  for it (prompt work, not schema; the query is one line).
+- **Capture friction ≈ zero.** "jot this down: …" → one `jot` call, body
+  only.
+- **Promotion is provenance, not workflow.** Helper calls
+  `create_task`/`create_plan` then links via `update_note`. No dedicated
+  promote tool in v1.
+- Naming: "note" the noun, "jot" the verb. Not "sparks" — `wins.weight`
+  already owns that word.
+- v-next, not v1: a nullable `embedding` column (the `Memory` precedent)
+  buys semantic recall over old ideas with machinery that already exists.
+
+### 2.8 `occasions` (new — dated things that aren't work)
+
+"Dentist Tuesday", "mom's birthday Sept 3", a flight. Not tasks (not work,
+not pomodoro-sized), not plans — a thing that will *occur* at a time. Named
+`occasions` to avoid colliding with the conversation event log.
+
+| column | type | notes |
+|---|---|---|
+| id, user_uuid | | |
+| title | str, not null | |
+| date | date, not null | user-local calendar date, same semantics as `tasks.scheduled` |
+| time | str, null | freeform ("14:30", "afternoon") — display, not scheduling |
+| recurrence | str, null | `yearly` / `monthly` / `weekly`; null = one-off. On recurrence, `date` rolls forward past occurrence (store logic), so `date` always holds the *next* occurrence |
+| plan_id | int FK plans, null | optional ("album release" belongs to the album plan) |
+| notes | text, null | |
+| helper | str, null | who captured it |
+| created_at / updated_at | | no status, no `closed_at` — occasions pass, they aren't *done*; past one-offs simply sort into history |
+
+Behavioral rule: an occasion **informs, never nags** — it appears in the
+digest when within ~3 days ("heads up: dentist tuesday"), has no completion
+state, and generates zero follow-up pressure.
+
+### 2.9 Public IDs
 
 Notion exposed UUIDs; the model mostly resolved things by *title* and echoed
 ids opaquely (reconciler included). Native formatters render prefixed ids —
-`t42`, `p3`, `g7`, `c2`, `w15`, `ci4` — and the tool layer parses them
-(`_parse_public_id` replaces `_looks_like_id`). The reconciler round-trips
-whatever id string appears in the open-tasks payload, so it works unchanged.
+`t42`, `p3`, `g7`, `c2`, `w15`, `ci4`, `n7`, `o5` — and the tool layer
+parses them (`_parse_public_id` replaces `_looks_like_id`). The reconciler
+round-trips whatever id string appears in the open-tasks payload, so it
+works unchanged.
 
 ---
 
@@ -192,8 +285,9 @@ scripts/
 plain methods over `get_db()` sessions, sync (queries are microseconds; no
 reason to fake async for sqlite/pg row reads — tool handlers stay `async` and
 just call it). Every mutation goes through the store — tools, reconciler,
-importer — so invariants (goal/plan consistency, `completed_at` stamping,
-reschedule bumps) live in exactly one place.
+importer — so invariants (goal/plan consistency, `closed_at` stamping per
+§2.0, `plans.last_activity_at` side-effect stamping, reschedule bumps,
+occasion recurrence roll-forward) live in exactly one place.
 
 `format_task` / `format_plan` / `format_cycle` / `format_win` in `vocab.py`
 keep the same one-line promptable style as `schema.py`'s formatters
@@ -242,9 +336,19 @@ mutations are True. `Tool.terminal` stays as-is per tool.
 | `log_checkin` | kind, energy?, notes?, plans_touched? | title auto-generated ("sat jul 12 — morning") |
 | `list_checkins` | since?, kind? | |
 | `update_plan` extras | why, success_criteria, cadence, status | stewards raise `why` in conversation post-import (V3_DESIGN §5 migration note) |
+| `jot` | body; title?, plan?, tags? | zero-friction capture; `helper` from contextvar |
+| `list_notes` | plan?, tag?, since?, query? | `query` = substring over title+body |
+| `update_note` | note (id), body?, title?, plan?, tags?, status?, promoted refs | edit / attach to plan / archive / link promotion |
+| `log_occasion` | title, date, time?, recurrence?, plan?, notes? | |
+| `list_occasions` | until? (default: next 30 days), plan? | past one-offs via `include_closed`-style `include_past` |
+| `update_occasion` | occasion (id), any field | reschedules don't count anything — occasions aren't commitments |
+
+Every `list_*` tool takes `include_closed` (§2.0.3); defaults to open items.
 
 Persona-card allowlists (already the mechanism) gate them: **mochi gets
-read-only wins + check-ins and no task tools** — the ESA never assigns work.
+read-only wins + check-ins, plus `jot` and `log_occasion`, and no task
+tools** — capturing an idea or a birthday isn't assigning work; the ESA
+never assigns work.
 
 ### 4.3 Registration
 
@@ -268,9 +372,11 @@ whole apparatus — `AgendaSnapshot` table, TTL, `is_stale`,
 - `get_digest(user_uuid) -> Optional[str]` — now *builds* the digest on
   demand: tasks due today / overdue / in-progress (caps 8/6/5 unchanged),
   active cycle + its `focus`, active plans grouped by helper, wins-this-week
-  count, today's window layout (morning/afternoon/evening buckets). This is
-  digest **v2** from V3_DESIGN §5 — we get it for free at build time rather
-  than as a follow-up.
+  count, today's window layout (morning/afternoon/evening buckets), plus
+  **occasions within 3 days** (one line, informational). This is digest
+  **v2** from V3_DESIGN §5 — we get it for free at build time rather than
+  as a follow-up. **Notes are never in the digest or agenda buckets** —
+  they surface only when their plan is being worked (§2.7).
 - `get_payload(user_uuid) -> Optional[dict]` — same bucket keys the
   reconciler reads (`tasks_today`, `tasks_overdue`, `tasks_in_progress`,
   rows shaped like `task_row()`: id/title/status/priority/scheduled/plan/
@@ -310,9 +416,12 @@ migration (that design survives intact; only the destination changed from
    row stores its `notion_page_id`; the run writes an id-map json to
    `backups/` for audit. Idempotent: re-running skips rows whose
    `notion_page_id` already exists — safe to resume.
-3. **Not imported, accepted losses:** Notion page *bodies* (no current code
-   reads them), edit history, extra relations beyond the first. The Notion
-   workspace is left untouched as a frozen archive; nothing deletes it.
+3. **`--import-bodies` (optional):** non-empty Notion page bodies become
+   `notes` attached to the resulting plan (a task's body attaches to its
+   plan), `tags: ["imported"]` — recovering what the first draft wrote off.
+   **Remaining accepted losses:** edit history, extra relations beyond the
+   first. The Notion workspace is left untouched as a frozen archive;
+   nothing deletes it.
 4. `Why` / `success_criteria` start blank — steward helpers raise them in
    conversation on first check-in of an inherited plan (unchanged from
    V3_DESIGN).
@@ -340,26 +449,32 @@ Goals, wins, and check-ins start empty everywhere — they're new.
   native tool set changes tool description bytes (and adds tools), so the
   warm cache breaks **once** at the cutover deploy — routine and acceptable
   (same as any tool-set deploy); noted so nobody chases it as a regression.
-- **Alembic:** one revision adds the six tables; a second (phase D) drops
+- **Alembic:** one revision adds the eight tables; a second (phase D) drops
   `agenda_snapshots`. Both must be tested against sqlite *and* postgres —
-  this lands right around the MULTI_USER_SPEC phase-0 Postgres move, so
-  write the migration dialect-clean from the start.
+  per `NATIVE_MIGRATION_PLAN.md` the Postgres move lands *first*, so these
+  revisions are born on pg and must be written dialect-clean.
 
 ---
 
 ## 8. Testing plan
 
 - **`test_workspace_store.py`** — CRUD + invariants: goal/plan consistency,
-  `completed_at` stamping, reschedule auto-bump, soft-archive filtering,
-  name→id resolution (exact beats substring), public-id parsing.
+  `closed_at` stamping on every closed-set transition (and clearing on
+  reopen), `last_activity_at` side-effect stamping from each related write
+  path, reschedule auto-bump, open-by-default filtering + `include_closed`,
+  occasion recurrence roll-forward, note promotion linking,
+  name→id resolution (exact beats substring), public-id parsing (incl.
+  `n`/`o` prefixes).
 - **`test_workspace_tools.py`** — replaces `test_notion_tools.py`. Contract
   assertions: the 9 legacy tool names still registered with compatible
   required fields; display-vocab round-trip ("To do" in → `todo` stored →
-  "To do" rendered); mutation tools `record_event=True`, list tools False.
+  "To do" rendered); mutation tools `record_event=True`, list tools False;
+  `jot` requires only `body`.
 - **`test_agenda_native.py`** — replaces `test_agenda_snapshot.py`: bucket
   partition (today/overdue/in-progress) against a fixed user timezone incl.
   the day-boundary cases the old tests cover; digest caps; digest-v2
-  sections (focus, wins count, windows).
+  sections (focus, wins count, windows, occasions-within-3-days); notes
+  never appear in any bucket or digest section.
 - **`test_completion_reconciler.py`** — extend, don't rewrite: one new
   end-to-end case where `_open_tasks` reads native payload and the Done mark
   lands in the `tasks` table via the real `update_task` tool.
@@ -394,13 +509,14 @@ deliberate:
 
 | phase | contents | est. |
 |---|---|---|
-| **A — schema & store** | models, alembic revision, `vocab.py`, `WorkspaceStore`, store tests | 3–4 days |
-| **B — tools & agenda** | `workspace_tools.py` (9 preserved + v3 new), `agenda.py` (digest v2 + payload), reconciler import swap, `WORKSPACE_BACKEND` gate, persona-card allowlists (mochi read-only), tool/agenda/reconciler tests | 4–5 days |
-| **C — import & cutover** | importer (dry-run yaml → apply, idempotent), fixtures + tests, Dain's cutover per §6 runbook | 2–3 days |
+| **A — schema & store** | models (8 tables), alembic revision, `vocab.py`, `WorkspaceStore` (incl. §2.0 lifecycle + `last_activity_at` invariants), store tests | 4–5 days |
+| **B — tools & agenda** | `workspace_tools.py` (9 preserved + v3 new + notes/occasions), `agenda.py` (digest v2 + payload), reconciler import swap, `WORKSPACE_BACKEND` gate, persona-card allowlists (mochi: read-only + jot/log_occasion), tool/agenda/reconciler tests | 4–5 days |
+| **C — import & cutover** | importer (dry-run yaml → apply, idempotent, `--import-bodies`), fixtures + tests, Dain's cutover per §6 runbook | 2–3 days |
 | **D — burn the boats** | delete `src/services/notion/`, `notion_tools.py`, `AgendaSnapshot` (+drop migration), `NOTION_*` config, smoke script, old tests/docs; write `docs/WORKSPACE.md`; drop the `*_project` tool aliases | 1–2 days, ~a week after cutover |
 
-**Total: ~2–3 weeks**, matching MULTI_USER_SPEC's estimate, with a one-file
-rollback lever until phase D.
+**Total: ~2.5–3 weeks**, with a one-file rollback lever until phase D.
+Full execution sequencing (including the Postgres phase that precedes A) is
+in `NATIVE_MIGRATION_PLAN.md`.
 
 Sequencing with the v3 launch train: phases A–B are independent of phases
 1–3 of V3_DESIGN (they touch disjoint files — same property that let phase 2
@@ -421,6 +537,14 @@ launch train ships; A–B can start immediately.
    (it already sees the message + context) rather than adding a fourth
    utility pass? *Lean yes — but it's prompt work; defer to the wins-replay
    feature, the `wins` table and `log_win` tool are ready either way.*
-3. **`deprioritized` tasks:** keep excluded from agenda buckets (current
-   behavior) but should `list_tasks` grow a `status=deprioritized` filter
-   value? *Trivial; default yes.*
+3. **`deprioritized` tasks:** ~~keep excluded from agenda buckets but should
+   `list_tasks` grow a filter?~~ *Resolved by §2.0.3: `include_closed` on
+   every list tool.*
+4. **Rituals/habits ("practice guitar most days"):** deliberately *not* a
+   table. Streak mechanics are guilt machinery. `plans.cadence` +
+   `last_activity_at` give stewards enough to notice quiet gently; revisit
+   only if that proves too weak in practice.
+5. **The workspace/memory boundary (worth keeping crisp):** the workspace
+   is what user and assistant *look at together*; helper memory is what the
+   assistant *knows* (people, feelings, self-knowledge). Nothing in this
+   schema should drift toward storing the latter.
