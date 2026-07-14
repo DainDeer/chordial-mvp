@@ -100,6 +100,72 @@ def test_update_task_by_title_sets_status(fake_client):
     assert props["Status"]["status"]["name"] == "Done"
 
 
+def test_update_task_unique_substring_resolves(fake_client):
+    fake_client.seed(S.tasks_db(), [_page("task-9", "Task", "refill meds")])
+    out = run(NT._update_task({"task": "meds", "status": "Done"}, "u1"))
+    assert "updated task" in out
+    assert fake_client.updated[0][0] == "task-9"
+
+
+def test_update_task_ambiguous_substring_refuses(fake_client):
+    fake_client.seed(S.tasks_db(), [
+        _page("task-1", "Task", "practice piano"),
+        _page("task-2", "Task", "piano recital prep"),
+    ])
+    out = run(NT._update_task({"task": "piano", "status": "Done"}, "u1"))
+    assert "multiple tasks match 'piano'" in out
+    assert "task-1" in out and "task-2" in out
+    assert "practice piano" in out and "piano recital prep" in out
+    assert not fake_client.updated
+
+
+def test_update_task_case_insensitive_exact_beats_substrings(fake_client):
+    fake_client.seed(S.tasks_db(), [
+        _page("task-1", "Task", "Piano"),
+        _page("task-2", "Task", "practice piano"),
+    ])
+    out = run(NT._update_task({"task": "piano", "status": "Done"}, "u1"))
+    assert "updated task" in out
+    assert fake_client.updated[0][0] == "task-1"
+
+
+def test_update_task_duplicate_exact_titles_refuse(fake_client):
+    fake_client.seed(S.tasks_db(), [
+        _page("task-1", "Task", "practice piano"),
+        _page("task-2", "Task", "practice piano"),
+    ])
+    out = run(NT._update_task({"task": "practice piano", "status": "Done"}, "u1"))
+    assert "multiple tasks match" in out
+    assert not fake_client.updated
+
+
+def test_create_task_ambiguous_project_refuses(fake_client):
+    fake_client.seed(S.projects_db(), [
+        _page("proj-1", "Project", "chordial mvp"),
+        _page("proj-2", "Project", "chordial site"),
+    ])
+    out = run(NT._create_task({"title": "x", "project": "chordial"}, "u1"))
+    assert "multiple projects match 'chordial'" in out
+    assert "proj-1" in out and "proj-2" in out
+    assert not fake_client.created
+
+
+def test_list_tasks_ambiguous_project_filter_refuses(fake_client):
+    fake_client.seed(S.projects_db(), [
+        _page("proj-1", "Project", "chordial mvp"),
+        _page("proj-2", "Project", "chordial site"),
+    ])
+    out = run(NT._list_tasks({"project": "chordial"}, "u1"))
+    assert "multiple projects match 'chordial'" in out
+
+
+def test_ambiguity_msg_caps_candidates_at_five():
+    amb = NT.Ambiguous([(f"id-{i}", f"task {i}") for i in range(8)])
+    out = NT._ambiguity_msg("tasks", "task", amb)
+    assert "id-4" in out and "id-5" not in out
+    assert "and 3 more" in out
+
+
 def test_update_task_no_fields_is_noop(fake_client):
     fake_client.seed(S.tasks_db(), [_page("task-9", "Task", "refill meds")])
     out = run(NT._update_task({"task": "refill meds"}, "u1"))

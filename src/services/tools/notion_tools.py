@@ -6,6 +6,11 @@ page ids - and do the relation resolution themselves, so the model can say
 "add a high-priority task to the Sika Deer sprint" without ever touching a
 uuid.
 
+name resolution never guesses between look-alikes: if a name matches more
+than one page, the tool refuses the write and returns the candidates (title +
+id) so the model can retry with the id or ask the user - the tool result is
+the clarification channel.
+
 the dainframe is a single shared workspace, so `user_uuid` is accepted (the
 loop injects it) but unused here.
 """
@@ -13,7 +18,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Union
 
 from src.providers.ai.types import ToolDef
 from src.services.notion import get_client
@@ -39,37 +45,84 @@ async def _name_map(db_id: str, title_prop: str) -> dict[str, str]:
     return {S.page_id(r): S.title_of(r, title_prop) for r in rows}
 
 
-async def _resolve_by_title(db_id: str, title_prop: str, name: str) -> Optional[str]:
-    """find a page id by exact title, then by case-insensitive substring."""
+@dataclass
+class Ambiguous:
+    """a name matched several pages; carries the candidates for the tool result."""
+    candidates: list[tuple[str, str]]  # (page_id, title)
+
+
+def _ambiguity_msg(plural_noun: str, name: str, amb: Ambiguous) -> str:
+    """a promptable refusal: list the candidates and how to disambiguate."""
+    shown = amb.candidates[:5]
+    listing = ", ".join(f'"{title}" (id={pid})' for pid, title in shown)
+    extra = len(amb.candidates) - len(shown)
+    more = f", and {extra} more (use a list tool to narrow it)" if extra > 0 else ""
+    return (
+        f"multiple {plural_noun} match '{name}': {listing}{more} - "
+        "retry with the id, or ask which one they meant."
+    )
+
+
+async def _resolve_by_title(
+    db_id: str, title_prop: str, name: str
+) -> Union[str, Ambiguous, None]:
+    """resolve a page id by title, refusing to guess between look-alikes.
+
+    a three-tier ladder where the first tier with any matches decides:
+      1. exact title via the api filter
+      2. case-insensitive exact title over a scan
+      3. case-insensitive substring over the scan
+    returns the page id on a unique match, Ambiguous when several pages
+    match at the deciding tier, or None when nothing matches at all.
+    """
     client = get_client()
     exact = await client.query_all(
-        db_id, filter=S.title_equals_filter(title_prop, name), limit=1
+        db_id, filter=S.title_equals_filter(title_prop, name), limit=2
     )
-    if exact:
+    if len(exact) == 1:
         return S.page_id(exact[0])
+    if len(exact) > 1:
+        return Ambiguous([(S.page_id(r), S.title_of(r, title_prop)) for r in exact])
+
     rows = await client.query_all(db_id, limit=100)
     needle = name.strip().lower()
-    for r in rows:
-        if needle in S.title_of(r, title_prop).lower():
-            return S.page_id(r)
+    ci_exact = [r for r in rows if S.title_of(r, title_prop).strip().lower() == needle]
+    substring = [r for r in rows if needle in S.title_of(r, title_prop).lower()]
+    for tier in (ci_exact, substring):
+        if len(tier) == 1:
+            return S.page_id(tier[0])
+        if tier:
+            return Ambiguous([(S.page_id(r), S.title_of(r, title_prop)) for r in tier])
     return None
 
 
 async def _resolve_names_to_ids(
     db_id: str, title_prop: str, names: Optional[list[str]]
-) -> tuple[Optional[list[str]], list[str]]:
-    """map a list of names to page ids. returns (ids_or_None, unresolved)."""
+) -> tuple[Optional[list[str]], list[str], list[tuple[str, Ambiguous]]]:
+    """map a list of names to page ids.
+    returns (ids_or_None, unresolved_names, [(name, Ambiguous), ...])."""
     if names is None:
-        return None, []
+        return None, [], []
     ids: list[str] = []
     missing: list[str] = []
+    ambiguous: list[tuple[str, Ambiguous]] = []
     for n in names:
-        pid = n if _looks_like_id(n) else await _resolve_by_title(db_id, title_prop, n)
-        (ids.append(pid) if pid else missing.append(n))
-    return ids, missing
+        if _looks_like_id(n):
+            ids.append(n)
+            continue
+        res = await _resolve_by_title(db_id, title_prop, n)
+        if isinstance(res, Ambiguous):
+            ambiguous.append((n, res))
+        elif res:
+            ids.append(res)
+        else:
+            missing.append(n)
+    return ids, missing, ambiguous
 
 
-async def _target_id(db_id: str, title_prop: str, identifier: str) -> Optional[str]:
+async def _target_id(
+    db_id: str, title_prop: str, identifier: str
+) -> Union[str, Ambiguous, None]:
     if _looks_like_id(identifier):
         return identifier
     return await _resolve_by_title(db_id, title_prop, identifier)
@@ -90,11 +143,15 @@ async def _list_tasks(tool_input: dict, user_uuid: str) -> str:
     project_id = None
     if tool_input.get("project"):
         project_id = await _resolve_by_title(S.projects_db(), "Project", tool_input["project"])
+        if isinstance(project_id, Ambiguous):
+            return _ambiguity_msg("projects", tool_input["project"], project_id)
         if not project_id:
             return f"no project named '{tool_input['project']}' found."
     sprint_id = None
     if tool_input.get("sprint"):
         sprint_id = await _resolve_by_title(S.cycles_db(), "cycle", tool_input["sprint"])
+        if isinstance(sprint_id, Ambiguous):
+            return _ambiguity_msg("sprints/cycles", tool_input["sprint"], sprint_id)
         if not sprint_id:
             return f"no sprint/cycle named '{tool_input['sprint']}' found."
 
@@ -127,14 +184,18 @@ async def _create_task(tool_input: dict, user_uuid: str) -> str:
     if not title:
         return "a task needs a title."
 
-    project_ids, miss_p = await _resolve_names_to_ids(
+    project_ids, miss_p, amb_p = await _resolve_names_to_ids(
         S.projects_db(), "Project",
         [tool_input["project"]] if tool_input.get("project") else None,
     )
-    sprint_ids, miss_s = await _resolve_names_to_ids(
+    sprint_ids, miss_s, amb_s = await _resolve_names_to_ids(
         S.cycles_db(), "cycle",
         [tool_input["sprint"]] if tool_input.get("sprint") else None,
     )
+    ambiguous = [("projects", n, a) for n, a in amb_p] + \
+                [("sprints/cycles", n, a) for n, a in amb_s]
+    if ambiguous:
+        return " ".join(_ambiguity_msg(noun, n, a) for noun, n, a in ambiguous)
     unresolved = miss_p + miss_s
     if unresolved:
         return f"couldn't find these by name: {', '.join(unresolved)}. create them first or check the name."
@@ -158,17 +219,23 @@ async def _update_task(tool_input: dict, user_uuid: str) -> str:
     if not ident:
         return "which task? pass a task title or id."
     page_id = await _target_id(S.tasks_db(), "Task", ident)
+    if isinstance(page_id, Ambiguous):
+        return _ambiguity_msg("tasks", ident, page_id)
     if not page_id:
         return f"no task matching '{ident}'."
 
-    project_ids, miss_p = await _resolve_names_to_ids(
+    project_ids, miss_p, amb_p = await _resolve_names_to_ids(
         S.projects_db(), "Project",
         [tool_input["project"]] if tool_input.get("project") else None,
     )
-    sprint_ids, miss_s = await _resolve_names_to_ids(
+    sprint_ids, miss_s, amb_s = await _resolve_names_to_ids(
         S.cycles_db(), "cycle",
         [tool_input["sprint"]] if tool_input.get("sprint") else None,
     )
+    ambiguous = [("projects", n, a) for n, a in amb_p] + \
+                [("sprints/cycles", n, a) for n, a in amb_s]
+    if ambiguous:
+        return " ".join(_ambiguity_msg(noun, n, a) for noun, n, a in ambiguous)
     if miss_p + miss_s:
         return f"couldn't find these by name: {', '.join(miss_p + miss_s)}."
 
@@ -224,6 +291,8 @@ async def _update_project(tool_input: dict, user_uuid: str) -> str:
     if not ident:
         return "which project? pass a project title or id."
     page_id = await _target_id(S.projects_db(), "Project", ident)
+    if isinstance(page_id, Ambiguous):
+        return _ambiguity_msg("projects", ident, page_id)
     if not page_id:
         return f"no project matching '{ident}'."
     props = S.build_project_properties(
@@ -278,6 +347,8 @@ async def _update_cycle(tool_input: dict, user_uuid: str) -> str:
     if not ident:
         return "which cycle? pass a cycle title or id."
     page_id = await _target_id(S.cycles_db(), "cycle", ident)
+    if isinstance(page_id, Ambiguous):
+        return _ambiguity_msg("cycles", ident, page_id)
     if not page_id:
         return f"no cycle matching '{ident}'."
     props = S.build_cycle_properties(
