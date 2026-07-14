@@ -14,7 +14,12 @@ _IS_SQLITE = "sqlite" in Config.DATABASE_URL
 engine = create_engine(
     Config.DATABASE_URL,
     echo=False,  # set to true for sql query logging
-    connect_args={"check_same_thread": False} if _IS_SQLITE else {}
+    connect_args={"check_same_thread": False} if _IS_SQLITE else {},
+    # the app runs for days at a time; postgres connections idling in the
+    # pool get dropped by the server/OS eventually, and without pre-ping the
+    # first query on a dead connection surfaces as a mid-request
+    # OperationalError instead of a transparent reconnect
+    pool_pre_ping=not _IS_SQLITE,
 )
 
 if _IS_SQLITE:
