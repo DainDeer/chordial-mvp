@@ -1,10 +1,11 @@
 """one-shot data copy: sqlite -> postgres (NATIVE_MIGRATION_PLAN §2.4).
 
 copies every model table row-for-row, preserving primary keys, then resets
-postgres sequences and verifies the result. both URLs are explicit arguments
+postgres sequences and verifies every row - all inside a single target
+transaction that only commits after verification passes, so a failed or
+mismatched copy leaves the target untouched. both URLs are explicit arguments
 - never inferred from DATABASE_URL - so a misconfigured env can't invert the
-copy direction. the whole copy runs in a single target transaction: it either
-lands complete or not at all.
+copy direction.
 
 usage:
     poetry run python scripts/migrate_sqlite_to_postgres.py \
@@ -49,6 +50,14 @@ def alembic_version(conn):
     return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
 
 
+def repo_head_revision():
+    """the head of the migration chain in this checkout."""
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+    ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+    return ScriptDirectory.from_config(AlembicConfig(str(ini))).get_current_head()
+
+
 def ensure_target_schema(source_engine, target_engine):
     """create tables from the models if missing (plan §2.3: create_all, not
     chain replay) and stamp alembic_version to match the source, so future
@@ -57,6 +66,13 @@ def ensure_target_schema(source_engine, target_engine):
         source_version = alembic_version(conn)
     if source_version is None:
         sys.exit("source has no alembic_version - refusing to copy from an unstamped db")
+    # create_all builds the *current models'* schema, so stamping anything but
+    # head would lie about what the target actually contains and break the
+    # next startup `upgrade head`
+    head = repo_head_revision()
+    if source_version != head:
+        sys.exit(f"source is at {source_version} but this checkout's head is {head} - "
+                 "run `alembic upgrade head` on the source first")
 
     Base.metadata.create_all(target_engine)  # checkfirst by default
     with target_engine.begin() as conn:
@@ -123,30 +139,31 @@ def reset_sequences(target_conn):
             target_conn.execute(text("SELECT setval(:s, :m)"), {"s": seq, "m": max_id})
 
 
-def verify(source_engine, target_engine):
-    """per-table row counts, plus content spot-checks on the two tables that
-    matter most. returns False on any mismatch."""
+def verify(source_engine, target_conn):
+    """full-row comparison of every table, ordered by primary key, read
+    through the still-open target transaction. the database is small enough
+    that comparing actual content costs nothing and proves far more than
+    counts or aggregate spot-checks. returns False on any mismatch."""
     ok = True
-    with source_engine.connect() as src, target_engine.connect() as tgt:
+    with source_engine.connect() as src:
         print(f"\n{'table':<26}{'source':>8}{'target':>8}")
         for table in Base.metadata.sorted_tables:
-            s = src.execute(select(func.count()).select_from(table)).scalar()
-            t = tgt.execute(select(func.count()).select_from(table)).scalar()
-            flag = "" if s == t else "  << MISMATCH"
-            ok &= s == t
-            print(f"{table.name:<26}{s:>8}{t:>8}{flag}")
-
-        events = Base.metadata.tables["conversation_events"]
-        latest = select(events.c.user_uuid, func.max(events.c.id)).group_by(events.c.user_uuid)
-        memories = Base.metadata.tables["memories"]
-        per_user = select(memories.c.user_uuid, func.count()).group_by(memories.c.user_uuid)
-        for label, query in [("latest event id per user", latest),
-                             ("memory count per user", per_user)]:
-            s = dict(src.execute(query).all())
-            t = dict(tgt.execute(query).all())
-            match = "ok" if s == t else "MISMATCH"
-            ok &= s == t
-            print(f"spot-check {label}: {match}")
+            order = list(table.primary_key.columns)
+            query = select(table).order_by(*order)
+            s_rows = [dict(r._mapping) for r in src.execute(query)]
+            t_rows = [dict(r._mapping) for r in target_conn.execute(query)]
+            flag = ""
+            if s_rows != t_rows:
+                ok = False
+                flag = "  << MISMATCH"
+                for i, (s, t) in enumerate(zip(s_rows, t_rows)):
+                    if s != t:
+                        diff = {k for k in s if s[k] != t.get(k)}
+                        flag += f" (first at row {i}, columns {sorted(diff)})"
+                        break
+                else:
+                    flag += " (row count differs)"
+            print(f"{table.name:<26}{len(s_rows):>8}{len(t_rows):>8}{flag}")
     return ok
 
 
@@ -159,13 +176,14 @@ def main():
     check_target_empty(target_engine, args.force)
 
     print("copying:")
-    with target_engine.begin() as conn:  # one transaction: all-or-nothing
+    # one transaction around copy + sequence reset + verification: nothing
+    # commits unless every row in the target matches the source
+    with target_engine.begin() as conn:
         copy_all(source_engine, conn)
         reset_sequences(conn)
-
-    if not verify(source_engine, target_engine):
-        sys.exit("VERIFICATION FAILED - target transaction was committed but "
-                 "does not match source; fix and rerun with --force")
+        if not verify(source_engine, conn):
+            sys.exit("VERIFICATION FAILED - transaction rolled back, "
+                     "target left unchanged")
     print("\ncopy complete and verified")
 
 

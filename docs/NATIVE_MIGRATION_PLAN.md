@@ -107,12 +107,15 @@ against both engines (§2.7).
 
 ### 2.4 Data copy: `scripts/migrate_sqlite_to_postgres.py`
 
-A ~150-line one-shot, same spirit as the Notion importer:
+A ~180-line one-shot, same spirit as the Notion importer:
 
 1. Connect to both URLs (source sqlite explicit, target pg explicit — never
    inferred from env, so a misconfigured `DATABASE_URL` can't invert the
-   copy). Refuse to run unless the target's tables are empty (`--force` to
-   override after a failed attempt).
+   copy). Require the **source to be at this checkout's alembic head**
+   (create_all builds the current models' schema; stamping it with an older
+   source revision would lie and break the next startup upgrade). Refuse to
+   run unless the target's tables are empty (`--force` truncates and
+   restarts after a failed attempt).
 2. Walk `Base.metadata.sorted_tables` (FK-safe order: users first), stream
    rows via SQLAlchemy Core, bulk-insert **preserving primary keys**.
    Naive datetimes and JSON columns round-trip as-is.
@@ -121,15 +124,35 @@ A ~150-line one-shot, same spirit as the Notion importer:
    string-PK tables (`users.uuid`). Missing this = duplicate-key errors on
    the first insert after cutover; it's the classic pg-migration bug, hence
    a named step.
-4. Verify: per-table row counts source vs target, plus a checksum spot-check
-   (e.g. latest `conversation_events` row per user, memory count per user).
-   Print a table; exit nonzero on any mismatch.
+4. Verify **inside the same target transaction, before commit**: full-row
+   comparison of every table ordered by primary key (the db is small enough
+   that comparing content costs nothing and proves more than counts). Any
+   mismatch rolls the whole copy back and exits nonzero — the target is
+   never left holding unverified data.
 
-### 2.5 Cutover runbook (Dain's instance)
+### 2.5 Cutover: preflight gates, then runbook (Dain's instance)
 
-1. Stop the app; copy `chordial.db` into `backups/` (last sqlite backup).
-2. Create the pg database; run the copy script (it does create_all + stamp +
-   copy + verify in one pass).
+**Preflight gates — all four green before starting the runbook** (these are
+prerequisites, not follow-ups; the sqlite "the db is just a file" safety net
+disappears at cutover, so its replacements must already exist):
+
+- [ ] **pg backup timer installed and rehearsed**: the nightly `pg_dump`
+  job (§2.6) exists, has produced at least one dump, and that dump has been
+  **restored somewhere else** (`createdb restore_test && pg_restore …`) —
+  an unrestored backup is a hope, not a backup.
+- [ ] **Test suite green on Postgres** via the §2.7 lane.
+- [ ] **Source at alembic head** (`alembic current` on sqlite) — the copy
+  script enforces this anyway.
+- [ ] **Rehearsal copy** against `chordial_dev` verified green.
+
+**Runbook:**
+
+1. Stop the app. Take the final sqlite backup **WAL-safely**:
+   `sqlite3 chordial.db ".backup backups/chordial-final-precutover.db"` —
+   a plain file copy can miss committed transactions still living in
+   `chordial.db-wal`; the `.backup` command folds them in.
+2. Run the copy script against the real target (it does create_all + stamp +
+   copy + verify-in-transaction in one pass).
 3. Point `DATABASE_URL` at Postgres; start the app.
 4. Smoke: send a chat message (event log write), recall a memory, let a
    scheduler tick pass, `alembic current` shows head.
@@ -140,17 +163,22 @@ A ~150-line one-shot, same spirit as the Notion importer:
 ### 2.6 Backups
 
 Nightly `pg_dump -Fc` via cron/systemd timer to `backups/` (rotate 14),
-replacing file copies. This lands *with* the cutover, not after — the
-sqlite file's "the db is just a file" safety net disappears at step 3.
+replacing file copies. Per §2.5 this is a **cutover prerequisite**: timer
+installed, one dump taken, and one restore rehearsed before the runbook
+starts.
 
 ### 2.7 Tests & CI
 
 - Unit tests stay on sqlite (fast, zero setup) — the ORM-only codebase makes
   this a safe proxy for logic.
-- Add one **pg lane**: a script/CI job that boots `postgres:16` (Docker),
-  runs `create_all` + the full test suite against it, and — once phase A
-  lands — applies new alembic revisions to a stamped database. This is the
-  guard that keeps "dialect-clean" true instead of aspirational.
+- The **pg lane** is built into `tests/conftest.py`: set
+  `TEST_DATABASE_URL=postgresql+psycopg://…/chordial_test` and the suite
+  runs against Postgres (schema dropped, rebuilt from models, and stamped
+  at head each session; the db name must contain "test"). Run it locally
+  before any cutover and wire it into CI with a `postgres:16` service when
+  CI exists. Once phase A lands, new alembic revisions get applied to a
+  stamped pg database as part of this lane — the guard that keeps
+  "dialect-clean" true instead of aspirational.
 
 **Phase P estimate: 2–4 days** (matches MULTI_USER_SPEC §5), most of it in
 2.4's verification and 2.7's lane, not the engine swap.
@@ -177,9 +205,15 @@ sequencing notes only:
   Deploy note: tool-definition bytes change ⇒ one prompt-cache break,
   routine.
 - **C — import & cutover (2–3 days):** importer with `--dry-run` yaml
-  review → `--apply`, idempotent on `notion_page_id`, `--import-bodies`
-  (page bodies → notes tagged `imported`). Runbook per design doc §6;
-  `WORKSPACE_BACKEND=notion` remains the rollback for ~a week.
+  review → `--apply`, idempotent on `notion_page_id` provenance (all
+  imported entities, including `--import-bodies` notes). Runbook per design
+  doc §6 — **the app is stopped** for import + flag flip, not merely left
+  unchatted. `WORKSPACE_BACKEND=notion` remains the rollback lever, but be
+  honest about its window: it's clean only until the **first native
+  workspace write**; after that, rolling back means hand-replaying native
+  task/plan changes into Notion (tractable — list rows with
+  `updated_at > cutover` — but manual). Practically: decide within the
+  first day or two, not the full week the code sticks around.
 - **D — burn the boats (1–2 days, ~a week after C):** delete
   `src/services/notion/`, `notion_tools.py`, snapshot machinery +
   `agenda_snapshots` drop revision, `NOTION_*` config, old tests/docs;
@@ -210,7 +244,7 @@ sequencing notes only:
 |---|---|---|
 | P cutover | repoint `DATABASE_URL` at frozen sqlite file | meaningful new writes on pg (~same day); file kept forever regardless |
 | A–B deploys | revert the deploy; additive migrations sit unused | n/a — nothing consumes the tables until C |
-| C cutover | `WORKSPACE_BACKEND=notion` (Notion left frozen, not deleted) | phase D deletes the Notion code (~1 week) |
+| C cutover | `WORKSPACE_BACKEND=notion` (Notion left frozen, not deleted) | **first native workspace write** — clean rollback before it; manual replay of native changes into Notion after it (code itself survives until phase D, ~1 week) |
 | D | git revert + the pre-D backup of `agenda_snapshots` drop | it's a deletion of already-dead code; lowest-risk phase |
 
 ---
