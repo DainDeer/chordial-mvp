@@ -13,3 +13,4 @@ __pycache__/
 prompt_logs/
 *.log
 backups/
+.DS_Store
