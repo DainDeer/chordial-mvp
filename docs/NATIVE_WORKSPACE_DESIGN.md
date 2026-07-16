@@ -169,6 +169,7 @@ FKs are singular; the importer takes the first relation and logs any extras.
 | start_date / end_date | date | |
 | goal | text, null | today's "cycle goal" |
 | focus | text, null | v3: pep's negotiated balance statement |
+| notion_page_id | str, null | import provenance — required for importer idempotency, same as plans/tasks |
 | created_at / updated_at / closed_at | | `closed_at` per §2.0 (uniformity; ≈ when it was marked complete) |
 
 ### 2.5 `wins` (new — the anti-diminishment ledger)
@@ -196,7 +197,7 @@ FKs are singular; the importer takes the first relation and logs any extras.
 | plan_ids | JSON, default [] | "plans touched" — JSON list, not an association table (promptable, sqlite-friendly; same precedent as `Memory.embedding`) |
 | helper | str, not null | who ran it |
 | created_at | | |
-| *unique* | `(user_uuid, date, kind)` for morning/evening | adhoc unlimited |
+| *unique* | `(user_uuid, date, kind)` for morning/evening | adhoc unlimited — so this is a **partial unique index** (`WHERE kind IN ('morning','evening')`), not a plain unique constraint, which would wrongly cap adhoc at one per day. Both pg and sqlite support partial indexes |
 
 ### 2.7 `notes` (new — non-committal creative capture + plan detail)
 
@@ -216,6 +217,7 @@ in one table that's a column update, not a migration between concepts.
 | helper | str, null | domain steward (aria/poet/…); injected from the acting-helper contextvar like `log_win` |
 | status | str | `active` / `promoted` / `archived` — no "done"; ideas are never overdue |
 | promoted_plan_id / promoted_task_id | int FK, null | provenance when an idea grows up; set alongside status→`promoted` |
+| notion_page_id | str, null | import provenance for `--import-bodies` notes (the source page whose body this was) — without it, rerunning the importer can't tell an already-imported body from a missing one |
 | created_at / updated_at / closed_at | | `closed_at` per §2.0 |
 
 Behavioral rules (these matter more than the columns):
@@ -426,11 +428,15 @@ migration (that design survives intact; only the destination changed from
    conversation on first check-in of an inherited plan (unchanged from
    V3_DESIGN).
 
-**Cutover runbook (Dain's instance):** stop writes (just don't chat for a
-minute), run importer `--apply`, set `WORKSPACE_BACKEND=native`, restart,
-smoke via chat ("what's on today?"), keep `WORKSPACE_BACKEND=notion` as the
-one-env-var rollback for a week, then delete the Notion code (§7 phase D).
-Goals, wins, and check-ins start empty everywhere — they're new.
+**Cutover runbook (Dain's instance):** **stop the app** (not merely "don't
+chat" — the scheduler and reconciler write too), run importer `--apply`,
+set `WORKSPACE_BACKEND=native`, restart, smoke via chat ("what's on
+today?"). `WORKSPACE_BACKEND=notion` is the one-env-var rollback, but its
+*clean* window ends at the first native workspace write — after that,
+rolling back requires hand-replaying native changes into Notion (list rows
+with `updated_at > cutover`); decide within a day or two. The Notion code
+survives until phase D (§7) regardless. Goals, wins, check-ins, notes, and
+occasions start empty everywhere — they're new.
 
 ---
 
@@ -465,6 +471,12 @@ Goals, wins, and check-ins start empty everywhere — they're new.
   occasion recurrence roll-forward, note promotion linking,
   name→id resolution (exact beats substring), public-id parsing (incl.
   `n`/`o` prefixes).
+- **Cross-user isolation** — its own test class, not an afterthought:
+  public numeric ids (`t42`) are only unique *per user*, so every resolver,
+  lookup, and list query must filter by `user_uuid`. Tests create two users
+  with colliding ids/titles and assert user B can never read or mutate
+  user A's rows through any tool path — including `checkins.plan_ids`
+  (JSON, so no FK protects it) resolving only against the owner's plans.
 - **`test_workspace_tools.py`** — replaces `test_notion_tools.py`. Contract
   assertions: the 9 legacy tool names still registered with compatible
   required fields; display-vocab round-trip ("To do" in → `todo` stored →

@@ -15,6 +15,10 @@ from src.database.database import engine, get_db  # noqa: E402
 
 
 def test_sqlite_engine_uses_wal_mode():
+    if engine.dialect.name != "sqlite":
+        import pytest
+        pytest.skip("WAL pragmas are sqlite-only; engine is " + engine.dialect.name)
+
     # exercise a real connection first (in case none has been opened yet)
     with get_db():
         pass

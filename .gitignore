@@ -12,3 +12,4 @@ __pycache__/
 *.db-journal
 prompt_logs/
 *.log
+backups/
