@@ -32,7 +32,30 @@ for k in letters:
 letters["D"] = NOTE  # "D" is the note slot in the word below, not a literal letter d
 
 WORD = "chorDial"
-ROWS = ["".join(letters[ch][r] for ch in WORD).rstrip() for r in range(6)]
+# negative tracking: how many columns a letter slides left into the previous
+# letter's box (glyphs merge where one has whitespace). D=4 tucks the notehead
+# under the r's overhang; i=2 pulls the i in under the note's flag curl.
+KERN = {"D": 3, "i": 2}
+
+
+def compose():
+    x, spans = 0, []
+    for ch in WORD:
+        start = max(0, x - KERN.get(ch, 0))
+        spans.append((ch, start))
+        x = start + len(letters[ch][0])
+    canvas = [[" "] * x for _ in range(6)]
+    for ch, start in spans:
+        for r, row in enumerate(letters[ch]):
+            for j, c in enumerate(row):
+                if c != " ":
+                    if canvas[r][start + j] != " ":
+                        raise ValueError(f"glyph collision at row {r}, col {start + j}")
+                    canvas[r][start + j] = c
+    return ["".join(row).rstrip() for row in canvas]
+
+
+ROWS = compose()
 WIDTH = max(len(r) for r in ROWS)
 
 RAINBOW = [196, 208, 226, 46, 33, 129]         # red..violet, one sweep left to right
