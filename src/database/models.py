@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, ForeignKey, Integer, Float, Index, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Date, JSON, Boolean, ForeignKey, Integer, Float, Index, UniqueConstraint, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -336,6 +336,266 @@ class UsageLog(Base):
     cache_write_tokens = Column(Integer, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+# --- native workspace (docs/NATIVE_WORKSPACE_DESIGN.md) ---------------------
+# the system of record for the user's workspace, replacing notion. controlled
+# vocabularies live in src/services/workspace/vocab.py; every mutation goes
+# through WorkspaceStore (src/services/workspace/store.py) so the invariants -
+# closed_at stamping (design section 2.0), plans.last_activity_at side effects,
+# goal/plan consistency, reschedule bumps - live in exactly one place.
+#
+# lifecycle convention (section 2.0): closable entities never hard-delete;
+# status vocab splits into an open set and a closed set (closed always
+# distinguishes completed from released), and closed_at is stamped by the
+# store when status enters the closed set, cleared on reopen.
+
+
+class Plan(Base):
+    """a helper-stewarded body of work, possibly lofty/multi-month (evolves
+    the dainframe's Projects). the steward (`helper`) nudges it along its
+    cadence; `why` and `success_criteria` are the user's own words, raised in
+    conversation rather than demanded at creation."""
+    __tablename__ = 'plans'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    helper = Column(String, nullable=False)   # archetype id: chordial/tempo/aria/pep/mochi/poet
+    status = Column(String, default='proposed')  # proposed/active/paused | complete/released
+
+    why = Column(String, nullable=True)                # user's motivation, their words
+    success_criteria = Column(String, nullable=True)   # "success looks like"
+    horizon_start = Column(Date, nullable=True)        # soft range, not a deadline
+    horizon_end = Column(Date, nullable=True)
+    cadence = Column(String, nullable=True)            # daily/weekly/loose
+
+    legacy_area = Column(String, nullable=True)        # preserved dainframe Area
+    notion_page_id = Column(String, nullable=True)     # import provenance; never used at runtime
+
+    # stamped by WorkspaceStore as a side effect of any related write (task
+    # under the plan, win logged, note attached, check-in touching it) -
+    # powers "it's been three weeks since this came up" without streaks
+    last_activity_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class Goal(Base):
+    """a concrete milestone under a plan. `done_means` is the anti-vagueness
+    field: what specifically will be true when this is done."""
+    __tablename__ = 'goals'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=False)
+
+    title = Column(String, nullable=False)
+    status = Column(String, default='not_started')  # not_started/in_progress | done/renegotiated
+    target = Column(Date, nullable=True)
+    done_means = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class Cycle(Base):
+    """the bi-weekly balancing lever across plans. `focus` is pep's negotiated
+    balance statement for the cycle."""
+    __tablename__ = 'cycles'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    status = Column(String, default='upcoming')  # upcoming/active | complete
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    goal = Column(String, nullable=True)    # the cycle goal, as today
+    focus = Column(String, nullable=True)   # v3: negotiated balance statement
+
+    notion_page_id = Column(String, nullable=True)  # import provenance
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class Task(Base):
+    """pomodoro-sized work (evolves the dainframe Tasks db in place).
+    `scheduled` is a user-local calendar date, exactly as notion stored it -
+    agenda comparisons use the user's `today`. singular plan/cycle FKs replace
+    notion's multi-relations (every consumer already took only the first)."""
+    __tablename__ = 'tasks'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+
+    title = Column(String, nullable=False)
+    status = Column(String, default='todo')     # todo/in_progress | done/deprioritized
+    priority = Column(String, nullable=True)    # high/medium/low
+    scheduled = Column(Date, nullable=True)     # user-local calendar date
+    window = Column(String, nullable=True)      # morning/afternoon/evening/anytime
+    pom_estimate = Column(Float, nullable=True)
+
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    # when set, the store enforces goal.plan_id == plan_id
+    goal_id = Column(Integer, ForeignKey('goals.id'), nullable=True)
+    cycle_id = Column(Integer, ForeignKey('cycles.id'), nullable=True)
+    helper = Column(String, nullable=True)      # who assigned/nudges
+
+    # bumped by the store each time `scheduled` slips to a later date;
+    # renegotiate (not nag) at 2-3
+    reschedules = Column(Integer, default=0)
+    description = Column(String, nullable=True)
+
+    notion_page_id = Column(String, nullable=True)  # import provenance
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # stamped for both endings; wins/analytics read it where status='done'
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # the agenda's two query shapes
+        Index('ix_tasks_user_status', 'user_uuid', 'status'),
+        Index('ix_tasks_user_scheduled', 'user_uuid', 'scheduled'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class Win(Base):
+    """the anti-diminishment ledger: past-tense, concrete, witnessed.
+    `evidence` is the user's words verbatim at the time. immutable history -
+    no updated_at, no lifecycle."""
+    __tablename__ = 'wins'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    title = Column(String, nullable=False)      # past-tense, concrete
+    date = Column(Date, nullable=False)
+    helper = Column(String, nullable=False)     # who witnessed/logged it
+
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    # a win born from a task completion keeps the link
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=True)
+
+    evidence = Column(String, nullable=True)    # the user's words, verbatim
+    weight = Column(String, default='solid')    # spark/solid/milestone
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class Checkin(Base):
+    """the shared daily journal. morning/evening are unique per (user, date) -
+    enforced by a PARTIAL unique index so adhoc check-ins stay unlimited.
+    energy is asked, never demanded."""
+    __tablename__ = 'checkins'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    date = Column(Date, nullable=False)
+    kind = Column(String, nullable=False)       # morning/evening/adhoc
+    energy = Column(String, nullable=True)      # low/ok/good/great
+    notes = Column(String, nullable=True)
+    # "plans touched" - JSON list of plan ids, not an association table
+    # (promptable, sqlite-friendly; the Memory.embedding precedent). no FK
+    # protects this, so the store resolves entries against the owner's plans.
+    plan_ids = Column(JSON, default=[])
+    helper = Column(String, nullable=False)     # who ran it
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('uq_checkins_user_date_kind', 'user_uuid', 'date', 'kind',
+              unique=True,
+              sqlite_where=text("kind IN ('morning', 'evening')"),
+              postgresql_where=text("kind IN ('morning', 'evening')")),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class Note(Base):
+    """the one deliberately NON-committal container (design section 2.7): a
+    loose creative idea (no plan_id) or plan-attached detail. never in the
+    agenda, never overdue; surfaced when work starts on its plan. no task_id
+    by design - tasks are pomodoro-sized, detail belongs on the plan."""
+    __tablename__ = 'notes'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    body = Column(String, nullable=False)       # the jot, user's words - only required field
+    title = Column(String, nullable=True)       # auto-derived from first line when absent
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    tags = Column(JSON, default=[])             # medium: writing/music/video/...
+    helper = Column(String, nullable=True)      # domain steward who captured it
+
+    status = Column(String, default='active')   # active | promoted/archived - no "done"
+    # provenance when an idea grows up; set alongside status -> promoted
+    promoted_plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    promoted_task_id = Column(Integer, ForeignKey('tasks.id'), nullable=True)
+
+    # import provenance for --import-bodies notes (the source page whose body
+    # this was) - without it, importer reruns can't tell imported from missing
+    notion_page_id = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class Occasion(Base):
+    """a dated thing that isn't work (design section 2.8): birthdays,
+    appointments, flights. informs, never nags - no status, no closed_at;
+    occasions pass, they aren't done. on recurrence the store rolls `date`
+    forward past occurrence, so `date` always holds the next one."""
+    __tablename__ = 'occasions'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    date = Column(Date, nullable=False)         # user-local, same semantics as tasks.scheduled
+    time = Column(String, nullable=True)        # freeform ("14:30", "afternoon") - display, not scheduling
+    recurrence = Column(String, nullable=True)  # yearly/monthly/weekly; null = one-off
+
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    notes = Column(String, nullable=True)
+    helper = Column(String, nullable=True)      # who captured it
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         {'sqlite_autoincrement': True}
