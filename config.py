@@ -111,6 +111,16 @@ class Config:
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME")
     ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "false").lower() == "true"
+    # trust-on-first-message for telegram DMs (the discord contract): an
+    # unknown sender gets a user row + the introduction flow instead of the
+    # stranger wall. default OFF because telegram bot usernames are publicly
+    # discoverable - any stranger who finds the bot would cost api spend.
+    # dev instances turn this on to test onboarding without discord; a public
+    # deployment should prefer invite codes (MULTI_USER_SPEC phase 2) over
+    # leaving this open. DM-only: the group room stays known-users-only.
+    TELEGRAM_OPEN_ONBOARDING = (
+        os.getenv("TELEGRAM_OPEN_ONBOARDING", "false").lower() == "true"
+    )
     # the shared group chat all the helper bots and the user sit in. captured
     # once (env, or a /setup_group command that writes it back) - the delivery
     # target for group-scope proactive/scripted messages. None = no group yet
