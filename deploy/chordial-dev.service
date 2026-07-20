@@ -1,0 +1,30 @@
+# chordial DEV daemon - runs alongside the prod chordial.service from the
+# same checkout, isolated by .env.dev (sandbox sqlite db + dev-only telegram
+# bots). see docs/DEV_DATABASE.md section 4.
+#
+# install (on the server):
+#   1. fill in .env.dev at the repo root (dev bot token/username), chmod 600
+#   2. seed the sandbox:  poetry run python scripts/dev_db.py seed --telegram-id <your id>
+#   3. sudo cp deploy/chordial-dev.service /etc/systemd/system/
+#      (adjust User/paths below if your server layout differs; `which poetry`
+#       for the ExecStart path)
+#   4. sudo systemctl daemon-reload && sudo systemctl enable --now chordial-dev
+#   5. watch it: journalctl -u chordial-dev -f
+
+[Unit]
+Description=chordial dev daemon (sandbox db + dev bots)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dain
+WorkingDirectory=/home/dain/chordial-mvp
+# sets the sandbox overrides BEFORE python starts; load_dotenv() then fills
+# the gaps from .env without overriding - see the header of .env.dev
+EnvironmentFile=/home/dain/chordial-mvp/.env.dev
+ExecStart=/home/dain/.local/bin/poetry run python main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
