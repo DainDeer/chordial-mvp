@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.dev
 .cache/
 .poetry/
 *.db

@@ -40,6 +40,7 @@ from src.providers.platforms.telegram_bot import (  # noqa: E402
     LINKED_REPLY,
     INVALID_CODE_REPLY,
     ALREADY_LINKED_REPLY,
+    OPEN_ONBOARDING_HELLO,
     _TELEGRAM_MAX_LENGTH,
 )
 from src.providers.platforms.base import UndeliverableError  # noqa: E402
@@ -224,6 +225,60 @@ def test_stranger_bad_code_gets_invalid_reply():
     update = _update("ABCD2345")
     run(iface._on_message(update, _ctx()))
     assert update.message.replies == [INVALID_CODE_REPLY]
+
+
+# --- inbound: open onboarding (TELEGRAM_OPEN_ONBOARDING) ---------------------------
+
+
+def test_open_onboarding_stranger_reaches_chat_service(monkeypatch):
+    """with the flag on, a stranger's dm flows into chat_service exactly like
+    a discord dm - user creation + introduction are chat_service's job."""
+    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
+    chat = FakeChatService(reply="welcome to the forest!")
+    iface = _interface(chat=chat)
+    update = _update("hello?? who are you")
+    run(iface._on_message(update, _ctx()))
+
+    assert len(chat.received) == 1
+    assert chat.received[0].content == "hello?? who are you"
+    assert update.message.replies == []           # no stranger wall
+    assert update.effective_chat.sent == ["welcome to the forest!"]
+
+
+def test_open_onboarding_code_shaped_text_still_redeems(monkeypatch):
+    """linking beats onboarding: a code-shaped message from a stranger is a
+    redemption attempt even when onboarding is open (never a model call)."""
+    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
+    chat = FakeChatService()
+    links = FakeLinkService(LinkResult.LINKED)
+    iface = _interface(chat=chat, links=links)
+    update = _update("ABCD2345")
+    run(iface._on_message(update, _ctx()))
+
+    assert links.redeemed and chat.received == []
+
+
+def test_open_onboarding_bare_start_gets_hello_not_stranger_wall(monkeypatch):
+    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
+    chat = FakeChatService()
+    iface = _interface(chat=chat)
+    update = _update("/start")
+    run(iface._on_start(update, _ctx()))
+
+    assert update.message.replies == [OPEN_ONBOARDING_HELLO]
+    assert chat.received == []                    # static line, no model call
+
+
+def test_open_onboarding_group_strangers_still_ignored(monkeypatch):
+    """the flag is DM-only: the crew room stays known-users-only, silent."""
+    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
+    chat = FakeChatService()
+    iface = _interface(chat=chat, group_chat_id="-100", deduper=UpdateDeduper())
+    update = _group_update("infiltrating the group", chat_id=-100)
+    run(iface._on_group_message(update, _ctx()))
+
+    assert chat.received == []
+    assert update.message.replies == []
 
 
 def test_known_user_flows_to_chat_service_with_reply():

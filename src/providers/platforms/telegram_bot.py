@@ -104,6 +104,12 @@ _LINK_CODE_RE = re.compile(r"^[A-Z2-9]{8}$")
 # (t.me/<bot>?start=<this>). MUST match the value intro_tools._deep_link builds.
 _MEET_PAYLOAD = "meet"
 
+# the bare-/start greeting when TELEGRAM_OPEN_ONBOARDING is on: static (no
+# model call) - their first real message is what creates the user
+OPEN_ONBOARDING_HELLO = (
+    "hi! we haven't met yet 💜 say anything and we'll get started."
+)
+
 STRANGER_REPLY = (
     "hi! i'm chordial — a personal companion, so i only chat with people i "
     "already know. if that's you, ask me for a link code on our usual "
@@ -269,7 +275,7 @@ class TelegramInterface(BaseInterface):
                 )
                 await self._send_chunked(update, reply)
             else:
-                await update.message.reply_text(STRANGER_REPLY)
+                await update.message.reply_text(self._stranger_start_reply())
             return
 
         if payload:
@@ -279,7 +285,17 @@ class TelegramInterface(BaseInterface):
         if await self._is_known(str(user.id)):
             await update.message.reply_text(ALREADY_LINKED_REPLY)
         else:
-            await update.message.reply_text(STRANGER_REPLY)
+            await update.message.reply_text(self._stranger_start_reply())
+
+    @staticmethod
+    def _stranger_start_reply() -> str:
+        """what an unknown user's bare /start gets. /start carries no user
+        text worth handing the model, so even with open onboarding it stays a
+        static line - the invitation to say something IS the onboarding door
+        (their first real message creates the user and starts the intro)."""
+        if Config.TELEGRAM_OPEN_ONBOARDING:
+            return OPEN_ONBOARDING_HELLO
+        return STRANGER_REPLY
 
     async def _send_chunked(self, update, text) -> None:
         """send a (possibly long) reply as telegram-sized chunks, paced under
@@ -299,14 +315,22 @@ class TelegramInterface(BaseInterface):
             return
 
         if not await self._is_known(str(user.id)):
-            # unknown stranger: NEVER reaches chat_service. a code-shaped
-            # message gets a redemption attempt; anything else, one static line.
+            # a code-shaped message is always a redemption attempt first -
+            # cross-platform linking works the same whether onboarding is
+            # open or gated
             candidate = message.text.strip().upper()
             if _LINK_CODE_RE.fullmatch(candidate):
                 await message.reply_text(await self._redeem(candidate, user))
-            else:
+                return
+            if not Config.TELEGRAM_OPEN_ONBOARDING:
+                # gated (default): a stranger NEVER reaches chat_service -
+                # no user row, no onboarding, no model call
                 await message.reply_text(STRANGER_REPLY)
-            return
+                return
+            # open onboarding: fall through into chat_service, which creates
+            # the user and starts the introduction - the same trust-on-first-
+            # message contract as a discord dm. deliberately DM-only: the
+            # group handler ignores strangers regardless of this flag.
 
         from src.models.unified_message import UnifiedMessage
 
