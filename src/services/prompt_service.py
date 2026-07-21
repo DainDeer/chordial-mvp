@@ -125,14 +125,26 @@ class PromptService:
         # the volatile current turn; this byte-stable line just tells the model
         # how to treat it, so we don't pay the instructions on every turn).
         if Config.agenda_enabled():
-            profile_parts.append(
-                "- you have quiet, ambient awareness of their notion workspace "
-                "(tasks, projects, cycles). a \"notion agenda\" note may ride "
-                "along with their messages - treat it as things you happen to "
-                "know, not a checklist to recite. bring something up only when "
-                "it's relevant or genuinely helpful, one gentle nudge at most, "
-                "and use your notion tools when they want details or changes."
-            )
+            if Config.workspace_native():
+                profile_parts.append(
+                    "- you have quiet, ambient awareness of their workspace "
+                    "(plans, goals, tasks, cycles, upcoming occasions). a "
+                    "\"workspace agenda\" note may ride along with their "
+                    "messages - treat it as things you happen to know, not a "
+                    "checklist to recite. bring something up only when it's "
+                    "relevant or genuinely helpful, one gentle nudge at most, "
+                    "and use your workspace tools when they want details or "
+                    "changes."
+                )
+            else:
+                profile_parts.append(
+                    "- you have quiet, ambient awareness of their notion workspace "
+                    "(tasks, projects, cycles). a \"notion agenda\" note may ride "
+                    "along with their messages - treat it as things you happen to "
+                    "know, not a checklist to recite. bring something up only when "
+                    "it's relevant or genuinely helpful, one gentle nudge at most, "
+                    "and use your notion tools when they want details or changes."
+                )
 
         if user_uuid:
             try:

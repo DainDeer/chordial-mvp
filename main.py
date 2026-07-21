@@ -196,10 +196,16 @@ async def main():
     # wired up when notion is configured and the feature flag is on.
     agenda_service = None
     if Config.agenda_enabled():
-        from src.services.notion.snapshot_service import AgendaSnapshotService
+        if Config.workspace_native():
+            from src.services.workspace.agenda import WorkspaceAgenda
 
-        agenda_service = AgendaSnapshotService()
-        logger.info("agenda snapshot service enabled")
+            agenda_service = WorkspaceAgenda()
+            logger.info("native workspace agenda enabled (live queries)")
+        else:
+            from src.services.notion.snapshot_service import AgendaSnapshotService
+
+            agenda_service = AgendaSnapshotService()
+            logger.info("agenda snapshot service enabled")
 
     # the outbound router is constructed early (before the orchestrator, which
     # borrows router.deliver for out-of-band sends like the platform-switch

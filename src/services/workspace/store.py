@@ -419,6 +419,7 @@ class WorkspaceStore:
     def list_tasks(self, user_uuid: str, *, status: Optional[str] = None,
                    plan_id: Optional[int] = None, goal_id: Optional[int] = None,
                    cycle_id: Optional[int] = None, scheduled_on=None,
+                   scheduled_on_or_after=None, scheduled_on_or_before=None,
                    include_closed: bool = False, limit: Optional[int] = None) -> list[dict]:
         with get_db() as db:
             q = db.query(Task).filter(Task.user_uuid == user_uuid)
@@ -432,7 +433,12 @@ class WorkspaceStore:
                     q = q.filter(col == val)
             if scheduled_on is not None:
                 q = q.filter(Task.scheduled == _coerce_date(scheduled_on))
-            q = q.order_by(Task.id)
+            if scheduled_on_or_after is not None:
+                q = q.filter(Task.scheduled >= _coerce_date(scheduled_on_or_after))
+            if scheduled_on_or_before is not None:
+                q = q.filter(Task.scheduled <= _coerce_date(scheduled_on_or_before))
+            # scheduled-date order (nulls last), then id - the legacy list order
+            q = q.order_by(Task.scheduled.is_(None), Task.scheduled, Task.id)
             if limit:
                 q = q.limit(limit)
             rows = q.all()
