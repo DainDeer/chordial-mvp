@@ -53,6 +53,22 @@ class Config:
             return cls.OPENAI_UTILITY_MODEL
         raise ValueError(f"unknown AI provider: {provider_name}")
 
+    # workspace backend: which system of record the task tools + agenda run
+    # against. "notion" = the legacy dainframe integration; "native" = the
+    # in-db workspace (docs/NATIVE_WORKSPACE_DESIGN.md). a transition flag
+    # with a scheduled death (phase D deletes the notion branch), not a
+    # permanent abstraction.
+    WORKSPACE_BACKEND = os.getenv("WORKSPACE_BACKEND", "notion").lower()
+    # cap rows returned by any single workspace list_* call (keeps prompts
+    # lean); inherits the notion default so behavior doesn't shift at cutover
+    WORKSPACE_MAX_PAGE_SIZE = int(
+        os.getenv("WORKSPACE_MAX_PAGE_SIZE", os.getenv("NOTION_MAX_PAGE_SIZE", "25"))
+    )
+
+    @classmethod
+    def workspace_native(cls) -> bool:
+        return cls.WORKSPACE_BACKEND == "native"
+
     # notion (the dainframe workspace)
     # an internal integration token: https://www.notion.so/my-integrations
     # when unset, notion tools are simply not registered (chordial still runs).
@@ -87,6 +103,10 @@ class Config:
 
     @classmethod
     def agenda_enabled(cls) -> bool:
+        # the native agenda needs no api key - just the flag; the notion
+        # agenda additionally needs the integration configured
+        if cls.workspace_native():
+            return cls.AGENDA_ENABLED
         return cls.notion_enabled() and cls.AGENDA_ENABLED
 
     # completion reconciler: after the companion replies, a cheap utility-model

@@ -65,6 +65,7 @@ _LEGACY_ALIASES = {
     "plan": {
         "to_do": "proposed",        # never valid for plans, but harmless
         "not_started": "proposed",  # legacy PROJECT_STATUS
+        "in_progress": "active",    # legacy PROJECT_STATUS "In progress"
         "recurring": "active",      # legacy: recurring projects become active+loose
         "done": "complete",
     },

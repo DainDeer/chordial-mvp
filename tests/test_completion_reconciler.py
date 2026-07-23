@@ -261,3 +261,51 @@ def test_reconciler_does_not_run_on_scheduled_tick(db):
     run(orch.handle(Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord")))
     assert provider.calls == 0   # reconciler only runs on user messages
     assert record == []
+
+
+# --- native backend end-to-end (workspace phase B) ----------------------------
+
+
+def test_native_backend_end_to_end(monkeypatch):
+    """the whole loop against the NATIVE workspace, no notion anywhere: the
+    reconciler reads WorkspaceAgenda's live payload, echoes a public id (t1)
+    into the real update_task tool, and the Done mark (+ closed_at) lands in
+    the tasks table via the store."""
+    from datetime import date
+
+    from config import Config
+    from src.services.tools import build_default_registry
+    from src.services.workspace import get_store
+    from src.services.workspace.agenda import WorkspaceAgenda
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    engine = create_engine(f"sqlite:///{path}",
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
+    monkeypatch.setattr(Config, "WORKSPACE_BACKEND", "native")
+    with TestSession() as s:
+        s.add(User(uuid="u-native", timezone="UTC"))
+        s.commit()
+
+    store = get_store()
+    store.create_task("u-native", "go for a walk",
+                      scheduled=date.today().isoformat())
+
+    svc = CompletionReconcilerService(
+        provider=FakeProvider('{"completed": [{"id": "t1", "why": "walked"}]}'),
+        provider_name="anthropic",
+        agenda_service=WorkspaceAgenda(),
+        tool_registry=build_default_registry(),
+        usage_recorder=NoUsage(),
+    )
+    result = run(svc.reconcile("u-native", "telegram", "i walked outside today!!"))
+
+    assert result.considered == 1
+    assert [a.name for a in result.actions] == ["update_task"]
+    assert not result.actions[0].is_error
+    done = store.list_tasks("u-native", status="done")
+    assert [t["title"] for t in done] == ["go for a walk"]
+    assert done[0]["closed_at"] is not None
+    engine.dispose()

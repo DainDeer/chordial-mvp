@@ -28,14 +28,30 @@ def build_default_registry() -> ToolRegistry:
     registry.register(COMPLETE_INTRODUCTION)
     registry.register(LIST_AVAILABLE_GUIDES)
 
-    if Config.notion_enabled():
+    # the v3 workspace additions (goals/wins/check-ins/notes/occasions) are
+    # native-DB-backed with no notion dependency, so they register under BOTH
+    # backends - persona-card allowlists (mochi's jot, log_occasion) stay
+    # valid regardless of WORKSPACE_BACKEND.
+    from .workspace_tools import WORKSPACE_CORE_TOOLS, WORKSPACE_EXTRA_TOOLS
+    for tool in WORKSPACE_EXTRA_TOOLS:
+        registry.register(tool)
+
+    if Config.workspace_native():
+        # the task/plan/cycle surface, backed by the native store. same 9
+        # legacy names as the notion versions (+ plan-named aliases), so
+        # everything downstream - reconciler included - is untouched.
+        for tool in WORKSPACE_CORE_TOOLS:
+            registry.register(tool)
+        logger.info("native workspace tools enabled (%d registered)",
+                    len(WORKSPACE_CORE_TOOLS) + len(WORKSPACE_EXTRA_TOOLS))
+    elif Config.notion_enabled():
         # imported lazily so the app runs (and tests pass) without a notion key.
         from .notion_tools import NOTION_TOOLS
         for tool in NOTION_TOOLS:
             registry.register(tool)
         logger.info("notion tools enabled (%d registered)", len(NOTION_TOOLS))
     else:
-        logger.info("notion tools disabled (no NOTION_API_KEY set)")
+        logger.info("task tools disabled (backend=notion, no NOTION_API_KEY set)")
 
     if Config.telegram_linking_enabled():
         # config-stable gating (like notion): the tool's bytes only change at
