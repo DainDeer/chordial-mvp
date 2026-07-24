@@ -141,6 +141,22 @@ class Orchestrator:
                 deliverable.refused = True
             elif outcome.errored:
                 deliverable.errored = True
+            elif not outcome.text and stimulus.kind in ("user_message", "introduction"):
+                # no text, no refusal, no explicit error - on a turn that OWES
+                # the user a reply. (historically: adaptive thinking consumed
+                # the whole max_tokens budget and the empty turn fell through
+                # every branch silently - nothing sent, errored never set, the
+                # user stared at a companion that just... didn't answer.)
+                # mark it errored so the caller's graceful fallback fires in
+                # THIS turn, and keep any tool actions that did happen (their
+                # mutations are already real). silent-by-design activations
+                # (the curator, a quiet scheduled tick) still fall through.
+                logger.error(
+                    "agent '%s' produced no deliverable text for a %s; "
+                    "marking errored", line.speaker, stimulus.kind,
+                )
+                await self._record_actions(log, agent, outcome, stimulus)
+                deliverable.errored = True
             elif outcome.text:
                 # Tool mutations have already happened, so keep their durable
                 # action trail even when the reply itself cannot be delivered.
