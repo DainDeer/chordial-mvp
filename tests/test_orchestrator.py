@@ -619,3 +619,45 @@ def test_group_briefing_reflects_scope_and_cue(db, monkeypatch):
     b = tempo.briefings[0]
     assert b.scope == "group"
     assert b.style == "full"
+
+
+# --- empty outcomes never fall through silently -------------------------------
+
+
+def test_empty_outcome_on_user_message_marks_errored(db):
+    """no text, no refusal, no error - on a turn that owes a reply. this used
+    to fall through every branch: nothing delivered, errored never set, and
+    the user just got silence. it must surface as errored so the caller's
+    graceful fallback fires in the same turn."""
+    companion = RecordingAgent(outcome=AgentOutcome(text=None))
+    orch = _orch({"chordial": companion})
+    d = run(
+        orch.handle(
+            Stimulus(
+                kind="user_message",
+                user_uuid="u1",
+                platform="discord",
+                content="hello?",
+                user_name="dain",
+                user_timezone="UTC",
+            )
+        )
+    )
+    assert d.errored is True
+    assert d.text is None
+
+
+def test_curator_silence_is_still_not_an_error(db):
+    """the curator's text=None is by design - the guardrail must not turn
+    silent-by-design activations into user-facing errors."""
+    orch = _orch({"curator": FakeCurator()})
+    d = run(orch.handle(Stimulus(kind="curation_due", user_uuid="u1")))
+    assert d.errored is False
+
+
+def test_empty_scheduled_tick_stays_quiet_not_errored(db):
+    companion = RecordingAgent(outcome=AgentOutcome(text=None))
+    orch = _orch({"chordial": companion})
+    d = run(orch.handle(
+        Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord")))
+    assert d.errored is False and d.text is None

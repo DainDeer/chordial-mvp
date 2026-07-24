@@ -348,3 +348,52 @@ def test_usage_and_trace_are_attributed_to_acting_helper():
 
     assert usage.calls[0]["helper_id"] == "tempo"
     assert usage.traces[0]["helper_id"] == "tempo"
+
+
+# --- empty max_tokens responses (thinking ate the budget) ---------------------
+
+
+def test_empty_max_tokens_response_retries_once_with_doubled_budget():
+    """adaptive thinking can consume the whole max_tokens budget and emit zero
+    text. the loop must retry once with the ceiling doubled instead of handing
+    the orchestrator a silent turn."""
+    reg = ToolRegistry()
+    provider = ScriptedProvider([
+        _resp(None, stop_reason="max_tokens"),
+        _resp("okay here's my actual reply!"),
+    ])
+    request = _request()
+    before = request.max_tokens
+    result = run(_agent(provider, reg).run(
+        request, user_uuid="u1", platform="discord",
+        turn_kind="conversation", acting_helper="chordial"))
+
+    assert provider.calls == 2
+    assert request.max_tokens == before * 2
+    assert result.text == "okay here's my actual reply!"
+
+
+def test_empty_max_tokens_retries_exactly_once():
+    reg = ToolRegistry()
+    provider = ScriptedProvider([
+        _resp(None, stop_reason="max_tokens"),
+        _resp(None, stop_reason="max_tokens"),
+    ])
+    result = run(_agent(provider, reg).run(
+        _request(), user_uuid="u1", platform="discord",
+        turn_kind="conversation", acting_helper="chordial"))
+
+    assert provider.calls == 2          # one retry, never a loop
+    assert not result.text              # still empty - the orchestrator's job now
+
+
+def test_empty_end_turn_response_is_not_retried():
+    """an empty response that ISN'T a budget failure (end_turn) stays a single
+    call - the retry is targeted, not a blanket second chance."""
+    reg = ToolRegistry()
+    provider = ScriptedProvider([_resp(None, stop_reason="end_turn")])
+    result = run(_agent(provider, reg).run(
+        _request(), user_uuid="u1", platform="discord",
+        turn_kind="conversation", acting_helper="chordial"))
+    assert provider.calls == 1
+    assert not result.text

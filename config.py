@@ -31,8 +31,10 @@ class Config:
     # on thinking and emit ZERO reply text (stop_reason=max_tokens, empty
     # response -> the user gets the error fallback). it's a ceiling you only pay
     # for when tokens are actually generated, so keep it generous; a normal
-    # short reply still costs a few hundred tokens.
-    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "4096"))
+    # short reply still costs a few hundred tokens. even at 4096 this bit in
+    # practice, so: 8192 default + AgentService retries an empty max_tokens
+    # response once with the ceiling doubled.
+    CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "8192"))
 
     # openai (kept as an alternate provider)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

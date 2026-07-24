@@ -93,6 +93,12 @@ class AgentService:
         total = Usage()
         tool_trace: list = []
         stop_reason: Optional[str] = None
+        # one-shot budget retry: with adaptive thinking, max_tokens covers
+        # thinking + reply TOGETHER, so an instruction-heavy turn can burn the
+        # whole budget thinking and emit zero text (stop_reason=max_tokens,
+        # empty response). when that happens we double the ceiling and retry
+        # once - the ceiling only costs when tokens are actually generated.
+        budget_retried = False
         # user-facing text the model wrote, in order, across every iteration.
         # a turn can carry both a reply and tool calls; we keep the reply instead
         # of letting a later iteration's text replace it.
@@ -135,6 +141,19 @@ class AgentService:
 
             if not response.tool_calls:
                 final_text = self._join(collected_text)
+                if (
+                    not final_text
+                    and response.stop_reason == "max_tokens"
+                    and not budget_retried
+                ):
+                    budget_retried = True
+                    request.max_tokens = request.max_tokens * 2
+                    logger.warning(
+                        "empty max_tokens response (thinking consumed the "
+                        "budget) for user %s - retrying once with max_tokens=%s",
+                        user_uuid, request.max_tokens,
+                    )
+                    continue
                 self._save_trace(
                     user_uuid,
                     platform,
@@ -220,6 +239,21 @@ class AgentService:
         final = await self.provider.create_message(request)
         total = total + final.usage
         self._record_call(user_uuid, platform, turn_kind, final.usage, acting_helper)
+        if (
+            not final.text
+            and final.stop_reason == "max_tokens"
+            and not budget_retried
+        ):
+            # same thinking-ate-the-budget failure on the forced final answer
+            budget_retried = True
+            request.max_tokens = request.max_tokens * 2
+            logger.warning(
+                "empty max_tokens response on forced final answer for user %s "
+                "- retrying once with max_tokens=%s", user_uuid, request.max_tokens,
+            )
+            final = await self.provider.create_message(request)
+            total = total + final.usage
+            self._record_call(user_uuid, platform, turn_kind, final.usage, acting_helper)
         stop_reason = final.stop_reason
         refused = final.stop_reason == "refusal"
         if final.text:
