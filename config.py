@@ -14,8 +14,11 @@ class Config:
 
     # anthropic
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-    # chat model: the persona-facing model the user talks to
-    CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-sonnet-5")
+    # chat model: the persona-facing model the user talks to. opus 4.6
+    # ($5/$25 per MTok vs sonnet-5's $3/$15) - the companion IS the product,
+    # so the conversational model gets the capability budget. note
+    # claude-opus-4-8 is the same price as 4.6 if we ever want the newer one.
+    CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-opus-4-6")
     # utility models: cheap models for background jobs (summaries,
     # classification, etc). UTILITY_MODEL remains a backwards-compatible
     # override for deployments that predate provider-specific settings.
