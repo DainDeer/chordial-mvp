@@ -23,8 +23,12 @@ class Config:
     ANTHROPIC_UTILITY_MODEL = os.getenv(
         "ANTHROPIC_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "claude-haiku-4-5"
     )
-    # effort for chat turns: low | medium | high (anthropic only; maps to output_config.effort)
-    CHAT_EFFORT = os.getenv("CHAT_EFFORT", "low")
+    # effort for chat turns: low | medium | high (anthropic only; maps to
+    # output_config.effort). default high: low produced hollow/empty turns in
+    # prod (thinking got starved, replies went generic or blank); the persona
+    # work is exactly where reasoning depth shows. dial down via env if cost
+    # ever matters more than voice.
+    CHAT_EFFORT = os.getenv("CHAT_EFFORT", "high")
     # max output tokens for a chat/scheduled turn. CRITICAL: with adaptive
     # thinking on, this cap covers thinking + reply TOGETHER - at 2048 an
     # instruction-heavy turn (e.g. an introduction) could burn the whole budget

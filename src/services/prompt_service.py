@@ -12,10 +12,13 @@ stability zones (most stable first):
                        into replies), then the current turn carrying all the
                        volatile "now" context
 
-cache breakpoints go on system block 2 (caches tools + system) and on the last
-message before the current turn (caches conversation history). the current turn
-- the only volatile part - sits after every breakpoint, so it invalidates
-nothing before it.
+cache breakpoints go on system block 1 (caches tools + frozen persona), system
+block 2 (adds the profile), and the last message before the current turn
+(caches conversation history). block 1 gets its own breakpoint so a profile
+change (set_preference, a new core memory) rewrites only block 2's ~200 tokens
+- without it, every profile edit re-wrote the whole tools+persona prefix. the
+current turn - the only volatile part - sits after every breakpoint, so it
+invalidates nothing before it.
 
 tool ACTIONS from past turns render as bracketed blocks folded into the next
 USER-side turn (never onto assistant turns - that pattern taught the model to
@@ -112,9 +115,10 @@ class PromptService:
         user_uuid: Optional[str],
         user_timezone: str,
     ) -> List[SystemBlock]:
-        """frozen persona (block 1) + user profile (block 2). the cache
-        breakpoint goes on block 2, covering tools + all system content."""
-        blocks = [SystemBlock(text=self.persona.persona_block)]
+        """frozen persona (block 1) + user profile (block 2). breakpoints on
+        BOTH: block 1's survives profile changes (tools + persona are the
+        expensive stable prefix), block 2's covers the profile itself."""
+        blocks = [SystemBlock(text=self.persona.persona_block, cache=True)]
 
         profile_parts = ["about the person you're talking with:"]
         if user_name:
