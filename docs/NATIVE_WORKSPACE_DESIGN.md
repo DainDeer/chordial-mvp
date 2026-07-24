@@ -398,6 +398,14 @@ has zero prompt-cache impact.
 
 ## 6. One-time import: dainframe → native
 
+> **SUPERSEDED 2026-07-21 — the importer will never be built.** Dain chose
+> a fully fresh start for the prod launch (NATIVE_MIGRATION_PLAN §0
+> revision note): a new empty database, no workspace import, no
+> conversation/memory carry-over. The Notion workspace and old prod data
+> remain frozen archives. The section below is kept for the record of what
+> the import *would* have been; `notion_page_id` columns remain in the
+> schema as vestiges (droppable in phase D).
+
 `scripts/import_notion_workspace.py` — the last consumer of
 `notion/client.py`, folding in V3_DESIGN §5's interactive Projects→Plans
 migration (that design survives intact; only the destination changed from
