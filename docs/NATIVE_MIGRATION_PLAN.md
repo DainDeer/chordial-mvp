@@ -13,19 +13,25 @@ the **how and in what order**.*
 ## 0. Shape of the train
 
 ```
-P  Postgres migration        app data moves; Notion untouched     2–4 days
-A  workspace schema & store  8 tables born on Postgres            4–5 days
-B  workspace tools & agenda  WORKSPACE_BACKEND gate, digest v2    4–5 days
-C  Notion import & cutover   dainframe → native; flag flips       2–3 days
+P  Postgres migration        app data moves; Notion untouched     2–4 days   DONE
+A  workspace schema & store  8 tables born on Postgres            4–5 days   DONE
+B  workspace tools & agenda  WORKSPACE_BACKEND gate, digest v2    4–5 days   DONE
+C  fresh-start prod launch   NEW empty pg database, native day 1  ~half day
 D  burn the boats            Notion code + snapshot table deleted 1–2 days
 ```
 
-**Total ~3–4 weeks.** Postgres goes *first*, deliberately: the workspace
-tables are then born on their final home, the one-time Notion import runs
-exactly once against the real database, and the new alembic revisions are
-written dialect-clean from day one instead of retrofitted. The two risky
-moments (P cutover, C cutover) are kept **at least a week apart** so a
-problem in one is never confounded with the other.
+**Revision 2026-07-21 — phase C is no longer an import.** Dain chose a
+fully fresh start for the prod (v3) launch: a brand-new empty database — no
+Notion workspace import, no conversation/memory carry-over. The old prod
+data (sqlite and any postgres copies) is kept as frozen archives, never
+imported. The dainframe importer is **cancelled, never to be built**; the
+`--dry-run` yaml machinery, `--import-bodies`, and the phase-C rollback
+window all die with it. `notion_page_id` columns remain in the schema as
+harmless vestiges (phase D may drop them). Launch day is the v3 ensemble
+launch: all six helper bots live, `TELEGRAM_OPEN_ONBOARDING` (or discord)
+brings Dain in through the real introduction flow, and the workspace grows
+from the first conversation — the same experience the dev daemon's
+`dev_db.py fresh` state proved out.
 
 ---
 
@@ -204,21 +210,32 @@ sequencing notes only:
   gate, persona allowlists (mochi: read-only + `jot` + `log_occasion`).
   Deploy note: tool-definition bytes change ⇒ one prompt-cache break,
   routine.
-- **C — import & cutover (2–3 days):** importer with `--dry-run` yaml
-  review → `--apply`, idempotent on `notion_page_id` provenance (all
-  imported entities, including `--import-bodies` notes). Runbook per design
-  doc §6 — **the app is stopped** for import + flag flip, not merely left
-  unchatted. `WORKSPACE_BACKEND=notion` remains the rollback lever, but be
-  honest about its window: it's clean only until the **first native
-  workspace write**; after that, rolling back means hand-replaying native
-  task/plan changes into Notion (tractable — list rows with
-  `updated_at > cutover` — but manual). Practically: decide within the
-  first day or two, not the full week the code sticks around.
-- **D — burn the boats (1–2 days, ~a week after C):** delete
+- **C — fresh-start prod launch (~half a day):** *replaces the cancelled
+  Notion import (revision note in §0).* On the server:
+  1. `createdb chordial_prod` (a NEW database — the migrated-from-sqlite
+     one, if present, stays frozen as an archive; never reuse it).
+  2. Create the schema the §2.3 way — `Base.metadata.create_all()` +
+     `alembic stamp head` (an empty pg database must NOT replay the
+     sqlite-shaped chain; same landmine as ever). Two commands, already
+     proven on the Mac cutover.
+  3. Prod `.env`: `DATABASE_URL` → the new db, `WORKSPACE_BACKEND=native`,
+     `NOTION_API_KEY` removed, all six helper bot tokens, and the chosen
+     onboarding door (`TELEGRAM_OPEN_ONBOARDING=true` until first contact,
+     then off — or start via discord).
+  4. Start under systemd; say hello; meet the guides. The workspace grows
+     from message one.
+  5. Point the nightly `pg_backup.sh` at the new database and rehearse one
+     restore.
+  **Rollback:** nothing to roll back — no data is migrated. If launch day
+  goes sideways, stop the daemon and start again with a fresh db; the
+  archives are untouched.
+- **D — burn the boats (1–2 days, anytime after C):** delete
   `src/services/notion/`, `notion_tools.py`, snapshot machinery +
   `agenda_snapshots` drop revision, `NOTION_*` config, old tests/docs;
   write `docs/WORKSPACE.md`; drop `*_project` aliases alongside the persona
-  prompt update (one deploy).
+  prompt update (one deploy). With no import to roll back to, D no longer
+  waits a week — it can ride the launch train's first cleanup pass.
+  Optionally drop the vestigial `notion_page_id` columns here too.
 
 ---
 
@@ -229,12 +246,13 @@ sequencing notes only:
 2. **A–B are independent of the v3 launch train** (disjoint files, per the
    design doc). Run in parallel if the trains don't share a keyboard;
    sequentially P→A→B otherwise.
-3. **C waits for the v3 helpers to exist and be introduced** — the
-   importer's plan→steward assignments (`music→aria`, `Writing→poet`, …)
-   land better when the stewards are real. This is the one hard gate.
-4. **One cutover at a time:** P's rollback window (sqlite repoint) should be
-   *closed* — i.e., pg stable for ≥a week — before C flips
-   `WORKSPACE_BACKEND`. Never be in two rollback windows at once.
+3. **C IS the v3 launch** (revised): with the import cancelled, phase C and
+   the v3 ensemble launch are the same event — fresh database, all six
+   bots, introductions, native workspace from message one. The old gate
+   ("C waits for helpers to be introduced") dissolves: the introductions
+   happen *during* C.
+4. **One cutover at a time** still applies in spirit: launch on a calm day,
+   with the dev daemon having recently exercised the same fresh-start path.
 
 ---
 
@@ -244,7 +262,7 @@ sequencing notes only:
 |---|---|---|
 | P cutover | repoint `DATABASE_URL` at frozen sqlite file | meaningful new writes on pg (~same day); file kept forever regardless |
 | A–B deploys | revert the deploy; additive migrations sit unused | n/a — nothing consumes the tables until C |
-| C cutover | `WORKSPACE_BACKEND=notion` (Notion left frozen, not deleted) | **first native workspace write** — clean rollback before it; manual replay of native changes into Notion after it (code itself survives until phase D, ~1 week) |
+| C launch (fresh start) | stop the daemon; start over with another fresh db — no data was migrated, archives untouched | n/a — there is nothing to roll back *to*; the fresh start is its own reset button |
 | D | git revert + the pre-D backup of `agenda_snapshots` drop | it's a deletion of already-dead code; lowest-risk phase |
 
 ---
