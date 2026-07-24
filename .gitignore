@@ -15,3 +15,8 @@ prompt_logs/
 *.log
 backups/
 .DS_Store
+
+# editor swap files
+*.swp
+*.swo
+*~
