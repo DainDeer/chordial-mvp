@@ -284,7 +284,6 @@ def test_native_backend_end_to_end(monkeypatch):
     Base.metadata.create_all(bind=engine)
     TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
-    monkeypatch.setattr(Config, "WORKSPACE_BACKEND", "native")
     with TestSession() as s:
         s.add(User(uuid="u-native", timezone="UTC"))
         s.commit()

@@ -142,8 +142,3 @@ def test_recurring_occasion_rolls_before_rendering(store):
     store.create_occasion(U1, "weekly sync", "2026-07-15", recurrence="weekly")
     digest = WorkspaceAgenda().get_digest(U1)
     assert '"weekly sync" jul 22' in digest   # rolled past the 15th to the 22nd
-
-
-def test_ensure_fresh_is_an_awaitable_noop(store):
-    import asyncio
-    assert asyncio.run(WorkspaceAgenda().ensure_fresh(U1)) is None

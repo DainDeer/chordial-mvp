@@ -280,37 +280,6 @@ class HelperState(Base):
     )
 
 
-class AgendaSnapshot(Base):
-    """rolling cache of a user's notion 'today picture' (see
-    services/notion/snapshot_service.py).
-
-    one row per user, overwritten in place: the scheduler keeps it fresh in the
-    background and the chat path reads the pre-rendered `digest` as ambient
-    context (a db read, never a synchronous notion call). history worth diffing
-    is frozen in daily_notes, not kept here.
-    """
-    __tablename__ = 'agenda_snapshots'
-
-    id = Column(Integer, primary_key=True)
-    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, unique=True)
-
-    # structured agenda rows (cycle / projects / tasks_today / tasks_overdue /
-    # tasks_in_progress / done_today) - what the daily passes diff against.
-    payload = Column(JSON, default={})
-    # pre-rendered ~150-400 token text - what conversation turns inject verbatim.
-    digest = Column(String, nullable=True)
-
-    refreshed_at = Column(DateTime, nullable=True)
-    # flipped True by notion write tools so the next background pass re-fetches.
-    is_stale = Column(Boolean, default=True)
-    # last refresh failure (kept for debugging; the digest survives the error).
-    last_error = Column(String, nullable=True)
-
-    __table_args__ = (
-        {'sqlite_autoincrement': True}
-    )
-
-
 class UsageLog(Base):
     """per-call token accounting - one row per ai api call.
 
@@ -376,7 +345,7 @@ class Plan(Base):
     cadence = Column(String, nullable=True)            # daily/weekly/loose
 
     legacy_area = Column(String, nullable=True)        # preserved dainframe Area
-    notion_page_id = Column(String, nullable=True)     # import provenance; never used at runtime
+    notion_page_id = Column(String, nullable=True)     # reserved: the row<->page mapping for the future one-way notion mirror
 
     # stamped by WorkspaceStore as a side effect of any related write (task
     # under the plan, win logged, note attached, check-in touching it) -
@@ -430,7 +399,7 @@ class Cycle(Base):
     goal = Column(String, nullable=True)    # the cycle goal, as today
     focus = Column(String, nullable=True)   # v3: negotiated balance statement
 
-    notion_page_id = Column(String, nullable=True)  # import provenance
+    notion_page_id = Column(String, nullable=True)  # reserved: the row<->page mapping for the future one-way notion mirror
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -469,7 +438,7 @@ class Task(Base):
     reschedules = Column(Integer, default=0)
     description = Column(String, nullable=True)
 
-    notion_page_id = Column(String, nullable=True)  # import provenance
+    notion_page_id = Column(String, nullable=True)  # reserved: the row<->page mapping for the future one-way notion mirror
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -562,8 +531,7 @@ class Note(Base):
     promoted_plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
     promoted_task_id = Column(Integer, ForeignKey('tasks.id'), nullable=True)
 
-    # import provenance for --import-bodies notes (the source page whose body
-    # this was) - without it, importer reruns can't tell imported from missing
+    # reserved: the row<->page mapping for the future one-way notion mirror
     notion_page_id = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

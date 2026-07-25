@@ -1,10 +1,7 @@
 """the live workspace agenda: digest + payload straight from the store.
 
-replaces the notion snapshot machinery (snapshot_service.py). that service
-existed to keep notion latency out of the chat path - a cached row, a ttl,
-staleness flags, background refresh passes. native queries are local
-microseconds, so the whole apparatus collapses into two live reads with the
-same consumer-facing surface:
+queries are local microseconds, so there's no cache, ttl, or background
+refresh - just two live reads:
 
 - get_digest(user_uuid)  -> the compact promptable "today picture" (digest
   v2: buckets, cycle + focus, plans by helper, wins this week, occasions
@@ -13,12 +10,9 @@ same consumer-facing surface:
 - get_payload(user_uuid) -> the structured buckets the completion
   reconciler reads. task ids are public ids (t42), which the reconciler
   round-trips into update_task - the native resolver parses them.
-- ensure_fresh(user_uuid) -> a no-op compatibility shim so the scheduler's
-  refresh pass works against either backend during the transition; the
-  call site goes away with the notion code in phase D.
 
-timezone semantics are ported verbatim: "today" is the user-local calendar
-date, and task.scheduled is a plain user-local date.
+timezone semantics: "today" is the user-local calendar date, and
+task.scheduled is a plain user-local date.
 """
 from __future__ import annotations
 
@@ -65,18 +59,10 @@ def user_today(user_uuid: str) -> date:
 
 
 class WorkspaceAgenda:
-    """same consumer surface as AgendaSnapshotService, no cache underneath."""
+    """digest + payload reads for the chat path and the reconciler."""
 
     def __init__(self):
         self.store = get_store()
-
-    # --- compatibility shim -------------------------------------------------
-
-    async def ensure_fresh(self, user_uuid: str) -> None:
-        """nothing to refresh - reads are live. exists so the scheduler's
-        agenda pass is backend-agnostic during the transition (phase D
-        deletes the pass along with the notion snapshot machinery)."""
-        return None
 
     # --- payload (the reconciler's view) ------------------------------------
 

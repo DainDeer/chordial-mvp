@@ -121,9 +121,8 @@ class CompletionReconcilerService:
     # --- helpers -----------------------------------------------------------
 
     def _open_tasks(self, user_uuid: str) -> List[dict]:
-        """the user's open tasks from the cached agenda snapshot (today +
-        overdue + in-progress), deduped by id. a pure db read - the snapshot is
-        kept fresh by the scheduler, never fetched from notion on this path."""
+        """the user's open tasks from the live agenda payload (today +
+        overdue + in-progress), deduped by id. a pure db read."""
         try:
             payload = self.agenda.get_payload(user_uuid)
         except Exception:

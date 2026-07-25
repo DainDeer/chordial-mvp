@@ -55,7 +55,6 @@ def registry(monkeypatch):
     Base.metadata.create_all(bind=engine)
     TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(db_mod, "SessionLocal", TestSession)
-    monkeypatch.setattr(Config, "WORKSPACE_BACKEND", "native")
     with TestSession() as s:
         s.add(User(uuid=U1, preferred_name="dain", timezone="UTC"))
         s.commit()
@@ -182,14 +181,11 @@ def test_mochi_allowlist_resolves_under_native(registry):
     assert not names & set(LEGACY_CONTRACTS), "mochi must never see task tools"
 
 
-def test_mochi_allowlist_resolves_under_notion_backend_too(monkeypatch):
-    """the v3 extras register under BOTH backends, so persona cards stay
-    valid even before the native cutover (and without a notion key)."""
-    monkeypatch.setattr(Config, "WORKSPACE_BACKEND", "notion")
-    monkeypatch.setattr(Config, "NOTION_API_KEY", None)
+def test_every_persona_allowlist_resolves():
+    """every persona card's tool allowlist must resolve against the default
+    registry - an unknown name is a wiring-time crash, so catch it here."""
     reg = build_default_registry()
-    names = {d.name for d in reg.definitions()}
-    assert {"jot", "log_occasion", "list_wins", "list_checkins"} <= names
-    assert "list_tasks" not in names   # no key -> no notion task tools
     from src.personas import load_personas
-    reg.view(load_personas()["mochi"].tools)   # must not raise
+    for card in load_personas().values():
+        if card.tools is not None:
+            reg.view(card.tools)   # must not raise
