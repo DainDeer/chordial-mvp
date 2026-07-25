@@ -366,7 +366,7 @@ class Orchestrator:
         return log.recent(self.max_history_messages, visible_to=helper_id)
 
     def _compose_ambient(self, user_uuid: str) -> Optional[str]:
-        """the ambient context for the volatile 'now' turn (notion agenda
+        """the ambient context for the volatile 'now' turn (workspace agenda
         digest; morning note joins it when daily passes land). pure db reads,
         fully guarded - any failure degrades to None, i.e. today's exact
         prompt bytes."""

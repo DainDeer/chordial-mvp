@@ -191,21 +191,15 @@ async def main():
         else:
             logger.warning(f"{provider_name} provider configured but not available")
 
-    # proactive notion awareness: a cached agenda snapshot the scheduler keeps
-    # fresh in the background and the chat path injects as ambient context. only
-    # wired up when notion is configured and the feature flag is on.
+    # proactive workspace awareness: a live agenda digest the chat path injects
+    # as ambient context. queries postgres directly - nothing cached, nothing
+    # to keep fresh.
     agenda_service = None
     if Config.agenda_enabled():
-        if Config.workspace_native():
-            from src.services.workspace.agenda import WorkspaceAgenda
+        from src.services.workspace.agenda import WorkspaceAgenda
 
-            agenda_service = WorkspaceAgenda()
-            logger.info("native workspace agenda enabled (live queries)")
-        else:
-            from src.services.notion.snapshot_service import AgendaSnapshotService
-
-            agenda_service = AgendaSnapshotService()
-            logger.info("agenda snapshot service enabled")
+        agenda_service = WorkspaceAgenda()
+        logger.info("workspace agenda enabled (live queries)")
 
     # the outbound router is constructed early (before the orchestrator, which
     # borrows router.deliver for out-of-band sends like the platform-switch

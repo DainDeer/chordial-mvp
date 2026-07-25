@@ -27,9 +27,8 @@ class SchedulerService:
         # pass; None (e.g. no ai provider configured) disables both quietly
         self.orchestrator = orchestrator
         self.user_manager = user_manager or UserManager()
-        # optional: keeps each user's notion agenda snapshot fresh (the chat
-        # path only ever reads it, so this background refresh is where notion
-        # actually gets queried)
+        # optional: the live workspace agenda (the chat path reads a digest
+        # from it; nothing here needs background refreshing)
         self.agenda_service = agenda_service
         self.default_interval_minutes = Config.DM_INTERVAL_MINUTES
         self.quiet_hours_start = Config.QUIET_HOURS_START
@@ -186,8 +185,6 @@ class SchedulerService:
         while self._running:
             try:
                 for user_uuid in await self.user_manager.get_scheduled_users():
-                    # keep the agenda snapshot warm before we (maybe) message
-                    await self._refresh_agenda(user_uuid)
                     result = await self.send_scheduled_message(user_uuid, platforms)
                     if result:
                         await self._deliver_scheduled_result(
@@ -224,23 +221,6 @@ class SchedulerService:
                 "leaving it out of conversation history",
                 user_uuid,
             )
-
-    async def _refresh_agenda(self, user_uuid: str) -> None:
-        """refresh this user's notion agenda snapshot if it's stale/expired -
-        but only outside their quiet hours. nobody's chatting overnight, so
-        there's no reason to spend notion calls keeping it warm then; it
-        catches back up within one 5-min cycle of quiet hours ending, well
-        before a human is likely to say good morning.
-        guarded - notion being slow or down must never stall message delivery."""
-        if not self.agenda_service:
-            return
-        try:
-            user_timezone = await self.user_manager.get_user_timezone(user_uuid)
-            if self._is_quiet_hours(user_timezone):
-                return
-            await self.agenda_service.ensure_fresh(user_uuid)
-        except Exception as e:
-            logger.error(f"agenda refresh failed for user {user_uuid}: {e}")
 
     async def _run_curation_pass(self) -> None:
         """let the curator tidy any user whose new memories have settled. kept

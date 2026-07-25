@@ -33,7 +33,7 @@ if _override:
         raise RuntimeError(
             f"TEST_DATABASE_URL database name must contain 'test', got: {_override}")
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import MetaData, create_engine, text
     from alembic.config import Config as AlembicConfig
     from alembic.script import ScriptDirectory
     from src.database.models import Base  # imports nothing that reads config
@@ -44,7 +44,12 @@ if _override:
     _engine = create_engine(_override)
     with _engine.begin() as _conn:
         _conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-        Base.metadata.drop_all(_conn)
+        # drop what's actually IN the database, not what the current models
+        # know about - a leftover table from a since-deleted model would
+        # otherwise survive and block drops of tables it references.
+        _reflected = MetaData()
+        _reflected.reflect(bind=_conn)
+        _reflected.drop_all(_conn)
         Base.metadata.create_all(_conn)
         _conn.execute(text(
             "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL, "

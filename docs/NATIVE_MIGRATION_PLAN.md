@@ -229,13 +229,21 @@ sequencing notes only:
   **Rollback:** nothing to roll back — no data is migrated. If launch day
   goes sideways, stop the daemon and start again with a fresh db; the
   archives are untouched.
-- **D — burn the boats (1–2 days, anytime after C):** delete
-  `src/services/notion/`, `notion_tools.py`, snapshot machinery +
-  `agenda_snapshots` drop revision, `NOTION_*` config, old tests/docs;
-  write `docs/WORKSPACE.md`; drop `*_project` aliases alongside the persona
-  prompt update (one deploy). With no import to roll back to, D no longer
-  waits a week — it can ride the launch train's first cleanup pass.
-  Optionally drop the vestigial `notion_page_id` columns here too.
+- **D — decouple, don't burn (REDEFINED 2026-07-25, executed same day):**
+  Dain's call: notion code survives as raw material for a future *optional
+  extension* — a per-user, **one-way mirror** that pushes workspace items
+  (plans, goals, wins, notes, occasions; not check-ins, not conversation)
+  into a user's own notion via their own integration token. Postgres stays
+  the only source of truth; notion-side edits are ignored. So phase D
+  became: delete the *backend-role* code (`schema.py`,
+  `snapshot_service.py`, `notion_tools.py`, the `WORKSPACE_BACKEND` flag,
+  `agenda_snapshots` + its drop revision, dainframe db-id config, backend
+  tests) while **keeping `notion/client.py`** (it already takes `api_key`
+  per-instance) and **keeping the `notion_page_id` columns** — they are
+  the row↔page mapping the mirror will use. `docs/WORKSPACE.md` written.
+  The `*_project` aliases stay until the persona-prompt pass (v4) touches
+  those bytes anyway. The mirror itself is future work with its own
+  design doc; nothing in the live service imports notion today.
 
 ---
 

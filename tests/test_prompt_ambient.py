@@ -48,7 +48,7 @@ def _svc():
     return PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
 
 
-DIGEST = "notion agenda: today (1): \"book dentist\" [To do]"
+DIGEST = "workspace agenda: today (1): \"book dentist\" [To do]"
 
 
 def test_ambient_appears_only_in_current_turn():

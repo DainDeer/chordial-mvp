@@ -1,23 +1,20 @@
-"""workspace tools: the native replacement for notion_tools.py.
+"""the model-facing workspace tool surface (docs/WORKSPACE.md).
 
-two groups with different registration rules (see tools/__init__.py):
+two groups, both always registered (see tools/__init__.py):
 
-- WORKSPACE_CORE_TOOLS - the 9 legacy notion tool names (list/create/update x
-  tasks/projects/cycles) with their input contracts preserved, plus the
-  plan-named aliases. registered only when WORKSPACE_BACKEND=native (they
-  compete with the notion versions for the same names). the *_project tools
-  operate on PLANS under the hood; the aliases drop with the notion code in
-  phase D.
+- WORKSPACE_CORE_TOOLS - the task/plan/cycle surface: list/create/update x
+  tasks/projects/cycles (the v2-era names, contracts preserved) plus the
+  plan-named aliases. the *_project tools operate on PLANS under the hood;
+  the aliases retire with the v4 persona-prompt pass, which touches those
+  prompt bytes anyway.
 - WORKSPACE_EXTRA_TOOLS - the v3 additions (goals, wins, check-ins, notes,
-  occasions). native-DB-backed with no notion dependency, so they register
-  under BOTH backends - which keeps persona-card allowlists (mochi's
-  jot/log_occasion) valid regardless of backend.
+  occasions).
 
-conventions carried over from notion_tools: handlers accept friendly
-arguments (names or public ids, display-vocab statuses), name resolution
-never guesses between look-alikes (ambiguity returns the candidates as the
-tool result), list_* tools don't record events, and the store enforces
-every invariant - handlers translate, they don't decide.
+conventions: handlers accept friendly arguments (names or public ids,
+display-vocab statuses), name resolution never guesses between look-alikes
+(ambiguity returns the candidates as the tool result), list_* tools don't
+record events, and the store enforces every invariant - handlers translate,
+they don't decide.
 
 `helper` attribution on wins/check-ins/notes/occasions comes from the
 acting-helper contextvar (the save_memory precedent), never from the model.
@@ -893,8 +890,8 @@ UPDATE_OCCASION = _tool(
 )
 
 
-# the 9 legacy names + plan aliases: registered only when the backend is
-# native (they compete with notion_tools for the same names)
+# the task/plan/cycle surface (the v2-era names plus plan aliases; the
+# aliases retire with the v4 persona-prompt pass)
 WORKSPACE_CORE_TOOLS = [
     LIST_TASKS, CREATE_TASK, UPDATE_TASK,
     LIST_PROJECTS, CREATE_PROJECT, UPDATE_PROJECT,
@@ -902,8 +899,7 @@ WORKSPACE_CORE_TOOLS = [
     LIST_CYCLES, CREATE_CYCLE, UPDATE_CYCLE,
 ]
 
-# the v3 additions: native-DB-backed, no notion dependency - registered
-# under BOTH backends so persona-card allowlists stay valid everywhere
+# the v3 additions
 WORKSPACE_EXTRA_TOOLS = [
     CREATE_GOAL, UPDATE_GOAL, LIST_GOALS,
     LOG_WIN, LIST_WINS,
