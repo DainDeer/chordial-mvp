@@ -310,7 +310,10 @@ def test_reads_and_errors_are_not_recorded(db):
     assert kinds == ["message", "message"]  # no action events at all
 
 
-def test_refused_turn_persists_nothing_after_user_message(db):
+def test_refused_turn_records_executed_actions_but_no_prose(db):
+    """the asymmetric invariant (dainframe DESIGN.md §11.16): a refusal adds
+    no conversational prose, but a mutation that already executed keeps its
+    action trail - erasing it would make the shared record false."""
     orch = _orchestrator(_outcome(text=None, refused=True, actions=[
         ExecutedAction("create_task", {"title": "z"}, "created", False, False, True),
     ]))
@@ -318,7 +321,51 @@ def test_refused_turn_persists_nothing_after_user_message(db):
 
     assert deliverable.refused is True
     kinds = [k for k, _, _ in _events(db)]
+    assert kinds == ["message", "action"]   # the action survives; no reply prose
+
+
+def test_refused_turn_with_no_actions_persists_only_the_user_message(db):
+    orch = _orchestrator(_outcome(text=None, refused=True))
+    deliverable = run(orch.handle(_stimulus()))
+
+    assert deliverable.refused is True
+    kinds = [k for k, _, _ in _events(db)]
     assert kinds == ["message"]  # only the inbound user message
+
+
+def test_provider_failure_after_tools_keeps_the_action_trail(db):
+    """the reviewer-reproduced case: create_task succeeds, then the next
+    provider call dies. the loop raises AgentExecutionError carrying the
+    partial actions; the orchestrator must record them, not drop them."""
+    from dainframe.loop.agent_loop import AgentExecutionError
+    from src.managers.user_manager import UserManager
+    from src.services.orchestrator import Orchestrator
+
+    class DyingAgent:
+        name = "chordial"
+
+        async def act(self, briefing):
+            raise AgentExecutionError(
+                "provider died mid-run",
+                actions=(
+                    ExecutedAction("create_task", {"title": "w"}, "created",
+                                   False, False, True),
+                ),
+                retryable=True,
+            )
+
+    orch = Orchestrator(
+        agents={"chordial": DyingAgent()},
+        user_manager=UserManager(),
+        tool_registry=_registry(),
+    )
+    deliverable = run(orch.handle(_stimulus()))
+
+    assert deliverable.errored is True
+    events = _events(db)
+    kinds = [k for k, _, _ in events]
+    assert kinds == ["message", "action"]   # the mutation's trail survived
+    assert 'create_task {"title": "w"} -> created' == events[1][2]
 
 
 def test_scheduler_ignores_trailing_action_event(db):

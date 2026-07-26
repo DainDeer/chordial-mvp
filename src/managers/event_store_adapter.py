@@ -58,7 +58,13 @@ class SqlEventStore:
     # --- writes --------------------------------------------------------------
 
     async def append(self, event: NewEvent) -> Event:
-        meta = dict(event.metadata)
+        # the canonical scope/audience FIELDS win: strip the reserved keys from
+        # caller metadata before applying the convention, so stale metadata can
+        # never smuggle an event into a different privacy channel
+        meta = {
+            k: v for k, v in dict(event.metadata).items()
+            if k not in ("scope", "with_helper")
+        }
         meta.update(_scope_meta(event.scope or "group", event.audience))
         with get_db() as db:
             row = ConversationEvent(

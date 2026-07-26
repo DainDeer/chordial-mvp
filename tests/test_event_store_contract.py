@@ -88,6 +88,28 @@ class TestSqlEventStore(EventStoreContract):
             "a group line",
         ]
 
+    def test_stale_metadata_cannot_override_canonical_scope_audience(self):
+        """the canonical NewEvent fields win: reserved scope/with_helper keys
+        in caller metadata are stripped before the convention is applied, so
+        metadata can never smuggle an event into a different privacy channel."""
+        store = self.make_store()
+        stored = run(store.append(NewEvent(
+            author_type="user", author="user", kind="message",
+            content="a group message", message_type="conversation",
+            scope="group", audience=None,
+            metadata={"scope": "dm", "with_helper": "aria", "other": "kept"},
+        )))
+        assert stored.scope == "group"
+        assert stored.audience is None
+        assert "with_helper" not in stored.metadata
+        assert stored.metadata.get("other") == "kept"     # honest keys survive
+
+        # and chordial's EventLog agrees: every helper can see it
+        log = EventLog(store.stream_id)
+        assert [e.content for e in log.recent(visible_to="tempo")] == [
+            "a group message",
+        ]
+
     def test_group_events_write_no_scope_tag(self):
         """the cache-stability convention: a group event's metadata carries NO
         scope tag (absence means group), byte-identical to pre-dm history."""

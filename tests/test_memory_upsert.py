@@ -123,3 +123,45 @@ def test_reinforcement_is_scoped_to_same_type(db):
     res = _save(mgr, "Dain likes tea", ["tea", "drink"], mtype=MemoryType.PREFERENCE)
     assert res.action == "inserted"
     assert len(_active(db)) == 2
+
+
+# --- the search TOOL end to end ----------------------------------------------
+# regression for the ToolContext migration: _render_match once referenced the
+# context variable out of scope, so every SUCCESSFUL search raised NameError -
+# and the registry's graceful error handling kept the suite green while the
+# live tool was broken. these run the real handlers, no registry in between.
+
+
+def _tool_ctx(actor="chordial"):
+    from dainframe.tools.context import ToolContext
+    return ToolContext(stream_id="u1", activation_id="test-act", actor=actor)
+
+
+def test_search_tool_returns_matches_not_a_tool_error(db):
+    from src.services.tools.memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
+
+    run(SAVE_MEMORY.handler(
+        {"instruction": "dain loves matcha", "keywords": ["matcha", "tea"]},
+        _tool_ctx("chordial"),
+    ))
+    out = run(SEARCH_MEMORIES.handler({"keywords": ["matcha"]}, _tool_ctx("chordial")))
+
+    assert "dain loves matcha" in out
+    assert "error" not in out.lower()
+
+
+def test_search_tool_attributes_sibling_saves(db):
+    """a sibling's shared save renders '(from aria)'; a helper's own save
+    renders unattributed - the gossip-channel legibility rule."""
+    from src.services.tools.memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
+
+    run(SAVE_MEMORY.handler(
+        {"instruction": "dain is learning piano", "keywords": ["piano"]},
+        _tool_ctx("aria"),
+    ))
+
+    as_aria = run(SEARCH_MEMORIES.handler({"keywords": ["piano"]}, _tool_ctx("aria")))
+    assert "(from" not in as_aria           # its own memory: unattributed
+
+    as_tempo = run(SEARCH_MEMORIES.handler({"keywords": ["piano"]}, _tool_ctx("tempo")))
+    assert "(from aria)" in as_tempo        # the sibling sees the source

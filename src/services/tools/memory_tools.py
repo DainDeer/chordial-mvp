@@ -77,15 +77,15 @@ async def _search_memories(tool_input: dict, context: ToolContext) -> str:
     )
     if not matches:
         return "no memories matched those keywords."
-    return "\n".join(_render_match(m) for m in matches)
+    return "\n".join(_render_match(m, context.actor) for m in matches)
 
 
-def _render_match(m) -> str:
+def _render_match(m, actor: str) -> str:
     """a search hit, tagged with its source helper when a SIBLING saved it -
     'heard from aria that ...' is the shared-memory gossip channel made legible.
     a helper's own memories render unattributed (it already knows they're its)."""
     created_by = getattr(m, "created_by", None) or "chordial"
-    src = "" if created_by == context.actor else f" (from {created_by})"
+    src = "" if created_by == actor else f" (from {created_by})"
     return f"- [{m.memory_type}]{src} {m.ai_instruction}"
 
 

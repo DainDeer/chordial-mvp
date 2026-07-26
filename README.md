@@ -74,7 +74,6 @@ backed by notion today; a bespoke postgres-native backend is landing behind the 
 │   ├── personas/                  # archetype cards (*.yaml)
 │   ├── managers/                  # event log, users, memories, helper state
 │   ├── providers/
-│   │   ├── ai/                    # anthropic + openai behind one interface
 │   │   └── platforms/             # discord, multi-bot telegram
 │   ├── services/
 │   │   ├── orchestrator.py        # stimulus → director → brief → act → record
@@ -87,6 +86,23 @@ backed by notion today; a bespoke postgres-native backend is landing behind the 
 ├── alembic/                       # schema migrations
 └── tests/                         # ~400 tests: agent loop, migrations, caching, gate…
 ```
+
+### installing (the dainframe sibling checkout)
+
+chordial's orchestration machinery is being extracted into
+[the dainframe](https://github.com/DainDeer/the-dainframe), consumed as a
+**path dependency** during the extraction: `poetry install` requires the
+sibling checkout at `../the-dainframe` and fails without it — this is a
+deliberate dev-loop choice (the dainframe's DESIGN.md §8), not an accident:
+
+```bash
+git clone https://github.com/DainDeer/the-dainframe ../the-dainframe
+poetry install
+```
+
+any CI or deploy environment needs the same sibling clone. once the library
+api settles (dainframe `v0.1.0`), the path dep becomes a pinned git tag and
+standalone checkouts work again.
 
 ### design docs
 
