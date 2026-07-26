@@ -20,12 +20,15 @@ only tasks that name a concrete deliverable need full completion.
 """
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from src.providers.ai.base import BaseAIProvider
-from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolCall, ProviderError
-from src.services.agent_service import ExecutedAction
+from dainframe.loop.agent_loop import ExecutedAction
+from dainframe.providers.base import BaseAIProvider
+from dainframe.providers.types import AIRequest, ChatTurn, SystemBlock, ToolCall, ProviderError
+from dainframe.tools.context import ToolContext
+
 from src.services.tools import ToolRegistry
 from src.services.usage_recorder import UsageRecorder
 
@@ -200,6 +203,13 @@ class CompletionReconcilerService:
         user's open tasks. the model proposed; we verify against the real open
         set (a hallucinated or already-closed id is rejected, never written)."""
         open_by_id = {t["id"]: t for t in open_tasks}
+        # the reconciler acts as chordial (the companion's own bookkeeping
+        # pass); actions it records read as chordial's next turn
+        context = ToolContext(
+            stream_id=user_uuid,
+            activation_id=f"reconcile-{uuid.uuid4().hex[:12]}",
+            actor="chordial",
+        )
         # dedupe while preserving order
         for tid in dict.fromkeys(completed_ids):
             if tid not in open_by_id:
@@ -207,9 +217,10 @@ class CompletionReconcilerService:
                 continue
             call = ToolCall(id=f"reconcile-{tid[:8]}", name="update_task",
                             input={"task": tid, "status": "Done"})
-            tool_result = await self.registry.execute(call, user_uuid)
+            tool_result = await self.registry.execute(call, context)
             result.actions.append(ExecutedAction(
                 name="update_task", input=call.input,
                 result_content=tool_result.content, is_error=tool_result.is_error,
                 terminal=self.registry.is_terminal("update_task"),
+                record_event=self.registry.should_record("update_task"),
             ))

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, Memory  # noqa: E402
 from src.services.memory_curator import MemoryCuratorService  # noqa: E402
-from src.providers.ai.types import AIResponse, ChatTurn, Usage  # noqa: E402
+from dainframe.providers.types import AIResponse, ChatTurn, Usage  # noqa: E402
 from src.utils.timezone_utils import utc_now  # noqa: E402
 
 

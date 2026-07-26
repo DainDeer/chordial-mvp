@@ -3,19 +3,56 @@
 kept as a thin seam so cost accounting has exactly one home. the sqlite writes
 are synchronous (matching the rest of the codebase) - fine at conversational
 pace; swap for a batched/async sink if write volume ever matters.
+
+this is also chordial's dainframe UsageSink: `emit` receives the loop's
+ProviderCallUsage / AgentRunTrace events and maps them onto the two ledger
+writes (actor -> helper_id, stream_id -> user_uuid, turn_kind -> role). the
+sync record_call/record_trace methods stay for the direct utility-model
+callers (curator, reconciler) that don't run through an AgentLoop.
 """
 
 import logging
 from typing import Optional
 
+from dainframe.loop.usage import AgentRunTrace, ProviderCallUsage, UsageEvent
+from dainframe.providers.types import Usage
+
 from src.database.database import get_db
 from src.database.models import UsageLog, AgentTrace
-from src.providers.ai.types import Usage
 
 logger = logging.getLogger(__name__)
 
 
 class UsageRecorder:
+    async def emit(self, event: UsageEvent) -> None:
+        """the dainframe UsageSink entry point. failure is already guarded on
+        the loop side; the sync writes below guard themselves too."""
+        if isinstance(event, ProviderCallUsage):
+            self.record_call(
+                user_uuid=event.stream_id,
+                platform=event.platform,
+                provider=event.provider,
+                model=event.model,
+                role=event.turn_kind,
+                usage=event.usage,
+                helper_id=event.actor,
+            )
+        elif isinstance(event, AgentRunTrace):
+            self.record_trace(
+                user_uuid=event.stream_id,
+                platform=event.platform,
+                turn_kind=event.turn_kind,
+                iterations=event.iterations,
+                hit_iteration_cap=event.hit_iteration_cap,
+                tool_trace=list(event.tool_trace),
+                final_text_length=event.final_text_length,
+                stop_reason=event.stop_reason,
+                total_usage=event.total_usage,
+                helper_id=event.actor,
+            )
+        else:
+            logger.warning("unknown usage event type: %r", type(event))
+
     def record_call(
         self,
         *,

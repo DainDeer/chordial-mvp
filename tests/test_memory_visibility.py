@@ -23,7 +23,7 @@ from src.managers.memories_manager import (  # noqa: E402
     MemoriesManager, MemoryType, MemorySource,
 )
 from src.services.memory_curator import MemoryCuratorService  # noqa: E402
-from src.providers.ai.types import AIResponse, ChatTurn, Usage  # noqa: E402
+from dainframe.providers.types import AIResponse, ChatTurn, Usage  # noqa: E402
 from src.utils.timezone_utils import utc_now  # noqa: E402
 
 

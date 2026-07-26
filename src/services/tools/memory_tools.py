@@ -8,9 +8,9 @@ inference job.
 import logging
 
 from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySource
-from src.providers.ai.types import ToolDef
-from .base import Tool
-from .context import current_helper
+from dainframe.providers.types import ToolDef
+from dainframe.tools.context import ToolContext
+from dainframe.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,8 @@ _VALID_TYPES = {t.value for t in MemoryType}
 _VALID_VISIBILITY = {"shared", "private"}
 
 
-async def _save_memory(tool_input: dict, user_uuid: str) -> str:
+async def _save_memory(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     instruction = (tool_input.get("instruction") or "").strip()
     if not instruction:
         return "nothing to save - `instruction` was empty."
@@ -47,7 +48,7 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
         source=MemorySource.AI_INFERRED,
         keywords=keywords,
         core=is_core,
-        created_by=current_helper(),
+        created_by=context.actor,
         visibility=visibility,
     )
 
@@ -62,7 +63,8 @@ async def _save_memory(tool_input: dict, user_uuid: str) -> str:
     return f"saved{' core' if is_core else ''} memory: {instruction}"
 
 
-async def _search_memories(tool_input: dict, user_uuid: str) -> str:
+async def _search_memories(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     terms = tool_input.get("keywords") or []
     if isinstance(terms, str):
         terms = [t.strip() for t in terms.split(",") if t.strip()]
@@ -71,7 +73,7 @@ async def _search_memories(tool_input: dict, user_uuid: str) -> str:
 
     # scoped to what this helper may see: the shared pool plus its own privates.
     matches = await _memories.search_memories_by_keywords(
-        user_uuid, terms, helper_id=current_helper(),
+        user_uuid, terms, helper_id=context.actor,
     )
     if not matches:
         return "no memories matched those keywords."
@@ -83,7 +85,7 @@ def _render_match(m) -> str:
     'heard from aria that ...' is the shared-memory gossip channel made legible.
     a helper's own memories render unattributed (it already knows they're its)."""
     created_by = getattr(m, "created_by", None) or "chordial"
-    src = "" if created_by == current_helper() else f" (from {created_by})"
+    src = "" if created_by == context.actor else f" (from {created_by})"
     return f"- [{m.memory_type}]{src} {m.ai_instruction}"
 
 

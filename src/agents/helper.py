@@ -14,10 +14,13 @@ mid-chat).
 from __future__ import annotations
 
 import logging
+import uuid
+
+from dainframe.loop.agent_loop import AgentLoop
+from dainframe.tools.context import ToolContext
 
 from src.agents.base import AgentOutcome, Briefing
 from src.personas import PersonaCard
-from src.services.agent_service import AgentService
 from src.services.prompt_service import PromptService
 from src.services.tools import ToolRegistry
 
@@ -25,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class HelperAgent:
-    def __init__(self, card: PersonaCard, agent_service: AgentService, tool_registry: ToolRegistry):
+    def __init__(self, card: PersonaCard, agent_service: AgentLoop, tool_registry: ToolRegistry):
         self.card = card
         self.name = card.id
         self.loop = agent_service
@@ -66,10 +69,16 @@ class HelperAgent:
 
         result = await self.loop.run(
             request,
-            user_uuid=briefing.user_uuid,
+            # the activation id ties this run's tool actions to one turn;
+            # chordial's orchestrator doesn't mint activation ids yet (that's
+            # the phase-3 engine's job), so the helper mints one per run.
+            context=ToolContext(
+                stream_id=briefing.user_uuid,
+                activation_id=f"act-{uuid.uuid4().hex[:12]}",
+                actor=self.name,
+            ),
             platform=briefing.platform,
             turn_kind=turn_kind,
-            acting_helper=self.name,
         )
         return AgentOutcome(
             text=result.text,

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Protocol, runtime_checkable
 
 from src.managers.event_log import Event
-from src.services.agent_service import ExecutedAction
+from dainframe.loop.agent_loop import ExecutedAction
 
 
 @dataclass

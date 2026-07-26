@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import logging
 
-from src.providers.ai.types import ToolDef
+from dainframe.providers.types import ToolDef
 from src.services.platform_link_service import PlatformLinkService, deep_link
 from config import Config
-from .base import Tool
+from dainframe.tools.context import ToolContext
+from dainframe.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ logger = logging.getLogger(__name__)
 _links = PlatformLinkService()
 
 
-async def _link_platform(tool_input: dict, user_uuid: str) -> str:
+async def _link_platform(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     code = _links.create_code(user_uuid)
     ttl = Config.LINK_CODE_TTL_MINUTES
     link = deep_link(code)

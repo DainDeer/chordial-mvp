@@ -25,8 +25,8 @@ from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.services.completion_reconciler import (  # noqa: E402
     CompletionReconcilerService, RECONCILER_SYSTEM,
 )
-from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
-from src.providers.ai.types import AIResponse, ChatTurn, Usage, ToolDef  # noqa: E402
+from src.services.tools import Tool, ToolRegistry  # noqa: E402
+from dainframe.providers.types import AIResponse, ChatTurn, Usage, ToolDef  # noqa: E402
 
 
 def run(coro):

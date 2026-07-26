@@ -30,9 +30,9 @@ from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.managers.event_log import Event, EventLog, format_action_line  # noqa: E402
 from src.personas import load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
-from src.services.agent_service import ExecutedAction  # noqa: E402
-from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
-from src.providers.ai.types import ToolDef  # noqa: E402
+from dainframe.loop.agent_loop import ExecutedAction  # noqa: E402
+from src.services.tools import Tool, ToolRegistry  # noqa: E402
+from dainframe.providers.types import ToolDef  # noqa: E402
 
 
 def run(coro):
@@ -288,7 +288,7 @@ def _outcome(text="done!", actions=(), refused=False):
 
 def test_successful_mutation_is_recorded_before_reply(db):
     orch = _orchestrator(_outcome(actions=[
-        ExecutedAction("create_task", {"title": "x"}, 'created task "x" (id=1)', False, False),
+        ExecutedAction("create_task", {"title": "x"}, 'created task "x" (id=1)', False, False, True),
     ]))
     run(orch.handle(_stimulus()))
 
@@ -301,8 +301,8 @@ def test_successful_mutation_is_recorded_before_reply(db):
 
 def test_reads_and_errors_are_not_recorded(db):
     orch = _orchestrator(_outcome(actions=[
-        ExecutedAction("list_tasks", {}, "3 tasks", False, False),          # read: skip
-        ExecutedAction("create_task", {"title": "y"}, "boom", True, False), # error: skip
+        ExecutedAction("list_tasks", {}, "3 tasks", False, False, False),          # read: skip
+        ExecutedAction("create_task", {"title": "y"}, "boom", True, False, True), # error: skip
     ]))
     run(orch.handle(_stimulus()))
 
@@ -312,7 +312,7 @@ def test_reads_and_errors_are_not_recorded(db):
 
 def test_refused_turn_persists_nothing_after_user_message(db):
     orch = _orchestrator(_outcome(text=None, refused=True, actions=[
-        ExecutedAction("create_task", {"title": "z"}, "created", False, False),
+        ExecutedAction("create_task", {"title": "z"}, "created", False, False, True),
     ]))
     deliverable = run(orch.handle(_stimulus()))
 

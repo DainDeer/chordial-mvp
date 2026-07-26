@@ -32,8 +32,15 @@ from src.agents.helper import HelperAgent  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
 from src.personas import PersonaCard, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
-from src.services.tools.base import ToolRegistry  # noqa: E402
-from src.services.tools.context import acting_as  # noqa: E402
+from src.services.tools import ToolRegistry  # noqa: E402
+from dainframe.tools.context import ToolContext  # noqa: E402
+
+
+def _ctx(user_uuid: str, actor: str) -> ToolContext:
+    """the tool-loop context AgentLoop would bind: which stream, which actor.
+    the model never chooses whose relationship it's recording - the identity
+    arrives on the context."""
+    return ToolContext(stream_id=user_uuid, activation_id="test-act", actor=actor)
 from src.services.tools.intro_tools import (  # noqa: E402
     COMPLETE_INTRODUCTION,
     LIST_AVAILABLE_GUIDES,
@@ -134,17 +141,16 @@ def test_helper_identity_memory_is_private_to_that_helper(db):
 def test_complete_introduction_accepted_sets_active_and_identity(db):
     user_uuid = run(_make_user())
 
-    with acting_as("chordial"):
-        result = run(
-            COMPLETE_INTRODUCTION.handler(
-                {
-                    "accepted": True,
-                    "persona_name": "Ember",
-                    "persona_form": "red panda",
-                },
-                user_uuid,
-            )
+    result = run(
+        COMPLETE_INTRODUCTION.handler(
+            {
+                "accepted": True,
+                "persona_name": "Ember",
+                "persona_form": "red panda",
+            },
+            _ctx(user_uuid, "chordial"),
         )
+    )
 
     assert "ember" in result.lower()
     state = run(HelperStateManager().get(user_uuid, "chordial"))
@@ -157,13 +163,12 @@ def test_complete_introduction_accepted_sets_active_and_identity(db):
 def test_complete_introduction_declined_sets_declined_status(db):
     user_uuid = run(_make_user())
 
-    with acting_as("tempo"):
-        result = run(
-            COMPLETE_INTRODUCTION.handler(
-                {"accepted": False, "persona_name": None, "persona_form": None},
-                user_uuid,
-            )
+    result = run(
+        COMPLETE_INTRODUCTION.handler(
+            {"accepted": False, "persona_name": None, "persona_form": None},
+            _ctx(user_uuid, "tempo"),
         )
+    )
 
     assert "declined" in result.lower()
     state = run(HelperStateManager().get(user_uuid, "tempo"))
@@ -177,8 +182,7 @@ def test_complete_introduction_attributes_the_acting_helper(db):
     recording."""
     user_uuid = run(_make_user())
 
-    with acting_as("mochi"):
-        run(COMPLETE_INTRODUCTION.handler({"accepted": True}, user_uuid))
+    run(COMPLETE_INTRODUCTION.handler({"accepted": True}, _ctx(user_uuid, "mochi")))
 
     mochi_state = run(HelperStateManager().get(user_uuid, "mochi"))
     chordial_state = run(HelperStateManager().get(user_uuid, "chordial"))
@@ -188,13 +192,12 @@ def test_complete_introduction_attributes_the_acting_helper(db):
 
 def test_complete_introduction_blank_strings_normalize_to_none(db):
     user_uuid = run(_make_user())
-    with acting_as("chordial"):
-        run(
-            COMPLETE_INTRODUCTION.handler(
-                {"accepted": True, "persona_name": "  ", "persona_form": ""},
-                user_uuid,
-            )
+    run(
+        COMPLETE_INTRODUCTION.handler(
+            {"accepted": True, "persona_name": "  ", "persona_form": ""},
+            _ctx(user_uuid, "chordial"),
         )
+    )
     state = run(HelperStateManager().get(user_uuid, "chordial"))
     assert state.persona_name is None
     assert state.persona_form is None
@@ -224,8 +227,7 @@ def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(
     _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
-    with acting_as("chordial"):
-        result = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
 
     # each guide is one "- <id> (" list line; chordial never lists itself.
     # (substring checks would false-positive on bot usernames like
@@ -245,13 +247,11 @@ def test_list_available_guides_deep_link_uses_configured_username_not_card_place
     _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
-    with acting_as("chordial"):
-        unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
     assert "t.me/" not in unconfigured
 
     monkeypatch.setenv("TELEGRAM_USERNAME_TEMPO", "chordial_mvp_v3_tempo_bot")
-    with acting_as("chordial"):
-        configured = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    configured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
     assert "t.me/chordial_mvp_v3_tempo_bot?start=meet" in configured
     assert "t.me/tempo_bot" not in configured  # the card's placeholder, never used
 
@@ -265,8 +265,7 @@ def test_list_available_guides_excludes_active_and_declined(db):
     )
     run(HelperStateManager().complete_introduction(user_uuid, "mochi", accepted=False))
 
-    with acting_as("chordial"):
-        result = run(LIST_AVAILABLE_GUIDES.handler({}, user_uuid))
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
 
     assert "tempo" not in result
     assert "mochi" not in result
@@ -450,21 +449,19 @@ def test_introduction_request_keeps_system_blocks_byte_identical_to_conversation
 
 
 class _StubLoop:
-    """stands in for AgentService: records how it was called."""
+    """stands in for the AgentLoop: records how it was called."""
 
     def __init__(self):
         self.calls = []
 
-    async def run(
-        self, request, *, user_uuid, platform, turn_kind, acting_helper="chordial"
-    ):
+    async def run(self, request, *, context, platform, turn_kind):
         self.calls.append(
             dict(
                 request=request,
-                user_uuid=user_uuid,
+                user_uuid=context.stream_id,
                 platform=platform,
                 turn_kind=turn_kind,
-                acting_helper=acting_helper,
+                acting_helper=context.actor,
             )
         )
 

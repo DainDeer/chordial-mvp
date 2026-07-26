@@ -13,16 +13,17 @@ import logging
 from config import Config
 from src.managers.helper_state_manager import HelperStateManager
 from src.personas import load_personas
-from src.providers.ai.types import ToolDef
-from .base import Tool
-from .context import current_helper
+from dainframe.providers.types import ToolDef
+from dainframe.tools.context import ToolContext
+from dainframe.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
 
 _helper_states = HelperStateManager()
 
 
-async def _complete_introduction(tool_input: dict, user_uuid: str) -> str:
+async def _complete_introduction(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     accepted = bool(tool_input.get("accepted", False))
     persona_name = tool_input.get("persona_name")
     persona_form = tool_input.get("persona_form")
@@ -31,7 +32,7 @@ async def _complete_introduction(tool_input: dict, user_uuid: str) -> str:
     persona_name = persona_name.strip() if isinstance(persona_name, str) and persona_name.strip() else None
     persona_form = persona_form.strip() if isinstance(persona_form, str) and persona_form.strip() else None
 
-    helper_id = current_helper()
+    helper_id = context.actor
     await _helper_states.complete_introduction(
         user_uuid, helper_id,
         accepted=accepted,
@@ -92,8 +93,9 @@ def _deep_link(handle: str) -> str:
     return f"https://t.me/{handle}?start=meet"
 
 
-async def _list_available_guides(tool_input: dict, user_uuid: str) -> str:
-    acting = current_helper()
+async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
+    acting = context.actor
     cards = load_personas()
 
     lines = []

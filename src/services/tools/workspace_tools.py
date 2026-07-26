@@ -26,11 +26,11 @@ from datetime import timedelta
 from typing import Optional
 
 from config import Config
-from src.providers.ai.types import ToolDef
+from dainframe.providers.types import ToolDef
 from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
-from .base import Tool
-from .context import current_helper
+from dainframe.tools.context import ToolContext
+from dainframe.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ def _fields_note(changes: dict) -> str:
 # ============================ TASKS ========================================
 
 
-async def _list_tasks(tool_input: dict, user_uuid: str) -> str:
+async def _list_tasks(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     store = _store()
     plan_id, err = _resolve_id(user_uuid, "plan", tool_input.get("project"), "plans")
     if err:
@@ -141,7 +142,8 @@ def _task_link_ids(tool_input: dict, user_uuid: str):
     return out, None
 
 
-async def _create_task(tool_input: dict, user_uuid: str) -> str:
+async def _create_task(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a task needs a title."
@@ -162,7 +164,8 @@ async def _create_task(tool_input: dict, user_uuid: str) -> str:
     return f"created task \"{title}\" (id={row['public_id']})."
 
 
-async def _update_task(tool_input: dict, user_uuid: str) -> str:
+async def _update_task(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("task") or "").strip()
     if not ident:
         return "which task? pass a task title or id."
@@ -188,7 +191,8 @@ async def _update_task(tool_input: dict, user_uuid: str) -> str:
 # ============================ PLANS (projects) =============================
 
 
-async def _list_plans(tool_input: dict, user_uuid: str) -> str:
+async def _list_plans(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     rows = _store().list_plans(
         user_uuid,
         status=tool_input.get("status"),
@@ -203,7 +207,8 @@ async def _list_plans(tool_input: dict, user_uuid: str) -> str:
     return f"{len(rows)} plan(s):\n" + "\n".join(f"- {vocab.format_plan(r)}" for r in rows)
 
 
-async def _create_plan(tool_input: dict, user_uuid: str) -> str:
+async def _create_plan(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a plan needs a title."
@@ -212,7 +217,7 @@ async def _create_plan(tool_input: dict, user_uuid: str) -> str:
         area = area[0] if area else None
     row = _store().create_plan(
         user_uuid, title,
-        helper=tool_input.get("helper") or current_helper(),
+        helper=tool_input.get("helper") or context.actor,
         status=tool_input.get("status") or "proposed",
         why=tool_input.get("why") or tool_input.get("description"),
         success_criteria=tool_input.get("success_criteria"),
@@ -222,7 +227,8 @@ async def _create_plan(tool_input: dict, user_uuid: str) -> str:
     return f"created plan \"{title}\" (id={row['public_id']}, steward={row['helper']})."
 
 
-async def _update_plan(tool_input: dict, user_uuid: str) -> str:
+async def _update_plan(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("plan") or tool_input.get("project") or "").strip()
     if not ident:
         return "which plan? pass a plan title or id."
@@ -249,7 +255,8 @@ async def _update_plan(tool_input: dict, user_uuid: str) -> str:
 # ============================ CYCLES =======================================
 
 
-async def _list_cycles(tool_input: dict, user_uuid: str) -> str:
+async def _list_cycles(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     rows = _store().list_cycles(
         user_uuid, include_closed=bool(tool_input.get("include_closed")))
     if tool_input.get("status"):
@@ -261,7 +268,8 @@ async def _list_cycles(tool_input: dict, user_uuid: str) -> str:
     return f"{len(rows)} cycle(s):\n" + "\n".join(f"- {vocab.format_cycle(r)}" for r in rows)
 
 
-async def _create_cycle(tool_input: dict, user_uuid: str) -> str:
+async def _create_cycle(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a cycle needs a title."
@@ -276,7 +284,8 @@ async def _create_cycle(tool_input: dict, user_uuid: str) -> str:
     return f"created cycle \"{title}\" (id={row['public_id']})."
 
 
-async def _update_cycle(tool_input: dict, user_uuid: str) -> str:
+async def _update_cycle(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("cycle") or "").strip()
     if not ident:
         return "which cycle? pass a cycle title or id."
@@ -300,7 +309,8 @@ async def _update_cycle(tool_input: dict, user_uuid: str) -> str:
 # ============================ GOALS ========================================
 
 
-async def _create_goal(tool_input: dict, user_uuid: str) -> str:
+async def _create_goal(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a goal needs a title."
@@ -318,7 +328,8 @@ async def _create_goal(tool_input: dict, user_uuid: str) -> str:
     return f"created goal \"{title}\" under \"{row['plan_title']}\" (id={row['public_id']})."
 
 
-async def _update_goal(tool_input: dict, user_uuid: str) -> str:
+async def _update_goal(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("goal") or "").strip()
     if not ident:
         return "which goal? pass a goal title or id."
@@ -336,7 +347,8 @@ async def _update_goal(tool_input: dict, user_uuid: str) -> str:
     return f"updated goal (id={row['public_id']}): {_fields_note(changes)}."
 
 
-async def _list_goals(tool_input: dict, user_uuid: str) -> str:
+async def _list_goals(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     plan_id, err = _resolve_id(user_uuid, "plan", tool_input.get("plan"), "plans")
     if err:
         return err
@@ -351,7 +363,8 @@ async def _list_goals(tool_input: dict, user_uuid: str) -> str:
 # ============================ WINS =========================================
 
 
-async def _log_win(tool_input: dict, user_uuid: str) -> str:
+async def _log_win(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a win needs a title (past-tense, concrete)."
@@ -364,7 +377,7 @@ async def _log_win(tool_input: dict, user_uuid: str) -> str:
     row = _store().log_win(
         user_uuid, title,
         tool_input.get("date") or user_today(user_uuid).isoformat(),
-        current_helper(),
+        context.actor,
         plan_id=plan_id, task_id=task_id,
         evidence=tool_input.get("evidence"),
         weight=tool_input.get("weight") or "solid",
@@ -372,7 +385,8 @@ async def _log_win(tool_input: dict, user_uuid: str) -> str:
     return f"logged win \"{title}\" (id={row['public_id']})."
 
 
-async def _list_wins(tool_input: dict, user_uuid: str) -> str:
+async def _list_wins(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     plan_id, err = _resolve_id(user_uuid, "plan", tool_input.get("plan"), "plans")
     if err:
         return err
@@ -391,7 +405,8 @@ async def _list_wins(tool_input: dict, user_uuid: str) -> str:
 # ============================ CHECK-INS ====================================
 
 
-async def _log_checkin(tool_input: dict, user_uuid: str) -> str:
+async def _log_checkin(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     kind = tool_input.get("kind") or "adhoc"
     plan_ids = []
     for ref in tool_input.get("plans_touched") or []:
@@ -402,7 +417,7 @@ async def _log_checkin(tool_input: dict, user_uuid: str) -> str:
     row = _store().log_checkin(
         user_uuid,
         tool_input.get("date") or user_today(user_uuid).isoformat(),
-        kind, current_helper(),
+        kind, context.actor,
         energy=tool_input.get("energy"),
         notes=tool_input.get("notes"),
         plan_ids=plan_ids,
@@ -410,7 +425,8 @@ async def _log_checkin(tool_input: dict, user_uuid: str) -> str:
     return f"logged {row['kind']} check-in for {row['date']} (id={row['public_id']})."
 
 
-async def _list_checkins(tool_input: dict, user_uuid: str) -> str:
+async def _list_checkins(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     rows = _store().list_checkins(
         user_uuid,
         since=tool_input.get("since"),
@@ -425,7 +441,8 @@ async def _list_checkins(tool_input: dict, user_uuid: str) -> str:
 # ============================ NOTES ========================================
 
 
-async def _jot(tool_input: dict, user_uuid: str) -> str:
+async def _jot(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     body = (tool_input.get("body") or "").strip()
     if not body:
         return "what should i jot down? pass the idea as 'body'."
@@ -437,13 +454,14 @@ async def _jot(tool_input: dict, user_uuid: str) -> str:
         title=tool_input.get("title"),
         plan_id=plan_id,
         tags=tool_input.get("tags"),
-        helper=current_helper(),
+        helper=context.actor,
     )
     where = f" on \"{row['plan_title']}\"" if row.get("plan_title") else ""
     return f"jotted{where} (id={row['public_id']})."
 
 
-async def _list_notes(tool_input: dict, user_uuid: str) -> str:
+async def _list_notes(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     plan_id, err = _resolve_id(user_uuid, "plan", tool_input.get("plan"), "plans")
     if err:
         return err
@@ -459,7 +477,8 @@ async def _list_notes(tool_input: dict, user_uuid: str) -> str:
     return f"{len(rows)} note(s):\n" + "\n".join(f"- {vocab.format_note(r)}" for r in rows)
 
 
-async def _update_note(tool_input: dict, user_uuid: str) -> str:
+async def _update_note(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("note") or "").strip()
     if not ident:
         return "which note? pass its id (n7) or title."
@@ -497,7 +516,8 @@ async def _update_note(tool_input: dict, user_uuid: str) -> str:
 # ============================ OCCASIONS ====================================
 
 
-async def _log_occasion(tool_input: dict, user_uuid: str) -> str:
+async def _log_occasion(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "an occasion needs a title."
@@ -512,13 +532,14 @@ async def _log_occasion(tool_input: dict, user_uuid: str) -> str:
         recurrence=tool_input.get("recurrence"),
         plan_id=plan_id,
         notes=tool_input.get("notes"),
-        helper=current_helper(),
+        helper=context.actor,
     )
     recurs = f", recurs {row['recurrence']}" if row.get("recurrence") else ""
     return f"noted occasion \"{title}\" on {row['date']}{recurs} (id={row['public_id']})."
 
 
-async def _list_occasions(tool_input: dict, user_uuid: str) -> str:
+async def _list_occasions(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     plan_id, err = _resolve_id(user_uuid, "plan", tool_input.get("plan"), "plans")
     if err:
         return err
@@ -535,7 +556,8 @@ async def _list_occasions(tool_input: dict, user_uuid: str) -> str:
         f"- {vocab.format_occasion(r)}" for r in rows)
 
 
-async def _update_occasion(tool_input: dict, user_uuid: str) -> str:
+async def _update_occasion(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     ident = (tool_input.get("occasion") or "").strip()
     if not ident:
         return "which occasion? pass its id (o5) or title."

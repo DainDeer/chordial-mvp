@@ -32,7 +32,7 @@ from src.agents.base import Agent, AgentOutcome, Briefing
 from src.managers.event_log import Event, EventLog
 from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
-from src.providers.ai.types import ProviderError
+from dainframe.providers.types import ProviderError
 
 # Stimulus/Deliverable (and the v3 Script/ScriptLine) live in orchestration_types
 # so the platform adapter can construct them without importing the orchestrator.

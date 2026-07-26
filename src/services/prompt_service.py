@@ -34,7 +34,7 @@ import os
 from src.managers.memories_manager import MemoriesManager
 from src.managers.event_log import Event
 from src.personas import PersonaCard
-from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ToolDef
+from dainframe.providers.types import AIRequest, ChatTurn, SystemBlock, ToolDef
 from src.utils.timezone_utils import utc_now, to_user_timezone
 from config import Config
 
