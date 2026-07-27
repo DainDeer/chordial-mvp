@@ -10,8 +10,9 @@ import logging
 import pytz
 
 from src.managers.user_manager import UserManager
-from src.providers.ai.types import ToolDef
-from .base import Tool
+from dainframe.providers.types import ToolDef
+from dainframe.tools.context import ToolContext
+from dainframe.tools.registry import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,8 @@ _users = UserManager()
 _VALID_PERSONALITIES = {"friendly", "professional", "cheerful", "calm"}
 
 
-async def _set_preference(tool_input: dict, user_uuid: str) -> str:
+async def _set_preference(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = context.stream_id
     updates: dict = {}
     notes: list[str] = []
 

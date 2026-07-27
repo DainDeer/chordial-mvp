@@ -5,8 +5,8 @@ from datetime import datetime
 from config import Config
 from src.database.database import get_db
 from src.database.models import CompressedMessage
-from src.providers.ai.openai_provider import OpenAIProvider
-from src.providers.ai.types import AIRequest, SystemBlock, ChatTurn
+from dainframe.providers.openai import OpenAIProvider
+from dainframe.providers.types import AIRequest, SystemBlock, ChatTurn
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,9 @@ class CompressorService:
         self.target_compression_ratio = 0.3  # aim for 70% reduction
         self.min_length_to_compress = Config.MIN_LENGTH_TO_COMPRESS  # don't compress messages N characters or less
 
-        self.compressor = OpenAIProvider(model=compression_model)
+        self.compressor = OpenAIProvider(
+            model=compression_model, api_key=Config.OPENAI_API_KEY
+        )
     
     async def compress_message(
         self, 

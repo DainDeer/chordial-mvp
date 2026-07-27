@@ -22,11 +22,11 @@ import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, ConversationEvent  # noqa: E402
 from src.agents.base import AgentOutcome, Briefing  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
-from src.services.agent_service import ExecutedAction  # noqa: E402
+from dainframe.loop.agent_loop import ExecutedAction  # noqa: E402
 import src.services.orchestrator as orch_mod  # noqa: E402
 from src.services.orchestrator import Orchestrator, Stimulus  # noqa: E402
-from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
-from src.providers.ai.types import ToolDef, ProviderError  # noqa: E402
+from src.services.tools import Tool, ToolRegistry  # noqa: E402
+from dainframe.providers.types import ToolDef, ProviderError  # noqa: E402
 
 
 def run(coro):
@@ -242,7 +242,7 @@ def test_record_order_user_actions_reply(db):
         outcome=AgentOutcome(
             text="made it!",
             actions=[
-                ExecutedAction("create_task", {"title": "x"}, "created", False, False)
+                ExecutedAction("create_task", {"title": "x"}, "created", False, False, True)
             ],
         )
     )

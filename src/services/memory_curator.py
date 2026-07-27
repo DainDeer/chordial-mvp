@@ -22,8 +22,8 @@ from typing import List, Optional
 
 from src.database.database import get_db
 from src.database.models import Memory
-from src.providers.ai.base import BaseAIProvider
-from src.providers.ai.types import AIRequest, ChatTurn, SystemBlock, ProviderError
+from dainframe.providers.base import BaseAIProvider
+from dainframe.providers.types import AIRequest, ChatTurn, SystemBlock, ProviderError
 from src.services.usage_recorder import UsageRecorder
 from src.utils.timezone_utils import utc_now
 

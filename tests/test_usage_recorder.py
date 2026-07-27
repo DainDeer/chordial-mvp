@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import src.database.database as db_mod
 from src.database.database import get_db
 from src.database.models import AgentTrace, Base, UsageLog
-from src.providers.ai.types import Usage
+from dainframe.providers.types import Usage
 from src.services.usage_recorder import UsageRecorder
 
 

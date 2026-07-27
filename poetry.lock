@@ -387,6 +387,28 @@ files = [
 markers = {main = "platform_system == \"Windows\"", dev = "platform_system == \"Windows\" or sys_platform == \"win32\""}
 
 [[package]]
+name = "dainframe"
+version = "0.0.1"
+description = "a stimulus-driven multi-agent orchestration framework with an ambient pulse"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = []
+develop = true
+
+[package.dependencies]
+anthropic = {version = ">=0.69.0", optional = true}
+openai = {version = ">=1.86.0,<2.0.0", optional = true}
+
+[package.extras]
+anthropic = ["anthropic (>=0.69.0)"]
+openai = ["openai (>=1.86.0,<2.0.0)"]
+
+[package.source]
+type = "directory"
+url = "../the-dainframe"
+
+[[package]]
 name = "discord-py"
 version = "2.5.2"
 description = "A Python wrapper for the Discord API"
@@ -1962,4 +1984,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10"
-content-hash = "2079007a566a9e5ed1dd7c9cc679ea87029ccad34277b32c8628b45a0fa6b177"
+content-hash = "92a2f1d2518af2474aa1281cd6acd7555940debc9530565575959d56f241489a"

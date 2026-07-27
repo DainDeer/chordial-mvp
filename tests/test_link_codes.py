@@ -157,7 +157,11 @@ def test_link_platform_tool_output_contains_code_and_link(db, monkeypatch):
     monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", "chordial_bot")
     from src.services.tools import link_tools
 
-    out = run(link_tools._link_platform({}, "u1"))
+    from dainframe.tools.context import ToolContext
+
+    out = run(link_tools._link_platform(
+        {}, ToolContext(stream_id="u1", activation_id="test-act", actor="chordial")
+    ))
     # the code in the output is a real, redeemable row
     with db() as s:
         code = s.query(LinkCode).filter_by(user_uuid="u1").one().code

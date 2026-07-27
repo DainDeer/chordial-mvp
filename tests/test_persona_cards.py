@@ -25,9 +25,9 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_TMP_DB_PATH}")
 
 from src.personas import PersonaCard, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
-from src.services.tools.base import Tool, ToolRegistry  # noqa: E402
+from src.services.tools import Tool, ToolRegistry  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
-from src.providers.ai.types import ToolDef  # noqa: E402
+from dainframe.providers.types import ToolDef  # noqa: E402
 
 
 # the retired PERSONA constant, verbatim. starts "you are chordial..." and ends

@@ -22,7 +22,8 @@ from sqlalchemy.orm import sessionmaker
 import src.database.database as db_mod
 from config import Config
 from src.database.models import Base, User
-from src.providers.ai.types import ToolCall
+from dainframe.providers.types import ToolCall
+from dainframe.tools.context import ToolContext
 from src.services.tools import build_default_registry
 
 U1 = "user-one"
@@ -64,7 +65,8 @@ def registry(monkeypatch):
 
 def call(registry, name, **tool_input):
     result = run(registry.execute(
-        ToolCall(id="t", name=name, input=tool_input), U1))
+        ToolCall(id="t", name=name, input=tool_input),
+        ToolContext(stream_id=U1, activation_id="test-act", actor="chordial")))
     return result
 
 

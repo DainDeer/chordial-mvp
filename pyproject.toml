@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "dainframe[anthropic,openai]",
     "discord-py (>=2.5.2,<3.0.0)",
     "openai (>=1.86.0,<2.0.0)",
     "anthropic (>=0.69.0)",
@@ -23,6 +24,11 @@ dependencies = [
 
 [tool.poetry]
 package-mode = false
+
+[tool.poetry.dependencies]
+# the extraction's development seam (the-dainframe DESIGN.md §8): instant
+# cross-repo iteration, no publish step. pin a git tag once the api settles.
+dainframe = { path = "../the-dainframe", develop = true, extras = ["anthropic", "openai"] }
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"

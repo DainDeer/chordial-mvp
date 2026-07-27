@@ -17,8 +17,11 @@ recording rules (per activation, in order):
      agent acts, so it's the last event in the briefing window
   2. the agent's successful mutating tool calls, as action events
   3. after confirmed platform delivery, the agent's reply as a message event
-refusals and errors record NOTHING after the inbound message - a non-answer
-never pollutes future context (long-standing invariant).
+the invariant on failure is asymmetric (dainframe DESIGN.md §11.16): refused
+or errored turns record no conversational PROSE after the inbound message -
+but a tool mutation that already executed keeps its action trail regardless.
+erasing a real side effect's record would make the shared history false; the
+old absolute "errors record nothing" rule predates tool actions.
 """
 
 from __future__ import annotations
@@ -28,11 +31,13 @@ import logging
 import random
 from typing import Dict, List, Optional, Tuple
 
+from dainframe.loop.agent_loop import AgentExecutionError, ExecutedAction
+
 from src.agents.base import Agent, AgentOutcome, Briefing
 from src.managers.event_log import Event, EventLog
 from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
-from src.providers.ai.types import ProviderError
+from dainframe.providers.types import ProviderError
 
 # Stimulus/Deliverable (and the v3 Script/ScriptLine) live in orchestration_types
 # so the platform adapter can construct them without importing the orchestrator.
@@ -74,8 +79,9 @@ class Orchestrator:
         # and single-helper deployments need not wire one.
         self.helper_state_manager = helper_state_manager or HelperStateManager()
         self.agenda_service = agenda_service
-        # the FULL registry (agents hold views of it) - consulted for the
-        # record_event policy when persisting actions
+        # the FULL registry (agents hold views of it). no longer consulted for
+        # the record_event policy - that rides on each ExecutedAction now -
+        # but retained for wiring compatibility and future engine work.
         self.tool_registry = tool_registry
         # optional: after the companion replies to a user, a cheap pass that
         # marks tasks done which the user mentioned finishing in passing
@@ -132,14 +138,27 @@ class Orchestrator:
             briefing = await self._brief(agent, stimulus, log, line)
             try:
                 outcome = await agent.act(briefing)
+            except AgentExecutionError as e:
+                # the provider died AFTER tools ran: those mutations are real,
+                # so their trail survives even though the turn produced nothing
+                logger.error(
+                    "agent '%s' provider error after %d tool action(s): %s",
+                    agent.name, len(e.actions), e,
+                )
+                await self._record_actions(log, agent, e.actions, stimulus)
+                deliverable.errored = True
+                continue
             except ProviderError as e:
                 logger.error("agent '%s' provider error: %s", agent.name, e)
                 deliverable.errored = True
                 continue
 
             if outcome.refused:
+                # the refused PROSE records nothing; executed mutations stay
+                await self._record_actions(log, agent, outcome.actions, stimulus)
                 deliverable.refused = True
             elif outcome.errored:
+                await self._record_actions(log, agent, outcome.actions, stimulus)
                 deliverable.errored = True
             elif not outcome.text and stimulus.kind in ("user_message", "introduction"):
                 # no text, no refusal, no explicit error - on a turn that OWES
@@ -155,12 +174,12 @@ class Orchestrator:
                     "agent '%s' produced no deliverable text for a %s; "
                     "marking errored", line.speaker, stimulus.kind,
                 )
-                await self._record_actions(log, agent, outcome, stimulus)
+                await self._record_actions(log, agent, outcome.actions, stimulus)
                 deliverable.errored = True
             elif outcome.text:
                 # Tool mutations have already happened, so keep their durable
                 # action trail even when the reply itself cannot be delivered.
-                await self._record_actions(log, agent, outcome, stimulus)
+                await self._record_actions(log, agent, outcome.actions, stimulus)
                 if group:
                     # out-of-band: each bot speaks for itself in the shared
                     # channel. Only a confirmed send becomes conversation
@@ -385,18 +404,23 @@ class Orchestrator:
     # --- recording ---------------------------------------------------------------
 
     async def _record_actions(
-        self, log: EventLog, agent: Agent, outcome: AgentOutcome, stimulus: Stimulus
+        self,
+        log: EventLog,
+        agent: Agent,
+        actions: "list[ExecutedAction]",
+        stimulus: Stimulus,
     ) -> None:
         """Persist successful mutation actions independently of delivery.
 
         The side effects already happened inside the agent loop, so their event
-        trail remains true even if the platform cannot carry the prose reply.
+        trail remains true even if the platform cannot carry the prose reply -
+        or any reply at all (refusal, provider failure mid-run). the
+        persistence policy rides ON each action (`record_event`, stamped by the
+        loop from the registry), so no registry lookup happens here.
         """
         scope, with_helper = self._scope_for(stimulus)
-        for action in outcome.actions:
-            if action.is_error:
-                continue
-            if self.tool_registry and not self.tool_registry.should_record(action.name):
+        for action in actions:
+            if action.is_error or not action.record_event:
                 continue
             log.append_action(
                 agent.name,

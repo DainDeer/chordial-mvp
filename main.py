@@ -2,7 +2,7 @@ import asyncio
 import logging
 from config import Config
 from src.services.chat_service import ChatService
-from src.services.agent_service import AgentService
+from dainframe.loop.agent_loop import AgentLoop
 from src.services.scheduler_service import SchedulerService
 from src.services.usage_recorder import UsageRecorder
 from src.services.message_router import MessageRouter
@@ -81,15 +81,33 @@ def _build_interfaces(chat_service, link_service, user_manager):
 def _build_provider(provider_name: str, model: str = None, thinking: bool = True):
     """construct the configured ai provider, or None if misconfigured. pass
     `model` to override the default (e.g. the cheaper utility model), and
-    `thinking=False` for models that don't support adaptive thinking (haiku)."""
+    `thinking=False` for models that don't support adaptive thinking (haiku).
+
+    dainframe providers take all config via constructor - model, key, and the
+    concurrency ceiling. each provider gets its own private limiter here,
+    byte-for-byte the pre-extraction behavior (one semaphore per provider
+    instance); a shared ceiling across providers is one injected limiter away
+    when it's ever wanted."""
+    from dainframe.providers.limits import ConcurrencyLimiter
+
+    limiter = ConcurrencyLimiter(Config.MAX_CONCURRENT_AI_CALLS)
     if provider_name == "anthropic":
-        from src.providers.ai.anthropic_provider import AnthropicProvider
+        from dainframe.providers.anthropic import AnthropicProvider
 
-        return AnthropicProvider(model=model, thinking=thinking)
+        return AnthropicProvider(
+            model=model or Config.CHAT_MODEL,
+            api_key=Config.ANTHROPIC_API_KEY,
+            thinking=thinking,
+            limiter=limiter,
+        )
     if provider_name == "openai":
-        from src.providers.ai.openai_provider import OpenAIProvider
+        from dainframe.providers.openai import OpenAIProvider
 
-        return OpenAIProvider(model=model) if model else OpenAIProvider()
+        return OpenAIProvider(
+            model=model or Config.OPENAI_MODEL,
+            api_key=Config.OPENAI_API_KEY,
+            limiter=limiter,
+        )
     logger.error(
         f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')"
     )
@@ -181,11 +199,11 @@ async def main():
             logger.info(
                 f"{provider_name} provider initialized (model={provider.model})"
             )
-            agent_service = AgentService(
+            agent_service = AgentLoop(
                 provider=provider,
                 registry=registry,
                 provider_name=provider_name,
-                usage_recorder=UsageRecorder(),
+                usage_sink=UsageRecorder(),
                 max_iterations=Config.MAX_TOOL_ITERATIONS,
             )
         else:

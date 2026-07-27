@@ -1,7 +1,9 @@
 import logging
 
 from config import Config
-from .base import Tool, ToolRegistry
+# the registry machinery lives in the dainframe now; re-exported here so
+# chordial code keeps one import home for its tool surface
+from dainframe.tools.registry import Tool, ToolRegistry
 from .intro_tools import COMPLETE_INTRODUCTION, LIST_AVAILABLE_GUIDES
 from .memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
 from .preference_tools import SET_PREFERENCE
