@@ -4,6 +4,8 @@
 
 built and run solo. in continuous daily production use since june 2025.
 
+chordial runs on [**the dainframe**](https://github.com/DainDeer/the-dainframe) — its orchestration machinery (ai providers, tool registry, agent loop; soon the engine and ambient pulse), extracted into its own framework with chordial as the first consumer. the dainframe is a **required dependency**: see [installing & running](#installing--running).
+
 ### the ensemble
 
 | helper | specialty |
@@ -55,12 +57,12 @@ anthropic's prompt cache is a byte-exact prefix match, so prompts are built in f
 
 helpers share a workspace with the user: **plans → goals → tasks**, bi-weekly **cycles** as the balancing lever, **wins** (a ledger that quotes your own words back when you diminish an accomplishment), check-ins, notes, and occasions. an agenda snapshot gives every helper ambient awareness of your day.
 
-backed by notion today; a bespoke postgres-native backend is landing behind the `WORKSPACE_BACKEND` flag (schema and store merged, tools and live agenda in flight — see [docs/NATIVE_WORKSPACE_DESIGN.md](docs/NATIVE_WORKSPACE_DESIGN.md)).
+fully postgres-native, in-db, always on (see [docs/NATIVE_WORKSPACE_DESIGN.md](docs/NATIVE_WORKSPACE_DESIGN.md)). notion is no longer a backend — its client survives only for a future one-way mirror.
 
 ### providers & platforms
 
-- **ai:** anthropic primary (chat model with adaptive thinking + effort control; haiku as the utility model for the curator, reconciler, and director), openai supported behind the same interface. providers **raise typed errors** (`ProviderRateLimited`, `ProviderUnavailable`…) — never apology strings, and failures are never persisted as conversation events
-- **cost guards:** tool-loop iteration cap, global concurrency semaphore, per-call usage logging and agent traces
+- **ai:** anthropic primary (chat model with adaptive thinking + effort control; haiku as the utility model for the curator, reconciler, and director), openai supported behind the same interface. providers **raise typed errors** (`ProviderRateLimited`, `ProviderUnavailable`…) — never apology strings, and failures are never persisted as conversation events. the provider layer, tool registry, and agent loop are dainframe machinery; chordial supplies the personas, prompts, tools, and storage
+- **cost guards:** tool-loop iteration cap, per-provider concurrency limiter, per-call usage logging and agent traces (chordial's `UsageRecorder` implements the dainframe's `UsageSink`)
 - **platforms:** discord + telegram coexisting in one asyncio loop (telegram in manual lifecycle mode — the documented pattern for sharing a loop with discord.py). one telegram bot *per helper*. chat-first account linking: a single-use deep-link code, and unknown senders never touch the ai layer
 - **storage:** postgres in production, sqlite for dev, alembic migrations throughout
 
@@ -78,35 +80,54 @@ backed by notion today; a bespoke postgres-native backend is landing behind the 
 │   ├── services/
 │   │   ├── orchestrator.py        # stimulus → director → brief → act → record
 │   │   ├── proactivity_gate.py    # the non-interaction guard
-│   │   ├── tools/                 # tool registry (memory, workspace, linking…)
+│   │   ├── tools/                 # chordial's tools (memory, workspace, linking…)
 │   │   ├── workspace/             # native workspace store + agenda
-│   │   └── notion/                # notion client + agenda snapshots
+│   │   └── notion/                # notion client (kept for a future one-way mirror)
 │   └── database/                  # sqlalchemy models, engine setup
 ├── docs/                          # design docs — architecture & trade-offs
 ├── alembic/                       # schema migrations
-└── tests/                         # ~400 tests: agent loop, migrations, caching, gate…
+└── tests/                         # ~370 tests: recording invariants, migrations, caching, gate…
 ```
 
-### installing (the dainframe sibling checkout)
+the ai provider layer, tool registry/context, and agent loop live in [the dainframe](https://github.com/DainDeer/the-dainframe) and are imported from it; `src/managers/event_store_adapter.py` implements the dainframe's `EventStore` contract over chordial's database (proven by the library's conformance suite).
 
-chordial's orchestration machinery is being extracted into
-[the dainframe](https://github.com/DainDeer/the-dainframe), consumed as a
-**path dependency** during the extraction: `poetry install` requires the
-sibling checkout at `../the-dainframe` and fails without it — this is a
-deliberate dev-loop choice (the dainframe's DESIGN.md §8), not an accident:
+### installing & running
+
+**requirements:** python ≥ 3.10, [poetry](https://python-poetry.org/), and a checkout of [the dainframe](https://github.com/DainDeer/the-dainframe) **as a sibling directory** of this repo.
+
+the dainframe is consumed as a **path dependency** (`../the-dainframe`, editable) while its api is being extracted: `poetry install` fails without the sibling checkout. this is a deliberate dev-loop choice (the dainframe's [DESIGN.md](https://github.com/DainDeer/the-dainframe/blob/main/docs/DESIGN.md) §8), not an accident — once the library tags `v0.1.0`, the path dep becomes a pinned git tag and standalone checkouts work again.
 
 ```bash
-git clone https://github.com/DainDeer/the-dainframe ../the-dainframe
+# both repos, side by side
+git clone https://github.com/DainDeer/chordial-mvp
+git clone https://github.com/DainDeer/the-dainframe
+cd chordial-mvp
+
+# install (resolves dainframe from ../the-dainframe)
 poetry install
+
+# configure: create .env at the repo root (api keys, bot tokens, models,
+# enabled helpers) — config.py documents every knob and its default
+
+# run
+poetry run python main.py
+
+# tests
+poetry run pytest
 ```
 
-any CI or deploy environment needs the same sibling clone. once the library
-api settles (dainframe `v0.1.0`), the path dep becomes a pinned git tag and
-standalone checkouts work again.
+day-to-day implications of the editable path dep:
+
+- **updating chordial:** `git pull` (+ `poetry install` if `poetry.lock` changed)
+- **updating the dainframe:** `git pull` in `../the-dainframe` — no reinstall needed; the editable install imports straight from the checkout
+- **ci / deploy:** any environment that installs chordial needs the same sibling clone first (the server layout mirrors this: `/home/dain/chordial-mvp` + `/home/dain/the-dainframe`; see [deploy/chordial-dev.service](deploy/chordial-dev.service))
+- if the dainframe ever changes its *own* dependencies, chordial's lock goes stale — `poetry lock && poetry install` here, commit the lock
+
+telegram bot setup (one bot per helper) is its own guide: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md). database options (sqlite dev default, postgres) live in [docs/DEV_DATABASE.md](docs/DEV_DATABASE.md) and [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md).
 
 ### design docs
 
-the interesting decisions are written down: [V3_DESIGN.md](docs/V3_DESIGN.md) (the ensemble), [NATIVE_WORKSPACE_DESIGN.md](docs/NATIVE_WORKSPACE_DESIGN.md) (notion → postgres), [ACTION_RECONCILIATION_ENGINE.md](docs/ACTION_RECONCILIATION_ENGINE.md), [SECURITY_NOTES.md](docs/SECURITY_NOTES.md) (self-audit of user-input surfaces), and more in [docs/](docs/).
+the interesting decisions are written down: [V3_DESIGN.md](docs/V3_DESIGN.md) (the ensemble), [NATIVE_WORKSPACE_DESIGN.md](docs/NATIVE_WORKSPACE_DESIGN.md) (notion → postgres), [ACTION_RECONCILIATION_ENGINE.md](docs/ACTION_RECONCILIATION_ENGINE.md), [SECURITY_NOTES.md](docs/SECURITY_NOTES.md) (self-audit of user-input surfaces), and more in [docs/](docs/). the orchestration framework's own design — the engine contracts, the pulse, and the extraction plan — lives in [the dainframe's DESIGN.md](https://github.com/DainDeer/the-dainframe/blob/main/docs/DESIGN.md).
 
 ### status
 
