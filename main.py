@@ -225,15 +225,17 @@ async def main():
     # them at call time, so the ordering is safe.
     router = MessageRouter(user_manager)
 
-    # assemble the cast and the orchestrator. the orchestrator decides who
-    # talks and records what happened; each agent owns how it thinks. today's
-    # cast: the companion (chordial's chat persona, tool loop on the persona
-    # model) and the curator (silent memory hygiene on the utility model).
+    # assemble the cast and the engine. the dainframe engine decides who talks
+    # and records what happened (through chordial's director/context/hooks -
+    # see src/services/orchestration.py); each agent owns how it thinks.
+    # today's cast: the companion helpers (chat personas, tool loop on the
+    # persona model) and the curator (silent memory hygiene, utility model).
     orchestrator = None
+    curator_agent = None
     if agent_service is not None:
         from src.agents import HelperAgent, CuratorAgent
         from src.personas import load_personas
-        from src.services.orchestrator import Orchestrator
+        from src.services.orchestration import build_orchestrator
 
         # each enabled helper is a HelperAgent driven by its persona card. an
         # unknown id in ENABLED_HELPERS is a startup crash (same fail-loudly
@@ -260,13 +262,14 @@ async def main():
         if utility_provider is not None:
             from src.services.memory_curator import MemoryCuratorService
 
-            agents["curator"] = CuratorAgent(
+            curator_agent = CuratorAgent(
                 MemoryCuratorService(
                     provider=utility_provider,
                     provider_name=provider_name,
                     usage_recorder=UsageRecorder(),
                 )
             )
+            agents["curator"] = curator_agent
             logger.info(f"memory curator initialized (model={utility_provider.model})")
 
         # completion reconciler: marks tasks done that the user mentioned
@@ -291,19 +294,18 @@ async def main():
 
         from src.managers.helper_state_manager import HelperStateManager
 
-        orchestrator = Orchestrator(
+        orchestrator = build_orchestrator(
             agents=agents,
             user_manager=user_manager,
             agenda_service=agenda_service,
-            tool_registry=registry,
             reconciler=reconciler,
-            # speaker-aware delivery: the orchestrator makes a specific helper
-            # speak (a group line via that helper's bot, or the switch notice as
-            # chordial). deliver_as resolves (platform, speaker) -> interface.
-            deliver=router.deliver_as,
+            # speaker-aware delivery: the engine makes a specific helper speak
+            # (a group line via that helper's bot, or the switch notice as
+            # chordial). the router resolves (platform, speaker) -> interface.
+            router=router,
             helper_state_manager=HelperStateManager(),
         )
-        logger.info(f"orchestrator initialized (agents: {', '.join(agents)})")
+        logger.info(f"dainframe engine initialized (agents: {', '.join(agents)})")
 
     # create chat service (falls back to echo if no orchestrator is available)
     chat_service = ChatService(
@@ -316,6 +318,7 @@ async def main():
         orchestrator=orchestrator,
         user_manager=user_manager,
         agenda_service=agenda_service,
+        curator=curator_agent,
     )
 
     # the link-code service: chat-first account linking across platforms

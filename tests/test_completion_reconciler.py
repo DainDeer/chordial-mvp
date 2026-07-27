@@ -204,9 +204,22 @@ def db(monkeypatch):
     engine.dispose()
 
 
+async def _ok_deliver(platform, target_id, text, speaker="chordial"):
+    return True
+
+
+def _dm_stimulus(content):
+    from dainframe.core import DeliveryTarget, Stimulus
+    return Stimulus(kind="user_message", stream_id="u1", platform="discord",
+                    content=content, scope="dm", audience="chordial",
+                    addressed=("chordial",),
+                    target=DeliveryTarget(platform="discord", target_id="42"),
+                    extras={"user_name": "dain", "user_timezone": "UTC"})
+
+
 def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
-    from src.agents.base import AgentOutcome
-    from src.services.orchestrator import Orchestrator, Stimulus
+    from src.agents import AgentOutcome
+    from src.services.orchestration import build_orchestrator
 
     class FakeCompanion:
         name = "chordial"
@@ -216,14 +229,13 @@ def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
     record = []
     reconciler = _service('{"completed": [{"id": "piano-1"}]}',
                           _payload(("piano-1", "practice piano")), record)
-    orch = Orchestrator(
+    orch = build_orchestrator(
         agents={"chordial": FakeCompanion()},
         user_manager=__import__("src.managers.user_manager", fromlist=["UserManager"]).UserManager(),
         reconciler=reconciler,
+        deliver=_ok_deliver,
     )
-    run(orch.handle(Stimulus(kind="user_message", user_uuid="u1", platform="discord",
-                             content="i practiced piano and went for a walk :3",
-                             user_name="dain", user_timezone="UTC")))
+    run(orch.handle(_dm_stimulus("i practiced piano and went for a walk :3")))
 
     # the task got marked, and the mark is recorded as chordial's own action,
     # after the reply
@@ -238,8 +250,9 @@ def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
 
 
 def test_reconciler_does_not_run_on_scheduled_tick(db):
-    from src.agents.base import AgentOutcome
-    from src.services.orchestrator import Orchestrator, Stimulus
+    from src.agents import AgentOutcome
+    from dainframe.core import DeliveryTarget, Stimulus
+    from src.services.orchestration import build_orchestrator
 
     class FakeCompanion:
         name = "chordial"
@@ -253,12 +266,15 @@ def test_reconciler_does_not_run_on_scheduled_tick(db):
         agenda_service=FakeAgenda(_payload(("piano-1", "practice piano"))),
         tool_registry=_registry(record), usage_recorder=NoUsage(),
     )
-    orch = Orchestrator(
+    orch = build_orchestrator(
         agents={"chordial": FakeCompanion()},
         user_manager=__import__("src.managers.user_manager", fromlist=["UserManager"]).UserManager(),
         reconciler=reconciler,
+        deliver=_ok_deliver,
     )
-    run(orch.handle(Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord")))
+    run(orch.handle(Stimulus(kind="scheduled_tick", stream_id="u1", platform="discord",
+                             record_inbound=False, scope="dm", audience="chordial",
+                             target=DeliveryTarget(platform="discord", target_id="42"))))
     assert provider.calls == 0   # reconciler only runs on user messages
     assert record == []
 

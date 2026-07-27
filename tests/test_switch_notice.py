@@ -1,5 +1,6 @@
 """platform-switch notice tests: the one-time courtesy sent to the platform a
-conversation just walked away from.
+conversation just walked away from (now ChordialHooks.after_inbound_recorded,
+fired by the dainframe engine after the inbound event lands).
 
 the semantics under test (owner's spec): when a user message arrives on a
 different platform than their previous message, send ONE notice to the old
@@ -20,9 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, PlatformIdentity, ConversationEvent  # noqa: E402
-from src.agents.base import AgentOutcome  # noqa: E402
+from src.agents import AgentOutcome  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
-from src.services.orchestrator import Orchestrator, Stimulus  # noqa: E402
+from dainframe.core import DeliveryTarget, Stimulus  # noqa: E402
+from src.services.orchestration import build_orchestrator  # noqa: E402
 
 
 def run(coro):
@@ -55,19 +57,30 @@ class FakeCompanion:
 
 
 class FakeDeliver:
-    def __init__(self, ok=True):
-        self.ok = ok
-        self.sent = []  # (platform, platform_user_id, message)
+    """delivers replies AND notices (like router.deliver_as in prod). can be
+    told to fail only the notices, isolating notice-failure behavior from the
+    reply's own delivery."""
 
-    async def __call__(self, platform, platform_user_id, message, speaker="chordial"):
-        # speaker-aware in v3 (deliver_as); the switch notice always speaks as
-        # chordial, so the default keeps these assertions unchanged.
-        self.sent.append((platform, platform_user_id, message))
-        return self.ok
+    def __init__(self, fail_notices=False):
+        self.fail_notices = fail_notices
+        self.sent = []  # every (platform, target_id, message, speaker)
+
+    async def __call__(self, platform, target_id, message, speaker="chordial"):
+        self.sent.append((platform, target_id, message, speaker))
+        if self.fail_notices and "pssst" in message:
+            return False
+        return True
+
+    @property
+    def notices(self):
+        return [(p, t, m) for p, t, m, _ in self.sent if "pssst" in m]
+
+
+PIDS = {"discord": "d-1", "telegram": "t-1"}
 
 
 def _orch(deliver):
-    return Orchestrator(
+    return build_orchestrator(
         agents={"chordial": FakeCompanion()},
         user_manager=UserManager(),
         deliver=deliver,
@@ -76,8 +89,10 @@ def _orch(deliver):
 
 def _say(orch, text, platform):
     return run(orch.handle(Stimulus(
-        kind="user_message", user_uuid="u1", platform=platform,
-        content=text, user_name="dain", user_timezone="UTC",
+        kind="user_message", stream_id="u1", content=text, platform=platform,
+        scope="dm", audience="chordial", addressed=("chordial",),
+        target=DeliveryTarget(platform=platform, target_id=PIDS[platform]),
+        extras={"user_name": "dain", "user_timezone": "UTC"},
     )))
 
 
@@ -93,8 +108,8 @@ def test_switch_sends_one_notice_to_old_platform(db):
     _say(orch, "hi from discord", "discord")
     _say(orch, "now on telegram!", "telegram")
 
-    assert len(deliver.sent) == 1
-    platform, pid, message = deliver.sent[0]
+    assert len(deliver.notices) == 1
+    platform, pid, message = deliver.notices[0]
     assert platform == "discord"
     assert pid == "d-1"
     assert "telegram" in message  # names where the conversation went
@@ -114,7 +129,7 @@ def test_no_repeat_while_staying_on_new_platform(db):
     _say(orch, "still here", "telegram")
     _say(orch, "and here", "telegram")
 
-    assert len(deliver.sent) == 1  # only the switch moment
+    assert len(deliver.notices) == 1  # only the switch moment
 
 
 def test_switching_back_notifies_the_other_direction(db):
@@ -124,14 +139,14 @@ def test_switching_back_notifies_the_other_direction(db):
     _say(orch, "switched", "telegram")      # notice -> discord
     _say(orch, "back again", "discord")     # notice -> telegram
 
-    assert [(p) for p, _, _ in deliver.sent] == ["discord", "telegram"]
+    assert [p for p, _, _ in deliver.notices] == ["discord", "telegram"]
 
 
 def test_first_ever_message_is_silent(db):
     deliver = FakeDeliver()
     orch = _orch(deliver)
     _say(orch, "very first message", "telegram")
-    assert deliver.sent == []
+    assert deliver.notices == []
     assert _notes(db) == []
 
 
@@ -140,7 +155,7 @@ def test_same_platform_is_silent(db):
     orch = _orch(deliver)
     _say(orch, "one", "discord")
     _say(orch, "two", "discord")
-    assert deliver.sent == []
+    assert deliver.notices == []
 
 
 def test_inactive_old_link_is_skipped_entirely(db):
@@ -151,30 +166,22 @@ def test_inactive_old_link_is_skipped_entirely(db):
     run(UserManager().deactivate_platform_identity("discord", "d-1"))
     _say(orch, "switched", "telegram")
 
-    assert deliver.sent == []
+    assert deliver.notices == []
     assert _notes(db) == []
 
 
-def test_delivery_failure_is_non_fatal_and_not_retried(db):
-    deliver = FakeDeliver(ok=False)
+def test_notice_delivery_failure_is_non_fatal_and_not_retried(db):
+    deliver = FakeDeliver(fail_notices=True)
     orch = _orch(deliver)
     _say(orch, "hi", "discord")
-    d = _say(orch, "switched", "telegram")
+    result = _say(orch, "switched", "telegram")
 
-    assert d.text == "hi there!"           # the reply was unaffected
-    assert len(deliver.sent) == 1          # one attempt
+    assert result.any_delivered is True    # the reply was unaffected
+    assert len(deliver.notices) == 1       # one attempt
     assert len(_notes(db)) == 1            # note recorded regardless
     # ...and staying on telegram doesn't retry
     _say(orch, "still here", "telegram")
-    assert len(deliver.sent) == 1
-
-
-def test_no_deliver_callback_disables_the_feature(db):
-    orch = _orch(None)
-    _say(orch, "hi", "discord")
-    d = _say(orch, "switched", "telegram")
-    assert d.text == "hi there!"
-    assert _notes(db) == []
+    assert len(deliver.notices) == 1
 
 
 def test_notice_is_invisible_to_scheduler_and_prompts(db):

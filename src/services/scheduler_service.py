@@ -3,9 +3,10 @@ from typing import Optional, List
 import asyncio
 import logging
 
+from dainframe.core import DeliveryReceipt, DeliveryTarget, Stimulus
+
 from src.managers.user_manager import UserManager
 from src.managers.event_log import EventLog
-from src.services.orchestrator import Stimulus
 from src.services.proactivity_gate import ProactivityGate
 from src.utils.timezone_utils import utc_now, get_user_local_hour, is_within_quiet_hours
 from config import Config
@@ -18,14 +19,27 @@ class SchedulerService:
 
     scheduling is per-USER (one conversation, one recency clock, however many
     platforms they're on); delivery targets the platform the user most
-    recently spoke on, falling back to any other live link."""
+    recently spoke on, falling back to any other live link.
+
+    generation and delivery are two phases until the pulse lands (phase 5 of
+    the extraction): the engine freezes a PENDING line (exact text, opaque
+    id), the scheduler delivers through its platform callback, and only a
+    confirmed send is finalized into shared history via confirm_delivery -
+    idempotent, and impossible to record different text than was generated."""
 
     def __init__(
-        self, orchestrator=None, user_manager: UserManager = None, agenda_service=None
+        self,
+        orchestrator=None,
+        user_manager: UserManager = None,
+        agenda_service=None,
+        curator=None,
     ):
-        # the orchestrator generates scheduled check-ins and runs the curation
-        # pass; None (e.g. no ai provider configured) disables both quietly
+        # the engine (dainframe Orchestrator) generates scheduled check-ins and
+        # runs curation; None (e.g. no ai provider) disables both quietly
         self.orchestrator = orchestrator
+        # the curator agent, for curation-candidate discovery (the engine
+        # dispatches curation ACTIVATIONS; discovery is the scheduler's ask)
+        self.curator = curator
         self.user_manager = user_manager or UserManager()
         # optional: the live workspace agenda (the chat path reads a digest
         # from it; nothing here needs background refreshing)
@@ -132,12 +146,12 @@ class SchedulerService:
         self,
         user_uuid: str,
         platforms: Optional[List[str]] = None,
-    ) -> Optional[tuple[str, str, str]]:
+    ) -> Optional[tuple[str, str, str, str]]:
         """generate a scheduled message if appropriate, targeted at the
         platform the user most recently spoke on (falling back to any other
-        live link). returns (platform, platform_user_id, message) or None.
-        the target is resolved BEFORE the orchestrator runs, so no tokens are
-        spent when there's nowhere to deliver, and the reply event's
+        live link). returns (platform, platform_user_id, message, pending_id)
+        or None. the target is resolved BEFORE the engine runs, so no tokens
+        are spent when there's nowhere to deliver, and the pending line's
         provenance is the real destination."""
         if self.orchestrator is None:
             return None
@@ -155,24 +169,27 @@ class SchedulerService:
             return None
         platform, platform_user_id = target
 
-        deliverable = await self.orchestrator.handle(
+        result = await self.orchestrator.handle(
             Stimulus(
                 kind="scheduled_tick",
-                user_uuid=user_uuid,
+                stream_id=user_uuid,
                 platform=platform,
+                record_inbound=False,
+                scope="dm",
+                audience="chordial",
+                target=DeliveryTarget(platform=platform, target_id=platform_user_id),
             )
         )
-        message = (
-            deliverable.text
-            if not (deliverable.refused or deliverable.errored)
-            else None
+        pending = next(
+            (line.pending for line in result.lines if line.status == "pending"),
+            None,
         )
-
-        if message:
+        if pending is not None:
             logger.info(
-                f"generated scheduled message for user {user_uuid} -> {platform}: {message[:50]}..."
+                f"generated scheduled message for user {user_uuid} -> {platform}: "
+                f"{pending.text[:50]}..."
             )
-            return platform, platform_user_id, message
+            return platform, platform_user_id, pending.text, pending.pending_id
         return None
 
     async def run_scheduling_loop(self, platforms: List[str], message_callback):
@@ -204,17 +221,13 @@ class SchedulerService:
 
         Failed sends stay out of the event log, so they neither appear in future
         conversation context nor consume the user's non-interaction allowance.
+        Confirmation consumes the engine-issued pending id: idempotent, exact
+        frozen text, under the same stream lock the activation used.
         """
-        platform, target_id, message = result
+        platform, target_id, message, pending_id = result
         delivered = await message_callback(platform, target_id, message)
         if delivered:
-            await self.orchestrator.record_delivered_message(
-                user_uuid=user_uuid,
-                platform=platform,
-                speaker="chordial",
-                text=message,
-                message_type="scheduled",
-            )
+            await self.orchestrator.confirm_delivery(pending_id, DeliveryReceipt())
         else:
             logger.warning(
                 "scheduled message for user %s was not delivered; "
@@ -225,13 +238,17 @@ class SchedulerService:
     async def _run_curation_pass(self) -> None:
         """let the curator tidy any user whose new memories have settled. kept
         defensive - a curation failure must never stall message scheduling."""
-        if self.orchestrator is None:
+        if self.orchestrator is None or self.curator is None:
             return
         try:
-            user_uuids = await self.orchestrator.curation_candidates()
+            user_uuids = await self.curator.find_users_needing_curation()
             for user_uuid in user_uuids:
                 await self.orchestrator.handle(
-                    Stimulus(kind="curation_due", user_uuid=user_uuid)
+                    Stimulus(
+                        kind="curation_due",
+                        stream_id=user_uuid,
+                        record_inbound=False,
+                    )
                 )
         except Exception as e:
             logger.error(f"error in memory curation pass: {e}")

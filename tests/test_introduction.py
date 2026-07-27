@@ -27,7 +27,7 @@ import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base  # noqa: E402
 from src.managers.helper_state_manager import HelperStateManager  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
-from src.agents.base import Briefing  # noqa: E402
+from src.agents import Briefing  # noqa: E402
 from src.agents.helper import HelperAgent  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
 from src.personas import PersonaCard, load_personas  # noqa: E402
@@ -482,11 +482,11 @@ def test_helper_agent_introduction_branch_uses_intro_prompt_and_acting_helper(db
     agent = HelperAgent(card, loop, registry)
     briefing = Briefing(
         kind="introduction",
-        user_uuid="u1",
+        stream_id="u1",
+        activation_id="act-test",
         platform="telegram",
-        user_name=None,
-        user_timezone="UTC",
-        events=[],
+        events=(),
+        extras={"user_name": None, "user_timezone": "UTC"},
     )
 
     outcome = run(agent.act(briefing))
@@ -511,11 +511,11 @@ def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):
     agent = HelperAgent(card, loop, registry)
     briefing = Briefing(
         kind="user_message",
-        user_uuid="u1",
+        stream_id="u1",
+        activation_id="act-test",
         platform="telegram",
-        user_name="Dain",
-        user_timezone="UTC",
-        events=[],
+        events=(),
+        extras={"user_name": "Dain", "user_timezone": "UTC"},
     )
     run(agent.act(briefing))
 

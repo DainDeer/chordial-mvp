@@ -1,10 +1,12 @@
-"""orchestrator tests: selection, briefing, recording, and the tool-registry
-view seam.
+"""engine-integration tests: the dainframe engine wired with chordial's
+director/context/hooks/store (src/services/orchestration.py), driven end to
+end with fake agents against a real temp db.
 
-the orchestrator is deliberately deterministic in v2 - these lock down the
-static selection map, the record order (user -> actions -> reply), the
-"non-answers record nothing" invariant, and that scheduled replies carry
-message_type='scheduled'. fake agents, isolated temp db.
+the engine's own invariants are tested in the dainframe; these lock down the
+CHORDIAL wiring: the record order (user -> actions -> reply), confirmed-send-
+before-history through the router adapter, the scheduled pending flow, dm
+scope tagging and the privacy window, group multi-speaker delivery with the
+breathing gap, and profile resolution for scheduler-shaped stimuli.
 """
 
 import asyncio
@@ -20,13 +22,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, ConversationEvent  # noqa: E402
-from src.agents.base import AgentOutcome, Briefing  # noqa: E402
+from src.agents import AgentOutcome, Briefing  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
+from dainframe.core import DeliveryReceipt, DeliveryTarget, Stimulus  # noqa: E402
 from dainframe.loop.agent_loop import ExecutedAction  # noqa: E402
-import src.services.orchestrator as orch_mod  # noqa: E402
-from src.services.orchestrator import Orchestrator, Stimulus  # noqa: E402
+from dainframe.providers.types import ProviderError  # noqa: E402
+import src.services.orchestration as orch_mod  # noqa: E402
+from src.services.orchestration import build_orchestrator  # noqa: E402
 from src.services.tools import Tool, ToolRegistry  # noqa: E402
-from dainframe.providers.types import ToolDef, ProviderError  # noqa: E402
+from dainframe.providers.types import ToolDef  # noqa: E402
 
 
 def run(coro):
@@ -88,7 +92,7 @@ class FakeDeliver:
         self.ok = ok
         self.calls = []  # (platform, target_id, text, speaker)
 
-    async def __call__(self, platform, target_id, text, speaker):
+    async def __call__(self, platform, target_id, text, speaker="chordial"):
         self.calls.append((platform, target_id, text, speaker))
         return self.ok
 
@@ -103,12 +107,40 @@ class FakeCurator:
         return ["u1"]
 
     async def act(self, briefing):
-        self.curated.append(briefing.user_uuid)
+        self.curated.append(briefing.stream_id)
         return AgentOutcome(text=None)
 
 
-def _orch(agents, **kwargs):
-    return Orchestrator(agents=agents, user_manager=UserManager(), **kwargs)
+def _orch(agents, deliver=None, **kwargs):
+    return build_orchestrator(
+        agents=agents, user_manager=UserManager(), deliver=deliver, **kwargs
+    )
+
+
+def _dm(content, helper="chordial", platform="discord", target_id="42"):
+    return Stimulus(
+        kind="user_message", stream_id="u1", content=content, platform=platform,
+        scope="dm", audience=helper, addressed=(helper,),
+        target=DeliveryTarget(platform=platform, target_id=target_id),
+        extras={"user_name": "dain", "user_timezone": "UTC"},
+    )
+
+
+def _group(content, mentioned, platform="telegram", chat="g1"):
+    return Stimulus(
+        kind="user_message", stream_id="u1", content=content, platform=platform,
+        scope="group", addressed=tuple(mentioned),
+        target=DeliveryTarget(platform=platform, target_id=chat),
+        extras={"user_name": "dain", "user_timezone": "UTC"},
+    )
+
+
+def _tick(platform="discord", target_id="42"):
+    return Stimulus(
+        kind="scheduled_tick", stream_id="u1", platform=platform,
+        record_inbound=False, scope="dm", audience="chordial",
+        target=DeliveryTarget(platform=platform, target_id=target_id),
+    )
 
 
 def _events(db):
@@ -119,87 +151,58 @@ def _events(db):
         ]
 
 
-# --- selection ---------------------------------------------------------------
+# --- selection & briefing ------------------------------------------------------
 
 
 def test_user_message_goes_to_companion(db):
     companion = RecordingAgent()
-    orch = _orch({"chordial": companion})
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="discord",
-                content="hello",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.text == "hi!"
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver())
+    result = run(orch.handle(_dm("hello")))
+    assert result.lines[0].status == "delivered"
     assert len(companion.briefings) == 1
     assert companion.briefings[0].kind == "user_message"
 
 
-def test_scheduled_tick_goes_to_companion_with_checkin_briefing(db):
+def test_scheduled_tick_briefs_a_checkin(db):
     companion = RecordingAgent()
     orch = _orch({"chordial": companion})
-    run(
-        orch.handle(Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord"))
-    )
+    run(orch.handle(_tick()))
     assert companion.briefings[0].kind == "scheduled_checkin"
 
 
 def test_curation_due_goes_to_curator(db):
     curator = FakeCurator()
     orch = _orch({"chordial": RecordingAgent(), "curator": curator})
-    run(orch.handle(Stimulus(kind="curation_due", user_uuid="u1")))
+    run(orch.handle(Stimulus(kind="curation_due", stream_id="u1",
+                             record_inbound=False)))
     assert curator.curated == ["u1"]
-    assert run(orch.curation_candidates()) == ["u1"]
 
 
-def test_unknown_stimulus_selects_nobody(db):
+def test_unknown_stimulus_is_an_explicit_noop(db):
     companion = RecordingAgent()
     orch = _orch({"chordial": companion})
-    d = run(orch.handle(Stimulus(kind="mystery", user_uuid="u1")))
-    assert d.text is None
+    result = run(orch.handle(Stimulus(kind="mystery", stream_id="u1")))
+    assert result.status == "noop"
     assert companion.briefings == []
-
-
-# --- briefing assembly ---------------------------------------------------------
 
 
 def test_briefing_includes_inbound_message_as_last_event(db):
     companion = RecordingAgent()
-    orch = _orch({"chordial": companion})
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="discord",
-                content="the new message",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver())
+    run(orch.handle(_dm("the new message")))
     events = companion.briefings[0].events
     assert events[-1].content == "the new message"
-    assert events[-1].role == "user"
+    assert events[-1].author_type == "user"
 
 
 def test_scheduler_stimulus_resolves_profile_from_db(db):
-    """the scheduler doesn't resolve names/timezones; the orchestrator must."""
+    """the scheduler doesn't resolve names/timezones; ChordialContext must."""
     companion = RecordingAgent()
     orch = _orch({"chordial": companion})
-    run(
-        orch.handle(Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord"))
-    )
+    run(orch.handle(_tick()))
     b = companion.briefings[0]
-    assert b.user_name == "dain"
-    assert b.user_timezone == "US/Pacific"
+    assert b.extras["user_name"] == "dain"
+    assert b.extras["user_timezone"] == "US/Pacific"
 
 
 # --- recording -----------------------------------------------------------------
@@ -208,57 +211,33 @@ def test_scheduler_stimulus_resolves_profile_from_db(db):
 def test_scheduled_reply_is_recorded_only_after_delivery_confirmation(db):
     companion = RecordingAgent(outcome=AgentOutcome(text="checking in~"))
     orch = _orch({"chordial": companion})
-    d = run(
-        orch.handle(Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord"))
-    )
-    assert d.text == "checking in~"
-    assert _events(db) == []
+    result = run(orch.handle(_tick()))
 
-    run(
-        orch.record_delivered_message(
-            user_uuid="u1",
-            platform="discord",
-            speaker="chordial",
-            text=d.text,
-            message_type="scheduled",
-        )
-    )
+    (line,) = result.lines
+    assert line.status == "pending"
+    assert line.pending.text == "checking in~"
+    assert _events(db) == []          # nothing in history until confirmed
+
+    run(orch.confirm_delivery(line.pending.pending_id, DeliveryReceipt()))
     assert _events(db) == [("message", "agent", "chordial", "scheduled")]
+
+    # confirming twice records once (the engine's idempotence invariant)
+    run(orch.confirm_delivery(line.pending.pending_id, DeliveryReceipt()))
+    assert len(_events(db)) == 1
 
 
 def test_record_order_user_actions_reply(db):
-    reg = ToolRegistry()
-
-    async def _noop(i, u):
-        return "ok"
-
-    reg.register(
-        Tool(
-            definition=ToolDef(name="create_task", description="", input_schema={}),
-            handler=_noop,
-        )
-    )
     companion = RecordingAgent(
         outcome=AgentOutcome(
             text="made it!",
-            actions=[
-                ExecutedAction("create_task", {"title": "x"}, "created", False, False, True)
-            ],
+            actions=(
+                ExecutedAction("create_task", {"title": "x"}, "created",
+                               False, False, True),
+            ),
         )
     )
-    orch = _orch({"chordial": companion}, tool_registry=reg)
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="discord",
-                content="make a task",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver())
+    run(orch.handle(_dm("make a task")))
     assert [(k, at) for k, at, _, _ in _events(db)] == [
         ("message", "user"),
         ("action", "agent"),
@@ -266,76 +245,29 @@ def test_record_order_user_actions_reply(db):
     ]
 
 
-def test_provider_error_records_nothing_and_flags_errored(db):
+def test_provider_error_records_nothing_and_errors_the_line(db):
     class ExplodingAgent:
         name = "chordial"
 
         async def act(self, briefing):
             raise ProviderError("api down")
 
-    orch = _orch({"chordial": ExplodingAgent()})
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="discord",
-                content="hello?",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.errored is True
+    orch = _orch({"chordial": ExplodingAgent()}, deliver=FakeDeliver())
+    result = run(orch.handle(_dm("hello?")))
+    assert result.lines[0].status == "errored"
     # only the inbound user message was persisted
     assert [k for k, _, _, _ in _events(db)] == ["message"]
 
 
 def test_curator_outcome_is_silent_and_unrecorded(db):
-    orch = _orch({"curator": FakeCurator()})
-    d = run(orch.handle(Stimulus(kind="curation_due", user_uuid="u1")))
-    assert d.text is None
+    orch = _orch({"curator": FakeCurator(), "chordial": RecordingAgent()})
+    result = run(orch.handle(Stimulus(kind="curation_due", stream_id="u1",
+                                      record_inbound=False)))
+    assert result.lines[0].status == "silent"
     assert _events(db) == []  # nothing written to the conversation
 
 
-# --- tool registry view ----------------------------------------------------------
-
-
-def test_registry_view_filters_and_shares_tools():
-    reg = ToolRegistry()
-
-    async def _noop(i, u):
-        return "ok"
-
-    reg.register(
-        Tool(
-            definition=ToolDef(name="a", description="", input_schema={}), handler=_noop
-        )
-    )
-    reg.register(
-        Tool(
-            definition=ToolDef(name="b", description="", input_schema={}),
-            handler=_noop,
-            terminal=True,
-        )
-    )
-
-    view = reg.view(["b"])
-    assert [d.name for d in view.definitions()] == ["b"]
-    assert view.is_terminal("b") is True
-    assert (
-        reg.view(["a", "b"]).definitions()
-        and len(reg.view(["a", "b"]).definitions()) == 2
-    )
-
-
-def test_registry_view_raises_on_unknown_tool():
-    reg = ToolRegistry()
-    with pytest.raises(KeyError):
-        reg.view(["ghost_tool"])
-
-
-# --- group delivery, scope, and dm privacy (v3) -------------------------------
+# --- group delivery, scope, and dm privacy -------------------------------------
 
 
 def _events_meta(db):
@@ -348,8 +280,7 @@ def _events_meta(db):
 
 def test_group_delivers_each_line_out_of_band_with_a_gap(db, monkeypatch):
     """a group activation delivers every line through the speaker-aware router
-    (each bot speaks for itself), with one natural gap between the two lines,
-    and returns handled=True/text=None so the interface sends nothing."""
+    (each bot speaks for itself), with one natural gap between the two lines."""
     sleeps = []
 
     async def fake_sleep(secs):
@@ -362,147 +293,58 @@ def test_group_delivers_each_line_out_of_band_with_a_gap(db, monkeypatch):
     deliver = FakeDeliver()
     orch = _orch(
         {"chordial": RecordingAgent(), "tempo": tempo, "aria": aria},
-        helper_state_manager=FakeHSM(("chordial", "tempo", "aria")),
         deliver=deliver,
+        helper_state_manager=FakeHSM(("chordial", "tempo", "aria")),
     )
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="@tempo @aria hey",
-                chat_scope="group",
-                group_chat_id="g1",
-                mentioned=["tempo", "aria"],
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    result = run(orch.handle(_group("@tempo @aria hey", ["tempo", "aria"])))
 
     assert deliver.calls == [
         ("telegram", "g1", "train time", "tempo"),
         ("telegram", "g1", "a poem", "aria"),
     ]
     assert len(sleeps) == 1 and 2.0 <= sleeps[0] <= 5.0  # one gap between two lines
-    assert d.handled is True
-    assert d.text is None
+    assert [line.status for line in result.lines] == ["delivered", "delivered"]
 
 
-def test_dm_returns_text_without_out_of_band_delivery(db):
-    deliver = FakeDeliver()
-    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hey from tempo"))
-    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo}, deliver=deliver)
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="hi tempo",
-                chat_scope="dm",
-                dm_helper="tempo",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
+def test_dm_without_target_is_a_configuration_error(db):
+    """the old 'no delivery hook -> return the text and record it anyway'
+    fallback is deliberately dead (dainframe DESIGN.md §11.3): an activation
+    that can't confirm a send never pretends it delivered."""
+    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hey"))
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo},
+                 deliver=FakeDeliver())
+    stim = Stimulus(
+        kind="user_message", stream_id="u1", content="hi tempo",
+        platform="telegram", scope="dm", audience="tempo", addressed=("tempo",),
+        extras={"user_name": "dain", "user_timezone": "UTC"},  # no target
     )
-    assert d.text == "hey from tempo"
-    assert d.handled is False
-    assert (
-        deliver.calls == []
-    )  # dm: the receiving interface sends, not the orchestrator
+    result = run(orch.handle(stim))
+    assert result.lines[0].status == "errored"
+    assert result.lines[0].error.kind == "delivery_configuration"
+    assert _events(db) == [("message", "user", "user", "conversation")]
 
 
-def test_dm_with_target_records_only_after_router_confirms_delivery(db):
+def test_dm_records_only_after_router_confirms_delivery(db):
     tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hey from tempo"))
     failed = FakeDeliver(ok=False)
     orch = _orch({"chordial": RecordingAgent(), "tempo": tempo}, deliver=failed)
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="hi tempo",
-                delivery_target_id="42",
-                chat_scope="dm",
-                dm_helper="tempo",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.errored is True and d.handled is False
+    result = run(orch.handle(_dm("hi tempo", helper="tempo", platform="telegram")))
+    assert result.lines[0].status == "errored"
+    assert result.lines[0].error.kind == "delivery_failed"
     assert _events(db) == [("message", "user", "user", "conversation")]
 
     delivered = FakeDeliver(ok=True)
-    orch.deliver = delivered
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="try again",
-                delivery_target_id="42",
-                chat_scope="dm",
-                dm_helper="tempo",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.handled is True
+    orch2 = _orch({"chordial": RecordingAgent(), "tempo": tempo}, deliver=delivered)
+    result = run(orch2.handle(_dm("try again", helper="tempo", platform="telegram")))
+    assert result.any_delivered is True
     assert _events(db)[-1] == ("message", "agent", "tempo", "conversation")
-
-
-def test_group_without_deliver_hook_reports_error_and_does_not_record_reply(
-    db, monkeypatch
-):
-    monkeypatch.setattr(orch_mod.asyncio, "sleep", lambda s: asyncio.sleep(0))
-    tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="hi"))
-    orch = _orch(
-        {"chordial": RecordingAgent(), "tempo": tempo},
-        helper_state_manager=FakeHSM(("chordial", "tempo")),
-    )  # deliver=None
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="@tempo hi",
-                chat_scope="group",
-                group_chat_id="g1",
-                mentioned=["tempo"],
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.handled is False and d.errored is True and d.text is None
-    assert _events(db) == [("message", "user", "user", "conversation")]
 
 
 def test_dm_events_carry_the_helpers_private_scope(db):
     tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
-    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo})
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="hi",
-                chat_scope="dm",
-                dm_helper="tempo",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    orch = _orch({"chordial": RecordingAgent(), "tempo": tempo},
+                 deliver=FakeDeliver())
+    run(orch.handle(_dm("hi", helper="tempo", platform="telegram")))
     metas = _events_meta(db)
     assert [(a, k) for a, k, _ in metas] == [("user", "message"), ("tempo", "message")]
     assert all(
@@ -517,72 +359,29 @@ def test_group_events_carry_no_scope_tag(db, monkeypatch):
     tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
     orch = _orch(
         {"chordial": RecordingAgent(), "tempo": tempo},
-        helper_state_manager=FakeHSM(("chordial", "tempo")),
         deliver=FakeDeliver(),
+        helper_state_manager=FakeHSM(("chordial", "tempo")),
     )
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="@tempo hi",
-                chat_scope="group",
-                group_chat_id="g1",
-                mentioned=["tempo"],
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    run(orch.handle(_group("@tempo hi", ["tempo"])))
     assert all(not m for _, _, m in _events_meta(db))  # no scope metadata anywhere
 
 
 def test_briefing_is_scope_aware_and_excludes_a_siblings_dm(db):
     """the privacy window: chordial sees the group channel and its own dm, but
-    never aria's private transcript. (verifies the behavior the foundation's
-    recent(visible_to=) is meant to provide; the orchestrator filters here
-    because that foundation branch has a detached-instance bug - see the
-    _visible_window docstring.)"""
+    never aria's private transcript."""
     from src.managers.event_log import EventLog
 
     log = EventLog("u1")
-    log.append_message(
-        "user",
-        "user",
-        "secret for aria",
-        platform="telegram",
-        scope="dm",
-        with_helper="aria",
-    )
-    log.append_message(
-        "agent",
-        "aria",
-        "aria private reply",
-        platform="telegram",
-        scope="dm",
-        with_helper="aria",
-    )
-    log.append_message(
-        "user", "user", "group hello", platform="telegram", scope="group"
-    )
+    log.append_message("user", "user", "secret for aria",
+                       platform="telegram", scope="dm", with_helper="aria")
+    log.append_message("agent", "aria", "aria private reply",
+                       platform="telegram", scope="dm", with_helper="aria")
+    log.append_message("user", "user", "group hello",
+                       platform="telegram", scope="group")
 
     companion = RecordingAgent()  # chordial
-    orch = _orch({"chordial": companion})
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="hi chordial",
-                chat_scope="dm",
-                dm_helper="chordial",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver())
+    run(orch.handle(_dm("hi chordial", platform="telegram")))
 
     seen = [e.content for e in companion.briefings[0].events]
     assert "secret for aria" not in seen
@@ -591,31 +390,15 @@ def test_briefing_is_scope_aware_and_excludes_a_siblings_dm(db):
     assert "hi chordial" in seen  # its own inbound dm is visible
 
 
-def test_group_briefing_reflects_scope_and_cue(db, monkeypatch):
-    """the director's stage direction (cue/style) and the group scope reach the
-    briefed agent."""
+def test_group_briefing_reflects_scope(db, monkeypatch):
     monkeypatch.setattr(orch_mod.asyncio, "sleep", lambda s: asyncio.sleep(0))
     tempo = RecordingAgent(name="tempo", outcome=AgentOutcome(text="ok"))
     orch = _orch(
         {"chordial": RecordingAgent(), "tempo": tempo},
-        helper_state_manager=FakeHSM(("chordial", "tempo")),
         deliver=FakeDeliver(),
+        helper_state_manager=FakeHSM(("chordial", "tempo")),
     )
-    run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="telegram",
-                content="@tempo hi",
-                chat_scope="group",
-                group_chat_id="g1",
-                mentioned=["tempo"],
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
+    run(orch.handle(_group("@tempo hi", ["tempo"])))
     b = tempo.briefings[0]
     assert b.scope == "group"
     assert b.style == "full"
@@ -624,40 +407,27 @@ def test_group_briefing_reflects_scope_and_cue(db, monkeypatch):
 # --- empty outcomes never fall through silently -------------------------------
 
 
-def test_empty_outcome_on_user_message_marks_errored(db):
-    """no text, no refusal, no error - on a turn that owes a reply. this used
-    to fall through every branch: nothing delivered, errored never set, and
-    the user just got silence. it must surface as errored so the caller's
-    graceful fallback fires in the same turn."""
+def test_empty_outcome_on_user_message_errors_the_line(db):
+    """no text, no refusal, no error - on a turn that owes a reply. it must
+    surface as an errored line so the caller's graceful fallback fires."""
     companion = RecordingAgent(outcome=AgentOutcome(text=None))
-    orch = _orch({"chordial": companion})
-    d = run(
-        orch.handle(
-            Stimulus(
-                kind="user_message",
-                user_uuid="u1",
-                platform="discord",
-                content="hello?",
-                user_name="dain",
-                user_timezone="UTC",
-            )
-        )
-    )
-    assert d.errored is True
-    assert d.text is None
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver())
+    result = run(orch.handle(_dm("hello?")))
+    assert result.lines[0].status == "errored"
+    assert result.lines[0].error.kind == "empty_required_reply"
 
 
 def test_curator_silence_is_still_not_an_error(db):
-    """the curator's text=None is by design - the guardrail must not turn
-    silent-by-design activations into user-facing errors."""
-    orch = _orch({"curator": FakeCurator()})
-    d = run(orch.handle(Stimulus(kind="curation_due", user_uuid="u1")))
-    assert d.errored is False
+    orch = _orch({"curator": FakeCurator(), "chordial": RecordingAgent()})
+    result = run(orch.handle(Stimulus(kind="curation_due", stream_id="u1",
+                                      record_inbound=False)))
+    assert result.lines[0].status == "silent"
 
 
 def test_empty_scheduled_tick_stays_quiet_not_errored(db):
+    """the scheduled line is response='optional': a quiet tick is a non-event."""
     companion = RecordingAgent(outcome=AgentOutcome(text=None))
     orch = _orch({"chordial": companion})
-    d = run(orch.handle(
-        Stimulus(kind="scheduled_tick", user_uuid="u1", platform="discord")))
-    assert d.errored is False and d.text is None
+    result = run(orch.handle(_tick()))
+    assert result.lines[0].status == "silent"
+    assert result.lines[0].pending is None

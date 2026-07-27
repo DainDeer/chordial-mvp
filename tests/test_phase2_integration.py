@@ -18,7 +18,7 @@ from src.managers.helper_state_manager import HelperStateManager, STATUS_ACTIVE
 from src.managers.user_manager import UserManager
 from src.models.unified_message import UnifiedMessage
 from src.services.chat_service import ChatService
-from src.services.orchestrator import Orchestrator
+from src.services.orchestration import build_orchestrator
 
 
 class FakeHelper:
@@ -29,7 +29,7 @@ class FakeHelper:
         self.briefings = []
 
     async def act(self, briefing):
-        from src.agents.base import AgentOutcome
+        from src.agents import AgentOutcome
         self.briefings.append(briefing)
         return AgentOutcome(text=f"{self.name} says hi")
 
@@ -44,7 +44,7 @@ class RecordingDeliver:
 
 
 def _orch(agents, deliver=None):
-    return Orchestrator(
+    return build_orchestrator(
         agents=agents,
         user_manager=UserManager(),
         deliver=deliver,
@@ -65,16 +65,19 @@ def _run(coro):
 
 def test_new_user_dm_routes_to_introduction():
     """a brand-new user's first dm becomes an introduction briefing for
-    chordial (not a normal user_message)."""
+    chordial (not a normal user_message), delivered through the router."""
     chordial = FakeHelper("chordial")
-    chat = ChatService(orchestrator=_orch({"chordial": chordial}), user_manager=UserManager())
+    deliver = RecordingDeliver()
+    chat = ChatService(orchestrator=_orch({"chordial": chordial}, deliver=deliver),
+                       user_manager=UserManager())
 
     msg = UnifiedMessage(content="hello?", platform_user_id="tg-new-1",
                          platform="telegram", platform_message_id="1",
                          chat_scope="dm", dm_helper="chordial")
     reply = _run(chat.process_message(msg))
 
-    assert reply == "chordial says hi"
+    assert reply is None            # router delivered; interface sends nothing
+    assert deliver.sent == [("telegram", "tg-new-1", "chordial says hi", "chordial")]
     assert chordial.briefings[-1].kind == "introduction"
 
 
@@ -86,13 +89,16 @@ def test_returning_active_user_dm_is_a_normal_turn():
     _run(HelperStateManager().set_status(user_uuid, "chordial", STATUS_ACTIVE))
 
     chordial = FakeHelper("chordial")
-    chat = ChatService(orchestrator=_orch({"chordial": chordial}), user_manager=um)
+    deliver = RecordingDeliver()
+    chat = ChatService(orchestrator=_orch({"chordial": chordial}, deliver=deliver),
+                       user_manager=um)
     msg = UnifiedMessage(content="hey", platform_user_id="tg-active-1",
                          platform="telegram", platform_message_id="2",
                          chat_scope="dm", dm_helper="chordial")
     reply = _run(chat.process_message(msg))
 
-    assert reply == "chordial says hi"
+    assert reply is None
+    assert deliver.sent == [("telegram", "tg-active-1", "chordial says hi", "chordial")]
     assert chordial.briefings[-1].kind == "user_message"
 
 

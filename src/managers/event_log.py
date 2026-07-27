@@ -119,6 +119,25 @@ class Event:
             platform=row.platform,
         )
 
+    @classmethod
+    def from_dainframe(cls, event) -> "Event":
+        """chordial's prompt-side view of a dainframe Event. the engine briefs
+        agents with library events; PromptService renders chordial Events -
+        this is the byte-preserving bridge at the agent boundary (metadata
+        carries the scope tags, so role/scope/dm_helper all keep working)."""
+        event_id = str(event.event_id)
+        return cls(
+            author_type=event.author_type,
+            author=event.author,
+            kind=event.kind,
+            content=event.content,
+            created_at=event.created_at,
+            message_type=event.message_type,
+            metadata=dict(event.metadata),
+            db_id=int(event_id) if event_id.isdigit() else None,
+            platform=event.platform,
+        )
+
 
 class EventLog:
     """append/read interface for one user's conversation. stateless -
