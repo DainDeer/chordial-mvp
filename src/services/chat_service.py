@@ -23,10 +23,11 @@ import logging
 from typing import Optional
 from weakref import WeakValueDictionary
 
+from dainframe.core import DeliveryTarget, Stimulus
+
 from src.models.unified_message import UnifiedMessage
 from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
-from src.services.orchestrator import Stimulus
 
 logger = logging.getLogger(__name__)
 
@@ -132,24 +133,45 @@ class ChatService:
                 if not self.orchestrator:
                     return f"echo: {unified_message.content}"
 
-                deliverable = await self.orchestrator.handle(
-                    Stimulus(
+                if chat_scope == "group":
+                    stimulus = Stimulus(
                         kind=kind,
-                        user_uuid=user_uuid,
-                        platform=platform,
+                        stream_id=user_uuid,
                         content=unified_message.content,
-                        delivery_target_id=platform_user_id,
-                        user_name=user_name,
-                        user_timezone=user_timezone,
-                        chat_scope=chat_scope,
-                        group_chat_id=group_chat_id,
-                        dm_helper=dm_helper,
-                        mentioned=mentioned,
-                        intro_helper=intro_helper,
+                        platform=platform,
+                        scope="group",
+                        addressed=tuple(mentioned),
+                        target=(
+                            DeliveryTarget(platform=platform, target_id=group_chat_id)
+                            if group_chat_id else None
+                        ),
+                        extras={
+                            "user_name": user_name,
+                            "user_timezone": user_timezone,
+                        },
                     )
-                )
+                else:
+                    # the addressed helper is both the lone speaker and the
+                    # name of the private channel the inbound records into
+                    stimulus = Stimulus(
+                        kind=kind,
+                        stream_id=user_uuid,
+                        content=unified_message.content,
+                        platform=platform,
+                        scope="dm",
+                        audience=intro_helper or dm_helper,
+                        addressed=(intro_helper or dm_helper,),
+                        target=DeliveryTarget(
+                            platform=platform, target_id=platform_user_id
+                        ),
+                        extras={
+                            "user_name": user_name,
+                            "user_timezone": user_timezone,
+                        },
+                    )
 
-                return self._reply_for(deliverable)
+                result = await self.orchestrator.handle(stimulus)
+                return self._reply_for(result)
 
         except Exception as e:
             logger.error(f"error processing message: {e}")
@@ -177,36 +199,42 @@ class ChatService:
                 if not self.orchestrator:
                     return f"echo: meet {helper_id}"
 
-                deliverable = await self.orchestrator.handle(
+                result = await self.orchestrator.handle(
                     Stimulus(
                         kind="introduction",
-                        user_uuid=user_uuid,
-                        platform=platform,
+                        stream_id=user_uuid,
                         content=None,
-                        delivery_target_id=platform_user_id,
-                        user_name=user_name,
-                        user_timezone=user_timezone,
-                        chat_scope="dm",
-                        dm_helper=helper_id,
-                        intro_helper=helper_id,
+                        platform=platform,
+                        scope="dm",
+                        audience=helper_id,
+                        addressed=(helper_id,),
+                        target=DeliveryTarget(
+                            platform=platform, target_id=platform_user_id
+                        ),
+                        extras={
+                            "user_name": user_name,
+                            "user_timezone": user_timezone,
+                        },
                     )
                 )
 
-                return self._reply_for(deliverable)
+                return self._reply_for(result)
 
         except Exception as e:
             logger.error(f"error beginning introduction for helper {helper_id}: {e}")
             return "sorry, i encountered an error processing your message."
 
     @staticmethod
-    def _reply_for(deliverable) -> Optional[str]:
-        """map a Deliverable to what the platform interface should send.
-        `handled` means the router already confirmed delivery, so the calling
-        interface must not send a duplicate."""
-        if deliverable.handled:
+    def _reply_for(result) -> Optional[str]:
+        """map an ActivationResult to what the platform interface should send.
+        a delivered line means the router already confirmed the send, so the
+        calling interface must not send a duplicate. anything else gets the
+        in-character non-answer copy (never persisted, so it can't pollute
+        future context). there is deliberately no raw-text fallback: an
+        undelivered reply is an error, not a return value (the engine's
+        confirmed-send-before-history invariant)."""
+        if result.any_delivered:
             return None
-        if deliverable.refused:
+        if any(line.status == "refused" for line in result.lines):
             return REFUSAL_REPLY
-        if deliverable.errored or not deliverable.text:
-            return ERROR_REPLY
-        return deliverable.text
+        return ERROR_REPLY

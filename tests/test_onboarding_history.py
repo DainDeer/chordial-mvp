@@ -26,7 +26,7 @@ from src.database.models import Base  # noqa: E402
 from src.managers.helper_state_manager import HelperStateManager  # noqa: E402
 from src.managers.user_manager import UserManager  # noqa: E402
 from src.services.chat_service import ChatService  # noqa: E402
-from src.services.orchestration_types import Deliverable  # noqa: E402
+from dainframe.core import ActivationResult, LineResult  # noqa: E402
 from src.models.unified_message import UnifiedMessage  # noqa: E402
 
 
@@ -47,17 +47,30 @@ def db(monkeypatch):
     engine.dispose()
 
 
-class RecordingOrchestrator:
-    """stands in for the real Orchestrator: records every Stimulus it was
-    handed and returns a canned Deliverable."""
+def _result(status="delivered"):
+    return ActivationResult(
+        activation_id="act-test", stream_id="s", inbound_event_id=None,
+        status="completed", status_reason=None,
+        lines=(LineResult(line_id="act-test:0", speaker="chordial",
+                          status=status),),
+    )
 
-    def __init__(self, deliverable=None):
+
+def _delivered_result():
+    return _result("delivered")
+
+
+class RecordingOrchestrator:
+    """stands in for the engine: records every Stimulus it was handed and
+    returns a canned delivered ActivationResult."""
+
+    def __init__(self, result=None):
         self.calls = []
-        self._deliverable = deliverable or Deliverable(text="hi there")
+        self._result = result or _delivered_result()
 
     async def handle(self, stimulus):
         self.calls.append(stimulus)
-        return self._deliverable
+        return self._result
 
 
 def _msg(content: str, **kwargs) -> UnifiedMessage:
@@ -71,9 +84,9 @@ def _msg(content: str, **kwargs) -> UnifiedMessage:
     )
 
 
-def _chat_service(deliverable=None):
+def _chat_service(result=None):
     user_manager = UserManager()
-    orchestrator = RecordingOrchestrator(deliverable)
+    orchestrator = RecordingOrchestrator(result)
     return (
         ChatService(orchestrator=orchestrator, user_manager=user_manager),
         orchestrator,
@@ -88,13 +101,13 @@ def test_new_user_gets_introduction_stimulus(db):
     chat, orchestrator, _ = _chat_service()
     reply = run(chat.process_message(_msg("hello chordial")))
 
-    assert reply == "hi there"
+    assert reply is None    # delivered through the router; nothing to echo
     assert len(orchestrator.calls) == 1
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
-    assert stim.chat_scope == "dm"
-    assert stim.dm_helper == "chordial"
-    assert stim.intro_helper == "chordial"
+    assert stim.scope == "dm"
+    assert stim.audience == "chordial"
+    assert stim.addressed == ("chordial",)
 
 
 def test_new_user_moves_chordial_state_to_introducing(db):
@@ -120,7 +133,7 @@ def test_legacy_user_without_preferred_name_still_treated_as_introducing(db):
 
     reply = run(chat.process_message(_msg("hi", platform_user_id="999")))
 
-    assert reply == "hi there"
+    assert reply is None
     assert orchestrator.calls[0].kind == "introduction"
 
 
@@ -132,11 +145,10 @@ def test_returning_active_user_gets_user_message_stimulus(db):
 
     reply = run(chat.process_message(_msg("hey again", platform_user_id="456")))
 
-    assert reply == "hi there"
+    assert reply is None
     assert len(orchestrator.calls) == 1
     stim = orchestrator.calls[0]
     assert stim.kind == "user_message"
-    assert stim.intro_helper is None
 
 
 def test_active_user_with_no_saved_name_is_not_re_introduced(db):
@@ -174,8 +186,8 @@ def test_specialist_dm_continues_that_helpers_introduction(db):
 
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
-    assert stim.dm_helper == "tempo"
-    assert stim.intro_helper == "tempo"
+    assert stim.audience == "tempo"
+    assert stim.addressed == ("tempo",)
 
 
 def test_unmet_specialist_dm_does_not_use_chordial_legacy_name_rule(db):
@@ -195,7 +207,7 @@ def test_unmet_specialist_dm_does_not_use_chordial_legacy_name_rule(db):
     )
 
     assert orchestrator.calls[0].kind == "user_message"
-    assert orchestrator.calls[0].intro_helper is None
+    assert orchestrator.calls[0].audience == "tempo"
 
 
 def test_still_introducing_rules():
@@ -209,7 +221,7 @@ def test_still_introducing_rules():
 
 
 def test_group_scope_returns_none(db):
-    chat, orchestrator, _ = _chat_service(deliverable=Deliverable(handled=True))
+    chat, orchestrator, _ = _chat_service()
     reply = run(
         chat.process_message(
             _msg(
@@ -222,20 +234,20 @@ def test_group_scope_returns_none(db):
     )
 
     assert reply is None
-    assert orchestrator.calls[0].chat_scope == "group"
+    assert orchestrator.calls[0].scope == "group"
 
 
 def test_refused_and_errored_map_to_in_character_copy(db):
     from src.services.chat_service import REFUSAL_REPLY, ERROR_REPLY
 
-    chat, _, user_manager = _chat_service(deliverable=Deliverable(refused=True))
+    chat, _, user_manager = _chat_service(result=_result("refused"))
     user_uuid, _ = run(user_manager.get_or_create_user("discord", "1", "a"))
     run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
     run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "a"}))
     reply = run(chat.process_message(_msg("do something bad", platform_user_id="1")))
     assert reply == REFUSAL_REPLY
 
-    chat2, _, user_manager2 = _chat_service(deliverable=Deliverable(errored=True))
+    chat2, _, user_manager2 = _chat_service(result=_result("errored"))
     user_uuid2, _ = run(user_manager2.get_or_create_user("discord", "2", "b"))
     run(HelperStateManager().set_status(user_uuid2, "chordial", "active"))
     run(user_manager2.update_user_preferences(user_uuid2, {"preferred_name": "b"}))
@@ -253,20 +265,18 @@ def test_echo_fallback_when_no_orchestrator(db):
 
 
 def test_begin_introduction_sets_helper_introducing_and_returns_reply(db):
-    chat, orchestrator, user_manager = _chat_service(
-        deliverable=Deliverable(text="hey, i'm tempo")
-    )
+    chat, orchestrator, user_manager = _chat_service()
     user_uuid, _ = run(user_manager.get_or_create_user("telegram", "789", "dain"))
 
     reply = run(chat.begin_introduction("telegram", "789", "tempo"))
 
-    assert reply == "hey, i'm tempo"
+    assert reply is None    # tempo's bot delivered through the router
     assert len(orchestrator.calls) == 1
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
-    assert stim.chat_scope == "dm"
-    assert stim.dm_helper == "tempo"
-    assert stim.intro_helper == "tempo"
+    assert stim.scope == "dm"
+    assert stim.audience == "tempo"
+    assert stim.addressed == ("tempo",)
 
     state = run(HelperStateManager().get(user_uuid, "tempo"))
     assert state.status == "introducing"
@@ -289,7 +299,7 @@ def test_same_user_activations_are_serialized(db):
                 self.first_started.set()
                 await self.release_first.wait()
             self.active -= 1
-            return Deliverable(text=stimulus.content)
+            return _delivered_result()
 
     async def exercise():
         user_manager = UserManager()
@@ -323,7 +333,7 @@ def test_same_user_activations_are_serialized(db):
         await asyncio.sleep(0)
         assert len(orchestrator.calls) == 1
         orchestrator.release_first.set()
-        assert await asyncio.gather(first, second) == ["first", "second"]
+        assert await asyncio.gather(first, second) == [None, None]
         assert orchestrator.max_active == 1
 
     run(exercise())
@@ -340,7 +350,7 @@ def test_different_users_are_not_serialized(db):
             if self.started == 2:
                 self.both_started.set()
             await asyncio.wait_for(self.both_started.wait(), timeout=1)
-            return Deliverable(text=stimulus.content)
+            return _delivered_result()
 
     async def exercise():
         user_manager = UserManager()
@@ -368,6 +378,6 @@ def test_different_users_are_not_serialized(db):
                 for platform_id in ("parallel-a", "parallel-b")
             )
         )
-        assert replies == ["parallel-a", "parallel-b"]
+        assert replies == [None, None]   # both delivered, neither blocked
 
     run(exercise())

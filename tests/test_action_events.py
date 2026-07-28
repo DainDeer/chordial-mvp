@@ -259,20 +259,28 @@ class FakeAgent:
         return self._outcome
 
 
+class OkDeliver:
+    async def __call__(self, platform, target_id, text, speaker="chordial"):
+        return True
+
+
 def _orchestrator(outcome):
     from src.managers.user_manager import UserManager
-    from src.services.orchestrator import Orchestrator
-    return Orchestrator(
+    from src.services.orchestration import build_orchestrator
+    return build_orchestrator(
         agents={"chordial": FakeAgent(outcome)},
         user_manager=UserManager(),
-        tool_registry=_registry(),
+        deliver=OkDeliver(),
     )
 
 
 def _stimulus(content="hey"):
-    from src.services.orchestrator import Stimulus
-    return Stimulus(kind="user_message", user_uuid="u1", platform="discord",
-                    content=content, user_name="dain", user_timezone="UTC")
+    from dainframe.core import DeliveryTarget, Stimulus
+    return Stimulus(kind="user_message", stream_id="u1", platform="discord",
+                    content=content, scope="dm", audience="chordial",
+                    addressed=("chordial",),
+                    target=DeliveryTarget(platform="discord", target_id="42"),
+                    extras={"user_name": "dain", "user_timezone": "UTC"})
 
 
 def _events(db):
@@ -282,7 +290,7 @@ def _events(db):
 
 
 def _outcome(text="done!", actions=(), refused=False):
-    from src.agents.base import AgentOutcome
+    from src.agents import AgentOutcome
     return AgentOutcome(text=text, actions=list(actions), refused=refused)
 
 
@@ -317,18 +325,18 @@ def test_refused_turn_records_executed_actions_but_no_prose(db):
     orch = _orchestrator(_outcome(text=None, refused=True, actions=[
         ExecutedAction("create_task", {"title": "z"}, "created", False, False, True),
     ]))
-    deliverable = run(orch.handle(_stimulus()))
+    result = run(orch.handle(_stimulus()))
 
-    assert deliverable.refused is True
+    assert result.lines[0].status == "refused"
     kinds = [k for k, _, _ in _events(db)]
     assert kinds == ["message", "action"]   # the action survives; no reply prose
 
 
 def test_refused_turn_with_no_actions_persists_only_the_user_message(db):
     orch = _orchestrator(_outcome(text=None, refused=True))
-    deliverable = run(orch.handle(_stimulus()))
+    result = run(orch.handle(_stimulus()))
 
-    assert deliverable.refused is True
+    assert result.lines[0].status == "refused"
     kinds = [k for k, _, _ in _events(db)]
     assert kinds == ["message"]  # only the inbound user message
 
@@ -339,7 +347,7 @@ def test_provider_failure_after_tools_keeps_the_action_trail(db):
     partial actions; the orchestrator must record them, not drop them."""
     from dainframe.loop.agent_loop import AgentExecutionError
     from src.managers.user_manager import UserManager
-    from src.services.orchestrator import Orchestrator
+    from src.services.orchestration import build_orchestrator
 
     class DyingAgent:
         name = "chordial"
@@ -354,14 +362,14 @@ def test_provider_failure_after_tools_keeps_the_action_trail(db):
                 retryable=True,
             )
 
-    orch = Orchestrator(
+    orch = build_orchestrator(
         agents={"chordial": DyingAgent()},
         user_manager=UserManager(),
-        tool_registry=_registry(),
+        deliver=OkDeliver(),
     )
-    deliverable = run(orch.handle(_stimulus()))
+    result = run(orch.handle(_stimulus()))
 
-    assert deliverable.errored is True
+    assert result.lines[0].status == "errored"
     events = _events(db)
     kinds = [k for k, _, _ in events]
     assert kinds == ["message", "action"]   # the mutation's trail survived

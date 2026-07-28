@@ -120,3 +120,78 @@ class TestSqlEventStore(EventStoreContract):
         )))
         assert "scope" not in stored.metadata
         assert stored.scope == "group"     # ...but the mapped view says group
+
+
+# --- the bounded ledger (review P2): same contract, bounded retention ---------
+
+
+from dainframe.testing import DeliveryLedgerContract  # noqa: E402
+
+from src.services.orchestration import BoundedDeliveryLedger  # noqa: E402
+
+
+class TestBoundedDeliveryLedger(DeliveryLedgerContract):
+    """chordial's production ledger passes the exact library conformance
+    suite (idempotent + concurrent confirm, frozen text, unknown-id raise)."""
+
+    def make_ledger(self):
+        return BoundedDeliveryLedger()
+
+
+def test_bounded_ledger_evicts_stale_unconfirmed_pendings():
+    """failed sends are never confirmed; they must fall off instead of
+    accumulating forever in a long-running daemon."""
+    from dainframe.core import DeliveryTarget, EventContext, NewPendingDelivery
+
+    ledger = BoundedDeliveryLedger(max_unconfirmed=3)
+
+    def _new(i):
+        return NewPendingDelivery(
+            stream_id="s", activation_id=f"a{i}", line_id=f"a{i}:0",
+            speaker="chordial",
+            target=DeliveryTarget(platform="telegram", target_id="t"),
+            text=f"msg {i}", event_context=EventContext(),
+        )
+
+    staged = [run(ledger.stage(_new(i))) for i in range(5)]
+    assert run(ledger.get(staged[0].pending_id)) is None      # evicted
+    assert run(ledger.get(staged[1].pending_id)) is None      # evicted
+    assert all(
+        run(ledger.get(p.pending_id)) is not None for p in staged[2:]
+    )
+
+
+def test_bounded_ledger_caps_confirmed_history_but_keeps_idempotence_inside_it():
+    from dainframe.core import (
+        DeliveryReceipt, DeliveryTarget, EventContext, NewPendingDelivery,
+    )
+    from dainframe.core.events import InMemoryEventStore
+
+    ledger = BoundedDeliveryLedger(max_confirmed=2)
+    store = InMemoryEventStore()
+
+    def _new(i):
+        return NewPendingDelivery(
+            stream_id="s", activation_id=f"a{i}", line_id=f"a{i}:0",
+            speaker="chordial",
+            target=DeliveryTarget(platform="telegram", target_id="t"),
+            text=f"msg {i}", event_context=EventContext(),
+        )
+
+    pendings = [run(ledger.stage(_new(i))) for i in range(3)]
+    events = [
+        run(ledger.confirm(p.pending_id, DeliveryReceipt(), store))
+        for p in pendings
+    ]
+
+    # the newest two stay idempotent...
+    assert run(
+        ledger.confirm(pendings[2].pending_id, DeliveryReceipt(), store)
+    ).event_id == events[2].event_id
+    # ...the evicted oldest raises instead of double-recording
+    try:
+        run(ledger.confirm(pendings[0].pending_id, DeliveryReceipt(), store))
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("evicted confirmation must raise, not re-record")
