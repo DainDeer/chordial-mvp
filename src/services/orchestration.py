@@ -101,16 +101,17 @@ class ChordialDirector:
                 ScriptLine(speaker="curator", response="silent", delivery="none"),
             ))
         if kind == "scheduled_tick":
-            # generation and delivery are separate scheduler phases until the
-            # pulse lands (phase 5): the engine freezes a pending line, the
-            # scheduler confirms after its platform callback succeeds.
-            # response is OPTIONAL: a scheduled tick that generates nothing is
-            # a quiet non-event, never a user-facing error
+            # ambient outreach rides the ordinary DIRECT path (the-dainframe
+            # DESIGN.md §11.15): the engine holds the stream across
+            # generation, delivery, and recording - one serialized
+            # activation, no pending+confirm dance. response stays OPTIONAL:
+            # a scheduled tick that generates nothing is a quiet non-event,
+            # never a user-facing error
             return self._finalize(stimulus, [
                 ScriptLine(
                     speaker=self.fallback,
                     response="optional",
-                    delivery="pending",
+                    delivery="direct",
                     target=stimulus.target,
                     event_context=self._dm_context(
                         stimulus, self.fallback, message_type="scheduled"

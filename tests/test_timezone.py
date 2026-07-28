@@ -28,7 +28,6 @@ from src.utils.temporal_context import TemporalContext
 from src.database.database import engine, get_db
 from src.database.models import Base, User, PlatformIdentity, ConversationEvent
 from src.managers.user_manager import UserManager
-from src.services.scheduler_service import SchedulerService
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +146,12 @@ class TestTemporalContextLocalization:
 
 
 # ---------------------------------------------------------------------------
-# scheduler respects each user's own quiet hours based on their timezone
+# the pulse respects each user's own quiet hours based on their timezone
+# (the QuietHoursGate is library arithmetic; what's chordial's to verify is
+# the wiring - tz_of = UserManager.get_user_timezone, per stream)
 # ---------------------------------------------------------------------------
 
-class TestSchedulerQuietHoursPerUser:
+class TestPulseQuietHoursPerUser:
     @pytest.fixture(autouse=True)
     def _setup_db(self):
         # build schema directly from the models (fast, and independent of the
@@ -187,44 +188,36 @@ class TestSchedulerQuietHoursPerUser:
             db.commit()
             return user_uuid
 
-    def test_same_utc_instant_is_quiet_for_one_user_and_not_another(self, monkeypatch):
-        scheduler = SchedulerService(user_manager=UserManager())
+    def test_same_utc_instant_is_quiet_for_one_user_and_not_another(self):
+        from datetime import timezone as _tz
+
+        from dainframe.pulse import FiringPlan, QuietHoursGate, RhythmKey
 
         # 6am utc: quiet in new york (1am, within default 21-8 window)
         # but not quiet in tokyo (3pm)
-        fixed_utc = datetime(2026, 6, 15, 6, 0, 0)
-        monkeypatch.setattr(
-            "src.services.scheduler_service.utc_now",
-            lambda: fixed_utc
+        fixed_utc = datetime(2026, 6, 15, 6, 0, 0, tzinfo=_tz.utc)
+        ny_user_uuid = self._make_user(
+            "America/New_York", datetime(2026, 6, 15, 5, 0, 0)
+        )
+        tokyo_user_uuid = self._make_user(
+            "Asia/Tokyo", datetime(2026, 6, 15, 5, 0, 0)
         )
 
-        assert scheduler._is_quiet_hours("America/New_York") is True
-        assert scheduler._is_quiet_hours("Asia/Tokyo") is False
+        gate = QuietHoursGate(21, 8, tz_of=UserManager().get_user_timezone)
 
-    def test_should_send_scheduled_message_respects_users_local_quiet_hours(self, monkeypatch):
-        fixed_utc = datetime(2026, 6, 15, 6, 0, 0)  # 1am NY (quiet), 3pm Tokyo (not quiet)
-        last_message_at = fixed_utc - timedelta(hours=1)
+        def check(user_uuid):
+            firing = FiringPlan(
+                key=RhythmKey(stream_id=user_uuid, rhythm_id="checkin"),
+                kind="scheduled_tick", due_at=fixed_utc, actor="chordial",
+            )
+            return asyncio.run(gate.check(firing, None, fixed_utc))
 
-        ny_user_uuid = self._make_user("America/New_York", last_message_at)
-        tokyo_user_uuid = self._make_user("Asia/Tokyo", last_message_at)
-
-        scheduler = SchedulerService(user_manager=UserManager())
-        scheduler.default_interval_minutes = 0  # no interval gating for this test
-
-        monkeypatch.setattr(
-            "src.services.scheduler_service.utc_now",
-            lambda: fixed_utc
-        )
-
-        async def run():
-            ny_result = await scheduler.should_send_scheduled_message(ny_user_uuid)
-            tokyo_result = await scheduler.should_send_scheduled_message(tokyo_user_uuid)
-            return ny_result, tokyo_result
-
-        ny_result, tokyo_result = asyncio.run(run())
-
-        assert ny_result is False  # it's 1am for this user, don't message them
-        assert tokyo_result is True  # it's 3pm for this user, fine to message
+        ny = check(ny_user_uuid)
+        assert ny.allowed is False       # it's 1am for this user
+        # ...and the denial knows exactly when their morning starts (8am
+        # eastern = 12:00 utc in june): no five-minute re-polling all night
+        assert ny.retry_at.astimezone(_tz.utc).hour == 12
+        assert check(tokyo_user_uuid).allowed is True   # 3pm in tokyo
 
 
 # ---------------------------------------------------------------------------
