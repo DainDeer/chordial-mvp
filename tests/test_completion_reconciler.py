@@ -324,3 +324,70 @@ def test_native_backend_end_to_end(monkeypatch):
     assert [t["title"] for t in done] == ["go for a walk"]
     assert done[0]["closed_at"] is not None
     engine.dispose()
+
+
+# --- speaker attribution across event shapes (review P1 regression) -----------
+# the hook hands the reconciler DAINFRAME events, which have no `.role`. the
+# old fallback labeled every one of them [user] - a companion reply mislabeled
+# as the user is exactly how a false completion happens.
+
+
+def _df_event(author_type, author, content):
+    from datetime import datetime, timezone
+    from dainframe.core.events import Event as DfEvent
+    return DfEvent(
+        event_id="ev-1", author_type=author_type, author=author,
+        kind="message", content=content,
+        created_at=datetime(2026, 7, 26, tzinfo=timezone.utc),
+        message_type="conversation",
+    )
+
+
+def test_format_recent_labels_dainframe_companion_events_as_chordial():
+    svc = _service('{"completed": []}', _payload(), [])
+    rendered = svc._format_recent([
+        _df_event("user", "user", "i'm heading out"),
+        _df_event("agent", "chordial", "you should practice piano later!"),
+    ])
+    assert "[user] i'm heading out" in rendered
+    assert "[chordial] you should practice piano later!" in rendered
+
+
+def test_format_recent_still_labels_chordial_events_correctly():
+    from src.managers.event_log import Event
+    svc = _service('{"completed": []}', _payload(), [])
+    rendered = svc._format_recent([
+        Event(author_type="user", author="user", kind="message", content="hi"),
+        Event(author_type="agent", author="chordial", kind="message", content="hello!"),
+    ])
+    assert "[user] hi" in rendered
+    assert "[chordial] hello!" in rendered
+
+
+def test_companion_suggestion_is_attributed_to_chordial_in_the_llm_request():
+    """end to end through _build_request: the companion's own 'you should
+    practice piano' must reach the model labeled [chordial], never [user]."""
+
+    class CapturingProvider(FakeProvider):
+        def __init__(self, reply_text):
+            super().__init__(reply_text)
+            self.requests = []
+
+        async def create_message(self, request):
+            self.requests.append(request)
+            return await super().create_message(request)
+
+    provider = CapturingProvider('{"completed": []}')
+    svc = CompletionReconcilerService(
+        provider=provider, provider_name="fake",
+        agenda_service=FakeAgenda(_payload(("piano-1", "practice piano"))),
+        tool_registry=_registry([]), usage_recorder=NoUsage(),
+    )
+    run(svc.reconcile(
+        "u1", "discord", "sounds good!",
+        recent=[_df_event("agent", "chordial", "you should practice piano tonight!")],
+    ))
+
+    prompt = provider.requests[0].messages[0].content
+    assert "[chordial] you should practice piano tonight!" in prompt
+    assert "[user] you should practice piano tonight!" not in prompt

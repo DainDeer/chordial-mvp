@@ -431,3 +431,36 @@ def test_empty_scheduled_tick_stays_quiet_not_errored(db):
     result = run(orch.handle(_tick()))
     assert result.lines[0].status == "silent"
     assert result.lines[0].pending is None
+
+
+def test_pacing_is_keyed_per_activation_not_globally(db, monkeypatch):
+    """review P3 regression: another user's delivery landing between two lines
+    of a group script must not steal the original activation's breathing gap."""
+    from dainframe.core import DeliveryRequest, DeliveryTarget
+    from src.services.orchestration import _CallableDeliverer
+
+    sleeps = []
+
+    async def fake_sleep(secs):
+        sleeps.append(secs)
+
+    monkeypatch.setattr(orch_mod.asyncio, "sleep", fake_sleep)
+
+    async def ok(platform, target_id, text, speaker="chordial"):
+        return True
+
+    deliverer = _CallableDeliverer(ok)
+
+    def _req(activation, line_idx):
+        return DeliveryRequest(
+            stream_id="s", activation_id=activation,
+            line_id=f"{activation}:{line_idx}", speaker="tempo",
+            target=DeliveryTarget(platform="telegram", target_id="g"),
+            text="hi",
+        )
+
+    run(deliverer.deliver(_req("act-A", 0)))     # A's first line: no gap
+    run(deliverer.deliver(_req("act-B", 0)))     # ANOTHER activation interleaves
+    assert sleeps == []
+    run(deliverer.deliver(_req("act-A", 1)))     # A's second line: still gapped
+    assert len(sleeps) == 1 and 2.0 <= sleeps[0] <= 5.0

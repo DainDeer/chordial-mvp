@@ -163,12 +163,21 @@ class CompletionReconcilerService:
     def _format_recent(self, recent) -> str:
         """render a short tail of prior message events for pronoun/context
         disambiguation. actions and the current message are excluded by the
-        caller; we just label speakers."""
+        caller; we just label speakers.
+
+        speaker attribution comes from `author_type`, which both chordial and
+        dainframe event shapes carry. (the old `.role` fallback silently
+        labeled every dainframe event as the user - a companion reply
+        mislabeled [user] is exactly how a false completion happens, the
+        costliest mistake this service can make.)"""
         if not recent:
             return ""
         lines = []
         for ev in recent[-self.recent_context:]:
-            speaker = "user" if getattr(ev, "role", "user") == "user" else "chordial"
+            speaker = (
+                "user" if getattr(ev, "author_type", "user") == "user"
+                else "chordial"
+            )
             lines.append(f"[{speaker}] {ev.content}")
         return "\n".join(lines)
 
