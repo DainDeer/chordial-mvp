@@ -122,17 +122,24 @@ class TestSqlEventStore(EventStoreContract):
         assert stored.scope == "group"     # ...but the mapped view says group
 
 
-# --- the bounded ledger (review P2): same contract, bounded retention ---------
+# --- the bounded ledger: born here, upstreamed to the dainframe in phase 5 ----
 
 
+from dainframe.core import BoundedDeliveryLedger as LibraryLedger  # noqa: E402
 from dainframe.testing import DeliveryLedgerContract  # noqa: E402
 
 from src.services.orchestration import BoundedDeliveryLedger  # noqa: E402
 
 
+def test_production_ledger_is_the_library_class():
+    """the upstreaming is real: chordial wires the dainframe's ledger, not a
+    lingering local copy."""
+    assert BoundedDeliveryLedger is LibraryLedger
+
+
 class TestBoundedDeliveryLedger(DeliveryLedgerContract):
-    """chordial's production ledger passes the exact library conformance
-    suite (idempotent + concurrent confirm, frozen text, unknown-id raise)."""
+    """the production ledger still runs the conformance suite through
+    chordial's own import path."""
 
     def make_ledger(self):
         return BoundedDeliveryLedger()

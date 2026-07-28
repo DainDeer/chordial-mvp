@@ -33,6 +33,7 @@ from typing import Iterable, Optional
 import uuid
 
 from dainframe.core import (
+    BoundedDeliveryLedger,
     BriefingContext,
     DeliveryReceipt,
     DeliveryRequest,
@@ -449,86 +450,8 @@ class ChordialDeliverer(_PacedDeliverer):
 
 
 # --- the delivery ledger ------------------------------------------------------
-
-
-class BoundedDeliveryLedger:
-    """an in-process DeliveryLedger with BOUNDED retention, for a long-running
-    daemon. the library's InMemoryDeliveryLedger retains every pending and
-    confirmed entry forever - fine for quick starts and tests, a slow leak in
-    a service that stages a scheduled message every few minutes (failed sends,
-    which are never confirmed, accumulate fastest).
-
-    two independent caps, both FIFO on insertion order:
-    - unconfirmed pendings (max_unconfirmed): a stale never-confirmed entry
-      (failed send) eventually falls off; the scheduler never retries an old
-      pending anyway - it regenerates.
-    - confirmed entries (max_confirmed): kept so double-confirmation stays
-      idempotent for a long window, evicted before they become a leak. an
-      eviction-then-reconfirm raises KeyError instead of double-recording -
-      the safe direction.
-
-    passes the dainframe DeliveryLedgerContract (tests run it); a candidate
-    to upstream into the library in a later phase."""
-
-    def __init__(self, max_unconfirmed: int = 256, max_confirmed: int = 1024):
-        self.max_unconfirmed = max_unconfirmed
-        self.max_confirmed = max_confirmed
-        self._pending: dict[str, PendingDelivery] = {}    # insertion-ordered
-        self._confirmed: dict[str, object] = {}           # pending_id -> Event
-        self._lock = asyncio.Lock()
-
-    async def stage(self, pending: NewPendingDelivery) -> PendingDelivery:
-        frozen = PendingDelivery(
-            pending_id=f"pd-{uuid.uuid4().hex[:12]}",
-            stream_id=pending.stream_id,
-            activation_id=pending.activation_id,
-            line_id=pending.line_id,
-            speaker=pending.speaker,
-            target=pending.target,
-            text=pending.text,
-            event_context=pending.event_context,
-        )
-        async with self._lock:
-            self._pending[frozen.pending_id] = frozen
-            self._prune_unconfirmed()
-        return frozen
-
-    async def get(self, pending_id: str) -> Optional[PendingDelivery]:
-        return self._pending.get(pending_id)
-
-    async def confirm(self, pending_id: str, receipt: DeliveryReceipt, events):
-        async with self._lock:
-            already = self._confirmed.get(pending_id)
-            if already is not None:
-                return already
-            pending = self._pending.get(pending_id)
-            if pending is None:
-                raise KeyError(f"unknown pending delivery '{pending_id}'")
-            ec = pending.event_context
-            event = await events.append(NewEvent(
-                author_type="agent",
-                author=pending.speaker,
-                kind="message",
-                content=pending.text,  # the exact frozen text, nothing else
-                message_type=ec.outbound_message_type,
-                platform=ec.platform,
-                scope=ec.scope,
-                audience=ec.audience,
-                metadata={"pending_id": pending_id},
-            ))
-            self._confirmed[pending_id] = event
-            while len(self._confirmed) > self.max_confirmed:
-                oldest = next(iter(self._confirmed))
-                self._confirmed.pop(oldest)
-                self._pending.pop(oldest, None)
-            return event
-
-    def _prune_unconfirmed(self) -> None:
-        unconfirmed = [
-            pid for pid in self._pending if pid not in self._confirmed
-        ]
-        for pid in unconfirmed[: max(0, len(unconfirmed) - self.max_unconfirmed)]:
-            self._pending.pop(pid, None)
+# BoundedDeliveryLedger was born here and upstreamed to the dainframe in
+# phase 5 - chordial now uses the library class it proved out.
 
 
 # --- assembly -----------------------------------------------------------------
