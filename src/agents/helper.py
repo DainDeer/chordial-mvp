@@ -88,6 +88,11 @@ class HelperAgent:
             ),
             platform=briefing.platform,
             turn_kind=turn_kind,
+            # the director's per-line routing (§4.8): chordial's director
+            # hints nothing today, so this resolves to the default route -
+            # but the parked dynamic-model-routing is now a director-only
+            # change away
+            hints=briefing.execution,
         )
         return AgentOutcome(
             text=result.text,

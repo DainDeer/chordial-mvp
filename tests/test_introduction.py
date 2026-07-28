@@ -454,7 +454,7 @@ class _StubLoop:
     def __init__(self):
         self.calls = []
 
-    async def run(self, request, *, context, platform, turn_kind):
+    async def run(self, request, *, context, platform, turn_kind, hints=None):
         self.calls.append(
             dict(
                 request=request,
@@ -462,6 +462,7 @@ class _StubLoop:
                 platform=platform,
                 turn_kind=turn_kind,
                 acting_helper=context.actor,
+                hints=hints,
             )
         )
 
@@ -521,3 +522,25 @@ def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):
 
     assert loop.calls[0]["acting_helper"] == "aria"
     assert loop.calls[0]["turn_kind"] == "conversation"
+
+
+def test_helper_agent_forwards_the_directors_execution_hints(db):
+    """briefing.execution reaches the loop as `hints` - the §4.8 seam.
+    chordial's director hints nothing today (empty hints = the default
+    route, byte-identical), but dynamic model routing is now a
+    director-only change."""
+    card = _card(id="aria", telegram_handle="aria_bot")
+    loop = _StubLoop()
+
+    agent = HelperAgent(card, loop, ToolRegistry())
+    briefing = Briefing(
+        kind="user_message",
+        stream_id="u1",
+        activation_id="act-test",
+        platform="telegram",
+        events=(),
+        extras={"user_name": "Dain", "user_timezone": "UTC"},
+    )
+    run(agent.act(briefing))
+
+    assert loop.calls[0]["hints"] is briefing.execution
