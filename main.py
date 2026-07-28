@@ -78,6 +78,45 @@ def _build_interfaces(chat_service, link_service, user_manager):
     return interfaces
 
 
+def _build_resolver(provider_name: str):
+    """the §4.8 routing seam: a director hinting a model on a ScriptLine
+    resolves through this table. chordial's builders carry its config - api
+    keys, and thinking-by-model (anthropic utility-tier models reject
+    adaptive thinking) - and every resolved instance shares ONE concurrency
+    ceiling, so hinting a new model never mints a new 'global' semaphore.
+    the chat provider itself is the table's default route (resolved once at
+    startup), so hint-less runs use the exact same instance."""
+    from dainframe.providers import ProviderTable
+    from dainframe.providers.limits import ConcurrencyLimiter
+
+    def build_anthropic(model, limiter):
+        from dainframe.providers.anthropic import AnthropicProvider
+
+        return AnthropicProvider(
+            model=model,
+            api_key=Config.ANTHROPIC_API_KEY,
+            thinking=model != Config.ANTHROPIC_UTILITY_MODEL,
+            limiter=limiter,
+        )
+
+    def build_openai(model, limiter):
+        from dainframe.providers.openai import OpenAIProvider
+
+        return OpenAIProvider(
+            model=model, api_key=Config.OPENAI_API_KEY, limiter=limiter
+        )
+
+    return ProviderTable(
+        default_provider=provider_name,
+        default_models={
+            "anthropic": Config.CHAT_MODEL,
+            "openai": Config.OPENAI_MODEL,
+        },
+        limiter=ConcurrencyLimiter(Config.MAX_CONCURRENT_AI_CALLS),
+        builders={"anthropic": build_anthropic, "openai": build_openai},
+    )
+
+
 def _build_provider(provider_name: str, model: str = None, thinking: bool = True):
     """construct the configured ai provider, or None if misconfigured. pass
     `model` to override the default (e.g. the cheaper utility model), and
@@ -184,9 +223,21 @@ async def main():
     # initialize core services
     user_manager = UserManager()
 
-    # initialize ai provider + agent loop
+    # initialize ai provider + agent loop. the chat provider is the resolver
+    # table's default route, so hint-less runs and hinted runs share the same
+    # instances and the same concurrency ceiling.
     provider_name = Config.AI_PROVIDER
-    provider = _build_provider(provider_name)
+    resolver = None
+    provider = None
+    if provider_name in ("anthropic", "openai"):
+        from dainframe.core import ExecutionHints
+
+        resolver = _build_resolver(provider_name)
+        provider = resolver.resolve(ExecutionHints(), agent="startup").provider
+    else:
+        logger.error(
+            f"unknown AI_PROVIDER '{provider_name}' (expected 'anthropic' or 'openai')"
+        )
     utility_provider = None
     registry = build_default_registry()
     agent_service = None
@@ -201,6 +252,7 @@ async def main():
                 provider_name=provider_name,
                 usage_sink=UsageRecorder(),
                 max_iterations=Config.MAX_TOOL_ITERATIONS,
+                resolver=resolver,
             )
         else:
             logger.warning(f"{provider_name} provider configured but not available")
