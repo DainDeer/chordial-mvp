@@ -18,12 +18,12 @@ class FakeRouter:
         return True
 
 
-class FakeScheduler:
+class FakePulse:
     def __init__(self):
         self.stopped = False
         self.cancelled = False
 
-    async def run_scheduling_loop(self, **kwargs):
+    async def run(self):
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -47,16 +47,24 @@ class ReturningInterface:
         self.stopped = True
 
 
-def test_service_return_stops_scheduler_and_interfaces():
+def test_service_return_stops_pulse_and_interfaces():
     interface = ReturningInterface()
-    scheduler = FakeScheduler()
+    pulse = FakePulse()
 
     with pytest.raises(RuntimeError, match="telegram interface stopped unexpectedly"):
-        run(_run_services([interface], scheduler, FakeRouter()))
+        run(_run_services([interface], pulse, FakeRouter()))
 
     assert interface.stopped is True
-    assert scheduler.stopped is True
-    assert scheduler.cancelled is True
+    assert pulse.stopped is True
+    assert pulse.cancelled is True
+
+
+def test_services_run_without_a_pulse():
+    """no engine (no ai provider) means no pulse; supervision still works."""
+    interface = ReturningInterface()
+    with pytest.raises(RuntimeError, match="telegram interface stopped unexpectedly"):
+        run(_run_services([interface], None, FakeRouter()))
+    assert interface.stopped is True
 
 
 def test_provider_specific_utility_models(monkeypatch):

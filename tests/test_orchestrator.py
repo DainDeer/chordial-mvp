@@ -4,9 +4,9 @@ end with fake agents against a real temp db.
 
 the engine's own invariants are tested in the dainframe; these lock down the
 CHORDIAL wiring: the record order (user -> actions -> reply), confirmed-send-
-before-history through the router adapter, the scheduled pending flow, dm
+before-history through the router adapter, the scheduled direct flow, dm
 scope tagging and the privacy window, group multi-speaker delivery with the
-breathing gap, and profile resolution for scheduler-shaped stimuli.
+breathing gap, and profile resolution for pulse-shaped stimuli.
 """
 
 import asyncio
@@ -208,22 +208,31 @@ def test_scheduler_stimulus_resolves_profile_from_db(db):
 # --- recording -----------------------------------------------------------------
 
 
-def test_scheduled_reply_is_recorded_only_after_delivery_confirmation(db):
+def test_scheduled_reply_is_delivered_directly_and_recorded_once(db):
+    """ambient outreach rides the ordinary direct path: the engine holds the
+    stream across generation, delivery, and recording - one serialized
+    activation, no pending+confirm dance (the pulse owns only WHEN)."""
     companion = RecordingAgent(outcome=AgentOutcome(text="checking in~"))
-    orch = _orch({"chordial": companion})
+    deliver = FakeDeliver()
+    orch = _orch({"chordial": companion}, deliver=deliver)
     result = run(orch.handle(_tick()))
 
     (line,) = result.lines
-    assert line.status == "pending"
-    assert line.pending.text == "checking in~"
-    assert _events(db) == []          # nothing in history until confirmed
-
-    run(orch.confirm_delivery(line.pending.pending_id, DeliveryReceipt()))
+    assert line.status == "delivered"
+    assert deliver.calls == [("discord", "42", "checking in~", "chordial")]
     assert _events(db) == [("message", "agent", "chordial", "scheduled")]
 
-    # confirming twice records once (the engine's idempotence invariant)
-    run(orch.confirm_delivery(line.pending.pending_id, DeliveryReceipt()))
-    assert len(_events(db)) == 1
+
+def test_failed_scheduled_send_stays_out_of_history(db):
+    """the invariant the old scheduler carried, now the engine's: a failed
+    send neither enters conversation context nor consumes the user's
+    non-interaction allowance (the backoff gate counts recorded messages)."""
+    companion = RecordingAgent(outcome=AgentOutcome(text="checking in~"))
+    orch = _orch({"chordial": companion}, deliver=FakeDeliver(ok=False))
+    result = run(orch.handle(_tick()))
+    assert result.lines[0].status == "errored"
+    assert result.lines[0].error.kind == "delivery_failed"
+    assert _events(db) == []
 
 
 def test_record_order_user_actions_reply(db):

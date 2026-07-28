@@ -3,7 +3,7 @@ import logging
 from config import Config
 from src.services.chat_service import ChatService
 from dainframe.loop.agent_loop import AgentLoop
-from src.services.scheduler_service import SchedulerService
+from src.services.pulse_wiring import build_pulse
 from src.services.usage_recorder import UsageRecorder
 from src.services.message_router import MessageRouter
 from src.services.tools import build_default_registry
@@ -121,12 +121,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def _run_services(interfaces, scheduler_service, router):
+async def _run_services(interfaces, pulse, router):
     """Supervise long-running services as one failure domain.
 
     A platform task returning normally is still unexpected while the process
     is running. Stop and cancel its siblings so a dead interface can never be
-    hidden by the scheduler's infinite loop.
+    hidden by the pulse's infinite loop.
     """
     named_tasks = {
         asyncio.create_task(
@@ -134,14 +134,9 @@ async def _run_services(interfaces, scheduler_service, router):
         ): f"{getattr(interface, 'platform', type(interface).__name__)} interface"
         for interface in interfaces
     }
-    scheduler_task = asyncio.create_task(
-        scheduler_service.run_scheduling_loop(
-            platforms=router.platforms(),
-            message_callback=router.deliver,
-        )
-    )
-    named_tasks[scheduler_task] = "scheduler"
-    logger.info("scheduler service started")
+    if pulse is not None:
+        named_tasks[asyncio.create_task(pulse.run())] = "pulse"
+        logger.info("the pulse started")
 
     try:
         done, _ = await asyncio.wait(named_tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -152,7 +147,8 @@ async def _run_services(interfaces, scheduler_service, router):
             raise RuntimeError(f"{service_name} stopped unexpectedly") from exception
         raise RuntimeError(f"{service_name} stopped unexpectedly")
     finally:
-        scheduler_service.stop()
+        if pulse is not None:
+            pulse.stop()
         for interface in interfaces:
             try:
                 await interface.stop()
@@ -313,13 +309,6 @@ async def main():
         user_manager=user_manager,
     )
 
-    # create scheduler service
-    scheduler_service = SchedulerService(
-        orchestrator=orchestrator,
-        user_manager=user_manager,
-        agenda_service=agenda_service,
-        curator=curator_agent,
-    )
 
     # the link-code service: chat-first account linking across platforms
     # (minted by the link_platform tool, redeemed by the telegram interface)
@@ -334,8 +323,21 @@ async def main():
     for interface in interfaces:
         router.register(interface)
 
+    # the ambient loop: the dainframe pulse drives scheduled check-ins and
+    # curation through the same engine as every chat message. built after
+    # the interfaces register, so delivery targeting is restricted to
+    # platforms that actually have a live interface. no engine, no pulse.
+    pulse = None
+    if orchestrator is not None:
+        pulse = build_pulse(
+            orchestrator=orchestrator,
+            user_manager=user_manager,
+            curator=curator_agent,
+            platforms=router.platforms(),
+        )
+
     try:
-        await _run_services(interfaces, scheduler_service, router)
+        await _run_services(interfaces, pulse, router)
     finally:
         logger.info("shutting down chordial...")
         await _close_provider(utility_provider)

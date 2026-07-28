@@ -160,9 +160,10 @@ def test_curation_routes_to_a_silent_curator_line():
     assert (line.response, line.delivery) == ("silent", "none")
 
 
-def test_scheduled_tick_is_an_optional_pending_chordial_line():
-    """generation and delivery are separate scheduler phases (until the
-    pulse): the line is PENDING, and OPTIONAL - a quiet tick is a non-event,
+def test_scheduled_tick_is_an_optional_direct_chordial_line():
+    """ambient outreach rides the ordinary direct path (the pulse owns
+    WHEN; the engine owns generation->delivery->recording as one serialized
+    activation). the line stays OPTIONAL - a quiet tick is a non-event,
     never an error."""
     d = _director(["chordial"])
     target = DeliveryTarget(platform="discord", target_id="42")
@@ -170,7 +171,7 @@ def test_scheduled_tick_is_an_optional_pending_chordial_line():
                  record_inbound=False, target=target)
     line = _direct(d, s).lines[0]
     assert line.speaker == "chordial"
-    assert (line.response, line.delivery) == ("optional", "pending")
+    assert (line.response, line.delivery) == ("optional", "direct")
     assert line.target == target
     assert line.event_context.outbound_message_type == "scheduled"
     assert line.event_context.audience == "chordial"
