@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>chordial · today</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>">
+</head>
+<body>
+  <main id="app">
+    <header class="masthead">
+      <div>
+        <h1 id="greeting">today</h1>
+        <p class="date" id="date-line"></p>
+      </div>
+      <div class="day-total" id="day-total" title="total focused time across tasks"></div>
+    </header>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <section class="bucket" id="bucket-overdue">
+      <h2><span class="dot dot-overdue"></span>overdue</h2>
+      <ul class="tasks"></ul>
+    </section>
+
+    <section class="bucket" id="bucket-today">
+      <h2><span class="dot dot-today"></span>today</h2>
+      <ul class="tasks"></ul>
+      <p class="empty hidden">nothing scheduled today — a quiet day is a fine day 🌿</p>
+    </section>
+
+    <section class="bucket" id="bucket-in_progress">
+      <h2><span class="dot dot-progress"></span>also in progress</h2>
+      <ul class="tasks"></ul>
+    </section>
+
+    <div class="footer-spacer"></div>
+  </main>
+
+  <footer id="pom-bar">
+    <div class="pom-info">
+      <div class="pom-task">
+        <span id="pom-state-icon">🍅</span>
+        <span id="pom-task-title">pick a task to begin</span>
+      </div>
+      <div class="pom-readout">
+        <span id="pom-elapsed">–</span>
+        <span class="pom-sub" id="pom-sub"></span>
+      </div>
+      <button id="pom-toggle" class="pill-btn hidden">pause</button>
+    </div>
+    <div class="track" id="track">
+      <div class="fill" id="fill"></div>
+    </div>
+  </footer>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

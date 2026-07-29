@@ -175,6 +175,19 @@ class Config:
     def telegram_linking_enabled(cls) -> bool:
         return cls.ENABLE_TELEGRAM and bool(cls.TELEGRAM_BOT_USERNAME)
 
+    # the web focus view (src/web/): a localhost desktop companion page -
+    # today's tasks + the pomodoro bar. served by the main process on the
+    # loopback interface only; widen WEB_HOST deliberately, never by default.
+    ENABLE_WEB = os.getenv("ENABLE_WEB", "true").lower() == "true"
+    WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
+    WEB_PORT = int(os.getenv("WEB_PORT", "8484"))
+    # whose workspace the page shows. unset = the sole active real user;
+    # ambiguous databases must pick explicitly (the api says so at request
+    # time rather than crashing startup).
+    WEB_USER_UUID = os.getenv("WEB_USER_UUID")
+    # one pomodoro, in minutes - the bar's "full" mark
+    POM_MINUTES = int(os.getenv("POM_MINUTES", "25"))
+
     # agent loop
     MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
     # how many recent messages of history to send as context

@@ -1,0 +1,281 @@
+/* the web focus view — warm hearth palette (a nod to Ember 🐾) */
+
+:root {
+  --bg: #171310;
+  --bg-raise: #211c17;
+  --bg-card: #262019;
+  --bg-card-hover: #2d261e;
+  --line: #3a3128;
+  --text: #ede4d8;
+  --text-dim: #a3968a;
+  --text-faint: #6f6459;
+  --ember: #f97316;
+  --ember-soft: #fdba74;
+  --ember-glow: rgba(249, 115, 22, 0.35);
+  --gold: #fbbf24;
+  --sage: #86a879;
+  --rust: #d97706;
+  --danger: #b45309;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+}
+
+#app {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 44px 28px 0;
+}
+
+/* --- header --- */
+
+.masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 26px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+.date {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+.day-total {
+  color: var(--text-dim);
+  font-size: 14px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+
+.banner {
+  background: #3a2a1a;
+  border: 1px solid var(--rust);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  color: var(--ember-soft);
+  font-size: 14px;
+}
+
+/* --- buckets --- */
+
+.bucket { margin-bottom: 26px; }
+.bucket.hidden { display: none; }
+
+.bucket h2 {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: var(--text-faint);
+  margin: 0 0 10px 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-overdue  { background: var(--rust); }
+.dot-today    { background: var(--ember); }
+.dot-progress { background: var(--sage); }
+
+.tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.empty { color: var(--text-faint); font-size: 14px; margin: 2px; }
+.hidden { display: none !important; }
+
+/* --- task cards --- */
+
+.task {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 13px 16px;
+  transition: background .15s, border-color .2s, box-shadow .25s;
+}
+
+.task:hover { background: var(--bg-card-hover); }
+
+.task.active {
+  border-color: var(--ember);
+  box-shadow: 0 0 18px var(--ember-glow);
+}
+
+.task .body { flex: 1; min-width: 0; }
+
+.task .title {
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task.paused-with-time .title::after {
+  content: " ⏸";
+  font-size: 12px;
+}
+
+.task .meta {
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.meta .chip-elapsed { color: var(--ember-soft); }
+.meta .chip-prio-high { color: var(--gold); }
+
+/* --- action buttons --- */
+
+.actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.icon-btn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all .15s;
+}
+
+.icon-btn:hover { color: var(--text); border-color: var(--text-faint); background: var(--bg-raise); }
+.icon-btn.play:hover { color: var(--ember); border-color: var(--ember); }
+.icon-btn.done:hover { color: var(--sage); border-color: var(--sage); }
+.icon-btn.skip:hover { color: var(--rust); border-color: var(--rust); }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+
+.footer-spacer { height: 140px; }
+
+/* --- the pomodoro bar --- */
+
+#pom-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  padding: 14px 28px 22px;
+  background: linear-gradient(to top, rgba(23, 19, 16, 0.98) 65%, rgba(23, 19, 16, 0));
+}
+
+.pom-info {
+  max-width: 760px;
+  margin: 0 auto 10px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pom-task {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#pom-task-title { overflow: hidden; text-overflow: ellipsis; }
+#pom-bar.idle #pom-task-title { color: var(--text-faint); font-weight: 400; }
+
+.pom-readout {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pom-sub { font-size: 13px; color: var(--text-dim); }
+
+.pill-btn {
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.pill-btn:hover { border-color: var(--ember); color: var(--ember-soft); }
+
+.track {
+  max-width: 760px;
+  margin: 0 auto;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  position: relative;
+}
+
+.fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--rust), var(--ember) 60%, var(--gold));
+  transition: width .3s linear;
+  box-shadow: 0 0 14px var(--ember-glow);
+}
+
+#pom-bar.paused .fill { filter: saturate(.35) brightness(.8); box-shadow: none; }
+#pom-bar.idle .fill { width: 0 !important; }
+
+#pom-bar.complete .fill { animation: glow 1.2s ease-in-out infinite alternate; }
+
+@keyframes glow {
+  from { box-shadow: 0 0 12px var(--ember-glow); }
+  to   { box-shadow: 0 0 26px rgba(251, 191, 36, 0.55); }
+}
+
+/* --- toast --- */
+
+.toast {
+  position: fixed;
+  bottom: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 20px;
+  font-size: 14px;
+  color: var(--text);
+  box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  transition: opacity .3s;
+  z-index: 10;
+}
+.toast.hidden { opacity: 0; pointer-events: none; }
