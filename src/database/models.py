@@ -453,6 +453,33 @@ class Task(Base):
     )
 
 
+class TaskFocus(Base):
+    """the per-task pomodoro clock behind the web focus view (src/web/).
+    one row per (user, task): `accumulated_seconds` is banked time,
+    `running_since` non-null means the clock is live for that task right now.
+    FocusStore (src/services/workspace/focus.py) enforces the one invariant -
+    at most one running row per user - by banking every running row before
+    starting another. rows are bookkeeping, not workspace entities: no
+    lifecycle, no public id, deleted with their task never (tasks never
+    hard-delete)."""
+    __tablename__ = 'task_focus'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False, index=True)
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=False)
+
+    accumulated_seconds = Column(Integer, nullable=False, default=0)
+    running_since = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('user_uuid', 'task_id', name='uq_task_focus_user_task'),
+        {'sqlite_autoincrement': True},
+    )
+
+
 class Win(Base):
     """the anti-diminishment ledger: past-tense, concrete, witnessed.
     `evidence` is the user's words verbatim at the time. immutable history -

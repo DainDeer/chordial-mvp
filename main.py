@@ -375,6 +375,17 @@ async def main():
     for interface in interfaces:
         router.register(interface)
 
+    # the web focus view: today's tasks + the pomodoro bar on localhost.
+    # supervised like any interface, but NOT router-registered - it serves a
+    # page, it never delivers messages.
+    if Config.ENABLE_WEB:
+        from src.web.server import WebService
+
+        interfaces.append(WebService())
+        logger.info(
+            "web focus view enabled (http://%s:%s)", Config.WEB_HOST, Config.WEB_PORT
+        )
+
     # the ambient loop: the dainframe pulse drives scheduled check-ins and
     # curation through the same engine as every chat message. built after
     # the interfaces register, so delivery targeting is restricted to
