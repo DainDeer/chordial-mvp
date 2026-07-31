@@ -57,21 +57,26 @@ def login_url(code: str) -> Optional[str]:
 
 def redeem_login_code(code: str) -> Optional[str]:
     """validate + consume a web_login code; returns its user_uuid, or None.
-    single-use: stamped used_at on success."""
+    consumption is ONE conditional update - two concurrent redemptions race
+    for the used_at stamp and exactly one wins a session."""
     normalized = (code or "").strip().upper()
     if not normalized:
         return None
+    now = utc_now()
     with get_db() as db:
-        row = db.query(LinkCode).filter(LinkCode.code == normalized).first()
-        if (row is None or row.used_at is not None
-                or row.purpose != "web_login"):
-            return None
-        if row.expires_at < utc_now():
-            return None
-        row.used_at = utc_now()
+        claimed = db.query(LinkCode).filter(
+            LinkCode.code == normalized,
+            LinkCode.purpose == "web_login",
+            LinkCode.used_at.is_(None),
+            LinkCode.expires_at >= now,
+        ).update({"used_at": now}, synchronize_session=False)
         db.commit()
-        logger.info(f"web login code redeemed for user {row.user_uuid}")
-        return row.user_uuid
+        if claimed != 1:
+            return None
+        user_uuid = db.query(LinkCode.user_uuid).filter(
+            LinkCode.code == normalized).scalar()
+        logger.info(f"web login code redeemed for user {user_uuid}")
+        return user_uuid
 
 
 # --- sessions -----------------------------------------------------------------

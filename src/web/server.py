@@ -113,7 +113,7 @@ class WebService:
             raise RuntimeError(
                 "WEB_PUBLIC_URL is set but WEB_SESSION_SECRET is not - "
                 "generate one: openssl rand -hex 32")
-        app = web.Application()
+        app = web.Application(middlewares=[self._origin_guard])
         app.router.add_get("/", self._index)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login/redeem", self._api_login_redeem)
@@ -141,6 +141,22 @@ class WebService:
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
+
+    # --- cross-origin writes --------------------------------------------------
+
+    @web.middleware
+    async def _origin_guard(self, request: web.Request, handler):
+        """public mode refuses state-changing requests from any other origin.
+        SameSite=Lax alone doesn't cover a sibling subdomain on the same
+        personal domain (the portfolio site could POST here with cookies, and
+        aiohttp parses json out of text/plain "simple" requests). browsers
+        always send Origin on cross-origin POSTs, so a mismatch is decisive;
+        absent means non-browser (curl), which csrf doesn't apply to."""
+        if Config.web_auth_enabled() and request.method not in ("GET", "HEAD"):
+            origin = request.headers.get("Origin")
+            if origin is not None and origin != Config.WEB_PUBLIC_URL:
+                return _error("cross-origin request refused", status=403)
+        return await handler(request)
 
     # --- who is asking --------------------------------------------------------
 

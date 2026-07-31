@@ -160,7 +160,10 @@ def test_link_platform_tool_output_contains_code_and_link(db, monkeypatch):
     from dainframe.tools.context import ToolContext
 
     out = run(link_tools._link_platform(
-        {}, ToolContext(stream_id="u1", activation_id="test-act", actor="chordial")
+        # scope metadata is now load-bearing: bearer-code tools refuse any
+        # context that can't prove it's a private dm
+        {}, ToolContext(stream_id="u1", activation_id="test-act",
+                        actor="chordial", metadata={"scope": "dm"})
     ))
     # the code in the output is a real, redeemable row
     with db() as s:

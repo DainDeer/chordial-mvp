@@ -253,15 +253,74 @@ def test_redeem_is_rate_limited(env, public):
     assert _run(_with_client(flow))
 
 
+def test_concurrent_redemption_mints_exactly_one_session(env, public):
+    """the used_at claim is one conditional update: two racers, one winner."""
+    code = auth.mint_login_code(U1)
+
+    async def race():
+        return await asyncio.gather(
+            asyncio.to_thread(auth.redeem_login_code, code),
+            asyncio.to_thread(auth.redeem_login_code, code),
+        )
+
+    results = _run(race())
+    assert sorted(results, key=lambda r: r or "") == [None, U1]
+
+
+def test_cross_origin_writes_are_refused(env, public):
+    code = auth.mint_login_code(U1)
+
+    async def flow(client):
+        # a sibling subdomain with riding cookies gets a 403, even logged in
+        await client.post("/api/login/redeem", json={"code": code})
+        r = await client.post("/api/focus/pause",
+                              headers={"Origin": "https://evil.focus.test"})
+        assert r.status == 403
+        # the page's own origin sails through
+        r = await client.post("/api/focus/pause",
+                              headers={"Origin": "http://focus.test"})
+        assert r.status == 200
+        # non-browser clients send no Origin; csrf doesn't apply to them
+        r = await client.post("/api/focus/pause")
+        assert r.status == 200
+        return True
+
+    assert _run(_with_client(flow))
+
+
 # --- the tool -----------------------------------------------------------------
 
 
-def test_web_login_tool_mints_code_and_link(env, public):
+def _tool_context(scope="dm"):
     from dainframe.tools.context import ToolContext
+    return ToolContext(stream_id=U1, activation_id="act-1", actor="chordial",
+                       metadata={"scope": scope})
+
+
+def test_web_login_tool_mints_code_and_link(env, public):
     from src.services.tools.link_tools import WEB_LOGIN
 
-    context = ToolContext(stream_id=U1, activation_id="act-1", actor="chordial")
-    result = _run(WEB_LOGIN.handler({}, context))
+    result = _run(WEB_LOGIN.handler({}, _tool_context()))
     assert "http://focus.test/login?code=" in result
     code = result.split("login code: ")[1].split(" ")[0]
     assert auth.redeem_login_code(code) == U1
+
+
+def test_credential_tools_refuse_outside_a_dm(env, public):
+    """a tool result lands in the current reply, and a group reply is
+    delivered to the whole group - bearer codes are dm-only, default-deny
+    (a context with no scope metadata counts as public)."""
+    from dainframe.tools.context import ToolContext
+    from src.database.models import LinkCode
+    from src.services.tools.link_tools import LINK_PLATFORM, WEB_LOGIN
+
+    bare = ToolContext(stream_id=U1, activation_id="act-1", actor="chordial")
+    for tool in (WEB_LOGIN, LINK_PLATFORM):
+        for context in (_tool_context(scope="group"), bare):
+            result = _run(tool.handler({}, context))
+            assert result.startswith("refused"), (tool.definition.name, result)
+    with db_mod.SessionLocal() as s:
+        assert s.query(LinkCode).count() == 0  # nothing minted on refusal
+    # and the dm path still works for both
+    assert "link code:" in _run(LINK_PLATFORM.handler({}, _tool_context()))
+    assert "login code:" in _run(WEB_LOGIN.handler({}, _tool_context()))
