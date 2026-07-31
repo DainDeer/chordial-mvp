@@ -128,6 +128,11 @@ class LinkCode(Base):
     id = Column(Integer, primary_key=True)
     code = Column(String, nullable=False, unique=True)   # 8 chars, unambiguous alphabet
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    # what redeeming this code does: 'platform_link' binds a platform account,
+    # 'web_login' mints a browser session. the two paths never accept each
+    # other's codes.
+    purpose = Column(String, nullable=False, default='platform_link',
+                     server_default='platform_link')
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)        # created + ttl (15 min default)

@@ -51,3 +51,38 @@ LINK_PLATFORM = Tool(
     ),
     handler=_link_platform,
 )
+
+
+async def _web_login(tool_input: dict, context: ToolContext) -> str:
+    # imported here so the tool module stays importable when the web view
+    # is disabled entirely
+    from src.web.auth import login_url, mint_login_code
+
+    code = mint_login_code(context.stream_id)
+    url = login_url(code)
+    ttl = Config.LINK_CODE_TTL_MINUTES
+    lines = [f"login code: {code} (expires in {ttl} minutes, single-use)"]
+    if url:
+        lines.append(f"login link: {url}")
+        lines.append(
+            "opening the link logs them straight in; typing the code on the "
+            "login page works too."
+        )
+    return "\n".join(lines)
+
+
+WEB_LOGIN = Tool(
+    definition=ToolDef(
+        name="web_login",
+        description=(
+            "Generate a one-time login code when the user wants to open "
+            "their focus page (the web view of today's tasks and the "
+            "pomodoro bar). Returns the code and a login link - include "
+            "BOTH in your reply, and mention the code expires in "
+            f"{Config.LINK_CODE_TTL_MINUTES} minutes. Only for the person "
+            "you are talking to; never for someone else."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    handler=_web_login,
+)

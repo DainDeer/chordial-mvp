@@ -47,6 +47,13 @@ def build_default_registry() -> ToolRegistry:
         registry.register(LINK_PLATFORM)
         logger.info("platform linking tool enabled")
 
+    if Config.web_auth_enabled():
+        # same config-stable gating: the tool exists exactly when the page
+        # is public enough to need logging into
+        from .link_tools import WEB_LOGIN
+        registry.register(WEB_LOGIN)
+        logger.info("web login tool enabled (%s)", Config.WEB_PUBLIC_URL)
+
     return registry
 
 

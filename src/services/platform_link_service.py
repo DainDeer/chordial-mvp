@@ -57,8 +57,10 @@ class PlatformLinkService:
         self.ttl = timedelta(minutes=ttl_minutes if ttl_minutes is not None
                              else Config.LINK_CODE_TTL_MINUTES)
 
-    def create_code(self, user_uuid: str) -> str:
-        """mint a fresh single-use code for this user."""
+    def create_code(self, user_uuid: str, purpose: str = "platform_link") -> str:
+        """mint a fresh single-use code for this user. `purpose` scopes what
+        redeeming it can do (platform_link | web_login) - each redemption
+        path only accepts its own purpose."""
         for _ in range(5):  # unique collision is ~impossible; retry anyway
             code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
             try:
@@ -66,11 +68,12 @@ class PlatformLinkService:
                     db.add(LinkCode(
                         code=code,
                         user_uuid=user_uuid,
+                        purpose=purpose,
                         created_at=utc_now(),
                         expires_at=utc_now() + self.ttl,
                     ))
                     db.commit()
-                logger.info(f"minted link code for user {user_uuid} (expires in {self.ttl})")
+                logger.info(f"minted {purpose} code for user {user_uuid} (expires in {self.ttl})")
                 return code
             except IntegrityError:
                 logger.warning("link code collision (!), retrying")
@@ -91,7 +94,10 @@ class PlatformLinkService:
 
         with get_db() as db:
             row = db.query(LinkCode).filter(LinkCode.code == normalized).first()
-            if row is None or row.used_at is not None:
+            # a web_login code pasted to the bot must read as unknown, never
+            # as a platform bind - purposes don't cross
+            if (row is None or row.used_at is not None
+                    or row.purpose != "platform_link"):
                 return LinkOutcome(LinkResult.INVALID)
             if row.expires_at < utc_now():
                 return LinkOutcome(LinkResult.EXPIRED)
