@@ -23,6 +23,14 @@ _links = PlatformLinkService()
 
 
 async def _link_platform(tool_input: dict, context: ToolContext) -> str:
+    # same hazard as web_login: a link code redeemed by ANOTHER group member
+    # would bind THEIR account to this user. dm-only, default-deny.
+    if context.metadata.get("scope") != "dm":
+        return (
+            "refused: link codes are only issued in a private DM - anyone "
+            "in this chat could redeem one as themselves. tell the user to "
+            "message you privately and ask again there."
+        )
     user_uuid = context.stream_id
     code = _links.create_code(user_uuid)
     ttl = Config.LINK_CODE_TTL_MINUTES
@@ -45,9 +53,56 @@ LINK_PLATFORM = Tool(
             "Telegram (or chat with you from another platform). Returns the "
             "code and a tappable telegram link - include BOTH in your reply, "
             f"and mention the code expires in {Config.LINK_CODE_TTL_MINUTES} "
-            "minutes."
+            "minutes. Only works in a private DM, never in a group chat."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
     handler=_link_platform,
+)
+
+
+async def _web_login(tool_input: dict, context: ToolContext) -> str:
+    # imported here so the tool module stays importable when the web view
+    # is disabled entirely
+    from src.web.auth import login_url, mint_login_code
+
+    # the tool result lands in the CURRENT reply, and a group-scope reply is
+    # delivered to the whole group - a login code is a bearer credential, so
+    # anything but a private dm refuses. default-deny: a context that can't
+    # prove it's a dm (no scope metadata) is treated as public.
+    if context.metadata.get("scope") != "dm":
+        return (
+            "refused: login codes are only issued in a private DM - anyone "
+            "in this chat could use one. tell the user to message you "
+            "privately and ask again there."
+        )
+
+    code = mint_login_code(context.stream_id)
+    url = login_url(code)
+    ttl = Config.LINK_CODE_TTL_MINUTES
+    lines = [f"login code: {code} (expires in {ttl} minutes, single-use)"]
+    if url:
+        lines.append(f"login link: {url}")
+        lines.append(
+            "opening the link logs them straight in; typing the code on the "
+            "login page works too."
+        )
+    return "\n".join(lines)
+
+
+WEB_LOGIN = Tool(
+    definition=ToolDef(
+        name="web_login",
+        description=(
+            "Generate a one-time login code when the user wants to open "
+            "their focus page (the web view of today's tasks and the "
+            "pomodoro bar). Returns the code and a login link - include "
+            "BOTH in your reply, and mention the code expires in "
+            f"{Config.LINK_CODE_TTL_MINUTES} minutes. Only for the person "
+            "you are talking to; never for someone else. Only works in a "
+            "private DM, never in a group chat."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    handler=_web_login,
 )

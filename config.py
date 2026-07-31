@@ -188,6 +188,22 @@ class Config:
     # one pomodoro, in minutes - the bar's "full" mark
     POM_MINUTES = int(os.getenv("POM_MINUTES", "25"))
 
+    # public deployment (e.g. behind a cloudflared tunnel at
+    # https://focus.example.com). setting WEB_PUBLIC_URL is the ONE switch
+    # that flips the page from trusted-localhost to authenticated-public:
+    # sessions become required, the login flow activates, cookies go Secure
+    # (when https), and the web_login tool registers so users can ask
+    # chordial to let them in. unset = the localhost behavior, unchanged.
+    WEB_PUBLIC_URL = (os.getenv("WEB_PUBLIC_URL") or "").rstrip("/") or None
+    # signs session cookies; REQUIRED when WEB_PUBLIC_URL is set (the web
+    # service refuses to start without it - `openssl rand -hex 32`)
+    WEB_SESSION_SECRET = os.getenv("WEB_SESSION_SECRET")
+    WEB_SESSION_DAYS = int(os.getenv("WEB_SESSION_DAYS", "30"))
+
+    @classmethod
+    def web_auth_enabled(cls) -> bool:
+        return cls.WEB_PUBLIC_URL is not None
+
     # agent loop
     MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "5"))
     # how many recent messages of history to send as context

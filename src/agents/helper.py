@@ -85,6 +85,9 @@ class HelperAgent:
                 stream_id=user_uuid,
                 activation_id=briefing.activation_id,
                 actor=self.name,
+                # where this reply will land. scope-sensitive tools (web_login
+                # mints bearer credentials!) must know a group is listening
+                metadata={"scope": briefing.scope},
             ),
             platform=briefing.platform,
             turn_kind=turn_kind,

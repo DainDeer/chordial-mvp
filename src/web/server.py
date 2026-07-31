@@ -13,11 +13,19 @@ stores - WorkspaceStore for task truth, FocusStore for the clock - the same
 way the tool layer would, so the web buttons and the chat tools can never
 disagree about what "complete" means.
 
-api surface (all JSON, all single-user):
+api surface (all JSON):
     GET  /api/today                  the whole picture: buckets + focus + config
     POST /api/focus/start            {"task_id": int} start/resume/switch
     POST /api/focus/pause            bank the running clock
     POST /api/tasks/{id}/status      {"status": "done"|"deprioritized"|...}
+    POST /api/login/redeem           {"code": str} -> session cookie
+    POST /api/logout                 clear the session
+
+two deployment modes, ONE switch (Config.WEB_PUBLIC_URL - see config.py):
+localhost keeps the original trust-the-interface behavior with the
+single-user resolver; public mode requires a chordial-issued session on
+every page and api call, and each request acts as the session's OWN user -
+the multi-user seam the localhost resolver deliberately punted on.
 """
 from __future__ import annotations
 
@@ -35,6 +43,7 @@ from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
 from src.utils.timezone_utils import utc_now
+from src.web import auth
 
 logger = logging.getLogger(__name__)
 
@@ -92,14 +101,23 @@ class WebService:
         self.store = store or get_store()
         self.focus = focus or FocusStore()
         self._resolve_user = user_resolver
+        self._limiter = auth.RateLimiter()
         self._runner: Optional[web.AppRunner] = None
         self._stop_event: Optional[asyncio.Event] = None
 
     # --- app assembly --------------------------------------------------------
 
     def build_app(self) -> web.Application:
-        app = web.Application()
+        if Config.web_auth_enabled() and not Config.WEB_SESSION_SECRET:
+            # fail at startup, not at the first login attempt
+            raise RuntimeError(
+                "WEB_PUBLIC_URL is set but WEB_SESSION_SECRET is not - "
+                "generate one: openssl rand -hex 32")
+        app = web.Application(middlewares=[self._origin_guard])
         app.router.add_get("/", self._index)
+        app.router.add_get("/login", self._login_page)
+        app.router.add_post("/api/login/redeem", self._api_login_redeem)
+        app.router.add_post("/api/logout", self._api_logout)
         app.router.add_get("/api/today", self._api_today)
         app.router.add_post("/api/focus/start", self._api_focus_start)
         app.router.add_post("/api/focus/pause", self._api_focus_pause)
@@ -124,20 +142,98 @@ class WebService:
             await self._runner.cleanup()
             self._runner = None
 
+    # --- cross-origin writes --------------------------------------------------
+
+    @web.middleware
+    async def _origin_guard(self, request: web.Request, handler):
+        """public mode refuses state-changing requests from any other origin.
+        SameSite=Lax alone doesn't cover a sibling subdomain on the same
+        personal domain (the portfolio site could POST here with cookies, and
+        aiohttp parses json out of text/plain "simple" requests). browsers
+        always send Origin on cross-origin POSTs, so a mismatch is decisive;
+        absent means non-browser (curl), which csrf doesn't apply to."""
+        if Config.web_auth_enabled() and request.method not in ("GET", "HEAD"):
+            origin = request.headers.get("Origin")
+            if origin is not None and origin != Config.WEB_PUBLIC_URL:
+                return _error("cross-origin request refused", status=403)
+        return await handler(request)
+
+    # --- who is asking --------------------------------------------------------
+
+    def _session_user(self, request: web.Request) -> Optional[str]:
+        return auth.verify_session(request.cookies.get(auth.SESSION_COOKIE))
+
+    async def _request_user(self, request: web.Request) -> str:
+        """the user this request acts as. public mode: the session's user,
+        or 401. localhost mode: the configured resolver, exactly as before.
+        raises aiohttp HTTP errors; handlers just await it first."""
+        if Config.web_auth_enabled():
+            user_uuid = self._session_user(request)
+            if user_uuid is None:
+                raise web.HTTPUnauthorized(
+                    text='{"error": "not logged in - ask chordial for a '
+                         'login code"}',
+                    content_type="application/json")
+            return user_uuid
+        try:
+            return await asyncio.to_thread(self._resolve_user)
+        except WebUserError as e:
+            raise web.HTTPConflict(
+                text='{"error": "%s"}' % str(e).replace('"', "'"),
+                content_type="application/json")
+
+    # --- login ----------------------------------------------------------------
+
+    async def _login_page(self, request: web.Request) -> web.StreamResponse:
+        # a valid session skips the page; ?code= stays in the url for the
+        # page script to auto-redeem (the GET itself must never redeem -
+        # link-preview prefetchers would burn the single-use code)
+        if not Config.web_auth_enabled() or self._session_user(request):
+            raise web.HTTPFound("/")
+        return web.FileResponse(STATIC_DIR / "login.html")
+
+    async def _api_login_redeem(self, request: web.Request) -> web.Response:
+        if not Config.web_auth_enabled():
+            return _error("login is not enabled on this deployment", status=404)
+        if not self._limiter.allow(_client_ip(request)):
+            return _error("too many attempts - wait a few minutes", status=429)
+        body = await _json_body(request)
+        code = body.get("code") if isinstance(body, dict) else None
+        if not isinstance(code, str):
+            return _error("code (string) required")
+        user_uuid = await asyncio.to_thread(auth.redeem_login_code, code)
+        if user_uuid is None:
+            return _error("that code is invalid or expired - ask chordial "
+                          "for a fresh one", status=401)
+        response = web.json_response({"ok": True})
+        response.set_cookie(
+            auth.SESSION_COOKIE,
+            auth.mint_session(user_uuid),
+            max_age=Config.WEB_SESSION_DAYS * 86400,
+            httponly=True,
+            samesite="Lax",
+            secure=Config.WEB_PUBLIC_URL.startswith("https"),
+            path="/",
+        )
+        return response
+
+    async def _api_logout(self, request: web.Request) -> web.Response:
+        response = web.json_response({"ok": True})
+        response.del_cookie(auth.SESSION_COOKIE, path="/")
+        return response
+
     # --- handlers -------------------------------------------------------------
 
     async def _index(self, request: web.Request) -> web.StreamResponse:
+        if Config.web_auth_enabled() and self._session_user(request) is None:
+            raise web.HTTPFound("/login")
         return web.FileResponse(STATIC_DIR / "index.html")
 
     async def _api_today(self, request: web.Request) -> web.Response:
-        return await asyncio.to_thread(self._today_payload)
+        user_uuid = await self._request_user(request)
+        return await asyncio.to_thread(self._today_payload, user_uuid)
 
-    def _today_payload(self) -> web.Response:
-        try:
-            user_uuid = self._resolve_user()
-        except WebUserError as e:
-            return _error(str(e), status=409)
-
+    def _today_payload(self, user_uuid: str) -> web.Response:
         today = user_today(user_uuid)
         today_iso = today.isoformat()
         with get_db() as db:
@@ -172,17 +268,14 @@ class WebService:
         })
 
     async def _api_focus_start(self, request: web.Request) -> web.Response:
+        user_uuid = await self._request_user(request)
         body = await _json_body(request)
         task_id = body.get("task_id") if isinstance(body, dict) else None
         if not isinstance(task_id, int):
             return _error("task_id (int) required")
-        return await asyncio.to_thread(self._focus_start, task_id)
+        return await asyncio.to_thread(self._focus_start, user_uuid, task_id)
 
-    def _focus_start(self, task_id: int) -> web.Response:
-        try:
-            user_uuid = self._resolve_user()
-        except WebUserError as e:
-            return _error(str(e), status=409)
+    def _focus_start(self, user_uuid: str, task_id: int) -> web.Response:
         try:
             self.focus.start(user_uuid, task_id)
             # starting the clock means the work started: same transition the
@@ -194,17 +287,15 @@ class WebService:
         return web.json_response({"ok": True, "task": _task_row(task)})
 
     async def _api_focus_pause(self, request: web.Request) -> web.Response:
-        return await asyncio.to_thread(self._focus_pause)
+        user_uuid = await self._request_user(request)
+        return await asyncio.to_thread(self._focus_pause, user_uuid)
 
-    def _focus_pause(self) -> web.Response:
-        try:
-            user_uuid = self._resolve_user()
-        except WebUserError as e:
-            return _error(str(e), status=409)
+    def _focus_pause(self, user_uuid: str) -> web.Response:
         self.focus.pause(user_uuid)
         return web.json_response({"ok": True})
 
     async def _api_task_status(self, request: web.Request) -> web.Response:
+        user_uuid = await self._request_user(request)
         body = await _json_body(request)
         status = body.get("status") if isinstance(body, dict) else None
         if not isinstance(status, str):
@@ -213,13 +304,9 @@ class WebService:
             task_id = int(request.match_info["task_id"])
         except ValueError:
             return _error("task id must be an integer")
-        return await asyncio.to_thread(self._task_status, task_id, status)
+        return await asyncio.to_thread(self._task_status, user_uuid, task_id, status)
 
-    def _task_status(self, task_id: int, status: str) -> web.Response:
-        try:
-            user_uuid = self._resolve_user()
-        except WebUserError as e:
-            return _error(str(e), status=409)
+    def _task_status(self, user_uuid: str, task_id: int, status: str) -> web.Response:
         try:
             canonical = vocab.canonical_status("task", status)
             if vocab.is_closed_status("task", canonical):
@@ -229,6 +316,15 @@ class WebService:
         except ValueError as e:
             return _error(str(e), status=404 if "not found" in str(e) else 400)
         return web.json_response({"ok": True, "task": _task_row(task)})
+
+
+def _client_ip(request: web.Request) -> str:
+    """the real client, for rate-limit keying. behind cloudflared every
+    connection is loopback; cloudflare stamps the true origin ip in
+    CF-Connecting-IP. direct localhost use has no proxy headers and keys on
+    the socket peer, which is exactly right there."""
+    return (request.headers.get("CF-Connecting-IP")
+            or request.remote or "unknown")
 
 
 def _error(message: str, status: int = 400) -> web.Response:

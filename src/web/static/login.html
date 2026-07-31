@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>chordial · come in</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>">
+  <style>
+    /* login-only chrome: one warm card in the middle of the hearth */
+    .login-wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+    }
+    .login-card {
+      background: var(--bg-card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 36px 32px;
+      max-width: 380px;
+      width: 100%;
+      text-align: center;
+    }
+    .login-card h1 { font-size: 26px; margin-bottom: 6px; }
+    .login-hint {
+      color: var(--text-dim);
+      font-size: 15px;
+      line-height: 1.5;
+      margin: 0 0 24px;
+    }
+    .login-hint b { color: var(--ember-soft); font-weight: 600; }
+    #code {
+      width: 100%;
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 22px;
+      letter-spacing: 6px;
+      text-align: center;
+      text-transform: uppercase;
+      padding: 12px 8px;
+      outline: none;
+      font-family: inherit;
+    }
+    #code:focus { border-color: var(--ember); box-shadow: 0 0 0 3px var(--ember-glow); }
+    #enter {
+      width: 100%;
+      margin-top: 14px;
+      background: var(--ember);
+      border: none;
+      border-radius: 10px;
+      color: #1a120b;
+      font-size: 16px;
+      font-weight: 600;
+      padding: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #enter:hover { background: var(--ember-soft); }
+    #enter:disabled { opacity: 0.6; cursor: default; }
+    .login-status {
+      min-height: 22px;
+      margin: 14px 0 0;
+      font-size: 14px;
+      color: var(--text-dim);
+    }
+    .login-status.err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>🔥 chordial</h1>
+      <p class="login-hint">ask chordial to <b>log you in</b> — a one-time
+        code arrives in your chat. paste it here, or just tap the link.</p>
+      <form id="login-form">
+        <input id="code" name="code" autocomplete="one-time-code"
+               spellcheck="false" maxlength="8" placeholder="········"
+               aria-label="login code">
+        <button id="enter" type="submit">come in</button>
+      </form>
+      <p class="login-status" id="status"></p>
+    </div>
+  </div>
+  <script>
+    const form = document.getElementById("login-form");
+    const input = document.getElementById("code");
+    const button = document.getElementById("enter");
+    const status = document.getElementById("status");
+
+    async function redeem(code) {
+      button.disabled = true;
+      status.textContent = "checking…";
+      status.classList.remove("err");
+      try {
+        const res = await fetch("/api/login/redeem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        if (res.ok) {
+          status.textContent = "welcome back 🌿";
+          location.replace("/");
+          return;
+        }
+        const body = await res.json().catch(() => ({}));
+        status.textContent = body.error || "that didn't work — try again?";
+        status.classList.add("err");
+      } catch (e) {
+        status.textContent = "couldn't reach the hearth — try again?";
+        status.classList.add("err");
+      }
+      button.disabled = false;
+    }
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const code = input.value.trim();
+      if (code) redeem(code);
+    });
+
+    // the magic link: /login?code=XXXX auto-redeems on load. the GET that
+    // rendered this page did nothing - only this script spends the code,
+    // so link-preview prefetchers can't burn it.
+    const fromLink = new URLSearchParams(location.search).get("code");
+    if (fromLink) {
+      input.value = fromLink;
+      redeem(fromLink);
+    }
+  </script>
+</body>
+</html>
