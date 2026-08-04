@@ -199,6 +199,11 @@ class Config:
     # service refuses to start without it - `openssl rand -hex 32`)
     WEB_SESSION_SECRET = os.getenv("WEB_SESSION_SECRET")
     WEB_SESSION_DAYS = int(os.getenv("WEB_SESSION_DAYS", "30"))
+    # who may embed the focus view in an iframe, as space-separated CSP
+    # frame-ancestors sources. default: nobody but ourselves - widen
+    # deliberately, e.g. "'self' https://internetcreature.dev" to let the
+    # portfolio desktop show focus.exe in a window.
+    WEB_FRAME_ANCESTORS = os.getenv("WEB_FRAME_ANCESTORS", "'self'")
 
     @classmethod
     def web_auth_enabled(cls) -> bool:

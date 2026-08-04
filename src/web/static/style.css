@@ -1,4 +1,10 @@
-/* the web focus view — warm hearth palette (a nod to Ember 🐾) */
+/* the web focus view. three switchable skins share one layout:
+ *   ember (default) - warm hearth palette (a nod to Ember 🐾)
+ *   wave            - cool abstract; the bar is a live sine wave
+ *   grove           - naturey; the bar is a growing vine
+ * a theme = a palette block below (scoped by [data-theme] on <html>) plus,
+ * for wave/grove, a canvas painter in themes.js. every rule reads the role
+ * vars (--accent & friends), so palettes swap without touching layout. */
 
 :root {
   --bg: #171310;
@@ -9,14 +15,51 @@
   --text: #ede4d8;
   --text-dim: #a3968a;
   --text-faint: #6f6459;
-  --ember: #f97316;
-  --ember-soft: #fdba74;
-  --ember-glow: rgba(249, 115, 22, 0.35);
+  --accent: #f97316;
+  --accent-soft: #fdba74;
+  --accent-glow: rgba(249, 115, 22, 0.35);
   --gold: #fbbf24;
   --sage: #86a879;
   --rust: #d97706;
   --danger: #b45309;
   --radius: 14px;
+  --fill-grad: linear-gradient(90deg, var(--rust), var(--accent) 60%, var(--gold));
+}
+
+:root[data-theme="wave"] {
+  --bg: #0a0e1e;
+  --bg-raise: #121730;
+  --bg-card: #151b36;
+  --bg-card-hover: #1a2142;
+  --line: #242e55;
+  --text: #dfe6f5;
+  --text-dim: #8d98b8;
+  --text-faint: #5b6480;
+  --accent: #22d3ee;
+  --accent-soft: #a5f3fc;
+  --accent-glow: rgba(34, 211, 238, 0.35);
+  --gold: #a78bfa;
+  --sage: #5eead4;
+  --rust: #f472b6;
+  --danger: #db2777;
+}
+
+:root[data-theme="grove"] {
+  --bg: #10150e;
+  --bg-raise: #171f14;
+  --bg-card: #1b2417;
+  --bg-card-hover: #212b1c;
+  --line: #2e3a27;
+  --text: #e8ecdd;
+  --text-dim: #9dab8e;
+  --text-faint: #68765c;
+  --accent: #4ade80;
+  --accent-soft: #bbf7d0;
+  --accent-glow: rgba(74, 222, 128, 0.3);
+  --gold: #fde047;
+  --sage: #86efac;
+  --rust: #d9a441;
+  --danger: #b45309;
 }
 
 * { box-sizing: border-box; }
@@ -27,6 +70,7 @@ html, body {
   color: var(--text);
   font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 16px;
+  transition: background .35s, color .35s;
 }
 
 #app {
@@ -34,6 +78,16 @@ html, body {
   margin: 0 auto;
   padding: 44px 28px 0;
 }
+
+/* --- embed mode (inside the portfolio's focus.exe window) --- */
+/* the window titlebar already says where we are, so shrink our own chrome */
+
+body.embed #app { padding: 20px 20px 0; }
+body.embed h1 { font-size: 22px; }
+body.embed .masthead { margin-bottom: 16px; }
+body.embed .footer-spacer { height: 120px; }
+body.embed #pom-bar { padding: 10px 20px 14px; }
+body.embed .login-wrap { min-height: 100vh; }
 
 /* --- header --- */
 
@@ -57,6 +111,13 @@ h1 {
   font-size: 15px;
 }
 
+.mast-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .day-total {
   color: var(--text-dim);
   font-size: 14px;
@@ -65,14 +126,41 @@ h1 {
   border-radius: 999px;
   padding: 6px 14px;
 }
+.day-total:empty { display: none; }
+
+/* --- theme picker --- */
+
+.theme-picker { display: flex; gap: 6px; }
+
+.theme-btn {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  opacity: .65;
+  filter: saturate(.6);
+  transition: all .15s;
+}
+.theme-btn:hover { opacity: 1; filter: none; }
+.theme-btn.on {
+  opacity: 1;
+  filter: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
 
 .banner {
-  background: #3a2a1a;
+  background: var(--bg-raise);
   border: 1px solid var(--rust);
   border-radius: var(--radius);
   padding: 12px 16px;
   margin-bottom: 20px;
-  color: var(--ember-soft);
+  color: var(--accent-soft);
   font-size: 14px;
 }
 
@@ -95,7 +183,7 @@ h1 {
 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot-overdue  { background: var(--rust); }
-.dot-today    { background: var(--ember); }
+.dot-today    { background: var(--accent); }
 .dot-progress { background: var(--sage); }
 
 .tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -119,8 +207,8 @@ h1 {
 .task:hover { background: var(--bg-card-hover); }
 
 .task.active {
-  border-color: var(--ember);
-  box-shadow: 0 0 18px var(--ember-glow);
+  border-color: var(--accent);
+  box-shadow: 0 0 18px var(--accent-glow);
 }
 
 .task .body { flex: 1; min-width: 0; }
@@ -147,7 +235,7 @@ h1 {
   flex-wrap: wrap;
 }
 
-.meta .chip-elapsed { color: var(--ember-soft); }
+.meta .chip-elapsed { color: var(--accent-soft); }
 .meta .chip-prio-high { color: var(--gold); }
 
 /* --- action buttons --- */
@@ -168,7 +256,7 @@ h1 {
 }
 
 .icon-btn:hover { color: var(--text); border-color: var(--text-faint); background: var(--bg-raise); }
-.icon-btn.play:hover { color: var(--ember); border-color: var(--ember); }
+.icon-btn.play:hover { color: var(--accent); border-color: var(--accent); }
 .icon-btn.done:hover { color: var(--sage); border-color: var(--sage); }
 .icon-btn.skip:hover { color: var(--rust); border-color: var(--rust); }
 .icon-btn:disabled { opacity: .4; cursor: default; }
@@ -181,7 +269,7 @@ h1 {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   padding: 14px 28px 22px;
-  background: linear-gradient(to top, rgba(23, 19, 16, 0.98) 65%, rgba(23, 19, 16, 0));
+  background: linear-gradient(to top, var(--bg) 65%, transparent);
 }
 
 .pom-info {
@@ -229,7 +317,7 @@ h1 {
   cursor: pointer;
   transition: all .15s;
 }
-.pill-btn:hover { border-color: var(--ember); color: var(--ember-soft); }
+.pill-btn:hover { border-color: var(--accent); color: var(--accent-soft); }
 
 .track {
   max-width: 760px;
@@ -246,9 +334,9 @@ h1 {
   height: 100%;
   width: 0%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--rust), var(--ember) 60%, var(--gold));
+  background: var(--fill-grad);
   transition: width .3s linear;
-  box-shadow: 0 0 14px var(--ember-glow);
+  box-shadow: 0 0 14px var(--accent-glow);
 }
 
 #pom-bar.paused .fill { filter: saturate(.35) brightness(.8); box-shadow: none; }
@@ -257,9 +345,21 @@ h1 {
 #pom-bar.complete .fill { animation: glow 1.2s ease-in-out infinite alternate; }
 
 @keyframes glow {
-  from { box-shadow: 0 0 12px var(--ember-glow); }
-  to   { box-shadow: 0 0 26px rgba(251, 191, 36, 0.55); }
+  from { box-shadow: 0 0 12px var(--accent-glow); }
+  to   { box-shadow: 0 0 26px var(--accent-glow), 0 0 34px var(--accent-glow); }
 }
+
+/* wave + grove trade the css fill for a canvas the painter draws into;
+   the taller track gives the sine wave / vine room to move */
+
+.track-viz { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+
+:root[data-theme="wave"] .track,
+:root[data-theme="grove"] .track { height: 36px; border-radius: 12px; }
+:root[data-theme="wave"] .track-viz,
+:root[data-theme="grove"] .track-viz { display: block; }
+:root[data-theme="wave"] .fill,
+:root[data-theme="grove"] .fill { display: none; }
 
 /* --- toast --- */
 
