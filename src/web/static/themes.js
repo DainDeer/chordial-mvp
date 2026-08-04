@@ -11,8 +11,13 @@
  */
 
 (function () {
-  // inside the portfolio's focus.exe window: the titlebar is our chrome
-  if (window.self !== window.top) document.body.classList.add("embed");
+  // inside the portfolio's focus.exe window: the titlebar is our chrome.
+  // the hello tells the desktop the real app loaded — iframes fire `load`
+  // for tunnel error pages too, so the embedder trusts this ping, not load.
+  if (window.self !== window.top) {
+    document.body.classList.add("embed");
+    window.parent.postMessage("chordial:focus-ready", "*");
+  }
 
   const THEMES = {
     ember: { emoji: "🔥", label: "ember — warm hearth",

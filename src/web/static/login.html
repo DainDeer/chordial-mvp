@@ -87,6 +87,12 @@
     </div>
   </div>
   <script>
+    // embedded in the portfolio's focus.exe window: same ready handshake as
+    // the main page (themes.js), so the login card counts as a healthy load
+    if (window.self !== window.top) {
+      window.parent.postMessage("chordial:focus-ready", "*");
+    }
+
     const form = document.getElementById("login-form");
     const input = document.getElementById("code");
     const button = document.getElementById("enter");
