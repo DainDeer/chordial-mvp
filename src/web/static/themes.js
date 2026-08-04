@@ -29,7 +29,9 @@
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const prog = { frac: 0, running: false, idle: true, complete: false };
-  let current = localStorage.getItem(STORE_KEY);
+  let current = null;
+  // storage can throw entirely in privacy-restricted iframes, not just on write
+  try { current = localStorage.getItem(STORE_KEY); } catch (e) { /* embed */ }
   if (!THEMES[current]) current = "ember";
   let pal = {};          // palette snapshot, re-read on theme change
   let t = 0;             // animation clock (seconds); frozen while paused

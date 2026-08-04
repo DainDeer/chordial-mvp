@@ -75,8 +75,12 @@ default is `'self'` — nobody else may frame the page (clickjacking
 protection). to let the portfolio embed it, widen the list in prod `.env`:
 
 ```
-WEB_FRAME_ANCESTORS='self' https://internetcreature.dev
+WEB_FRAME_ANCESTORS="'self' https://internetcreature.dev"
 ```
+
+(the double quotes matter: dotenv strips them and keeps the inner `'self'`,
+which is CSP syntax. an unquoted line doesn't parse and silently leaves the
+default in place.)
 
 the subdomains are same-*site*, so the SameSite=Lax session cookie flows
 inside the iframe with no further changes; the page detects it's framed and
