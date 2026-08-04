@@ -180,3 +180,27 @@ def test_user_resolution_guardrails(env):
         assert "WEB_USER_UUID" in body["error"]
 
     _run(_with_client(scenario, user_resolver=resolve_web_user))
+
+
+def test_frame_ancestors_header(env, monkeypatch):
+    """every response (page, api, even redirects) declares who may frame it -
+    the default is 'self'; deployments widen it for the portfolio desktop."""
+    from config import Config
+
+    async def scenario(client):
+        for path in ("/", "/api/today"):
+            res = await client.get(path)
+            assert res.headers["Content-Security-Policy"] == \
+                "frame-ancestors 'self'"
+
+    _run(_with_client(scenario))
+
+    monkeypatch.setattr(Config, "WEB_FRAME_ANCESTORS",
+                        "'self' https://internetcreature.dev")
+
+    async def widened(client):
+        res = await client.get("/")
+        assert res.headers["Content-Security-Policy"] == \
+            "frame-ancestors 'self' https://internetcreature.dev"
+
+    _run(_with_client(widened))

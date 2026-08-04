@@ -165,12 +165,18 @@ function iconButton(glyph, cls, label, onClick) {
   return b;
 }
 
+// theme-appropriate emoji (🔥 vs 🌊 vs 🌱); falls back if themes.js is absent
+function themeIcons() {
+  return window.TrackViz ? TrackViz.icons()
+    : { runIcon: "🔥", idleIcon: "🍅", dayIcon: "🔥" };
+}
+
 function renderDayTotal() {
   const secondsMap = state.data?.focus?.seconds || {};
   // taskSeconds adds the live delta only for the active task
   const total = Object.keys(secondsMap).reduce((acc, id) => acc + taskSeconds(Number(id)), 0);
   const el = $("#day-total");
-  el.textContent = total >= 60 ? `🔥 ${Math.floor(total / 3600) ? `${Math.floor(total / 3600)}h ` : ""}${Math.floor((total % 3600) / 60)}m focused` : "";
+  el.textContent = total >= 60 ? `${themeIcons().dayIcon} ${Math.floor(total / 3600) ? `${Math.floor(total / 3600)}h ` : ""}${Math.floor((total % 3600) / 60)}m focused` : "";
 }
 
 function renderBar() {
@@ -195,11 +201,12 @@ function renderBar() {
     bar.classList.add("idle");
     bar.classList.remove("paused", "complete");
     $("#pom-task-title").textContent = "pick a task to begin";
-    $("#pom-state-icon").textContent = "🍅";
+    $("#pom-state-icon").textContent = themeIcons().idleIcon;
     $("#pom-elapsed").textContent = "–";
     $("#pom-sub").textContent = "";
     toggle.classList.add("hidden");
     $("#fill").style.width = "0%";
+    if (window.TrackViz) TrackViz.set({ frac: 0, running: false, idle: true, complete: false });
     return;
   }
 
@@ -207,13 +214,15 @@ function renderBar() {
   const inPom = secs % pomSecs;
   const pomsDone = Math.floor(secs / pomSecs);
   const frac = inPom / pomSecs;
+  const complete = running && frac > 0.995;
 
   bar.classList.remove("idle");
   bar.classList.toggle("paused", !running);
-  bar.classList.toggle("complete", running && frac > 0.995);
+  bar.classList.toggle("complete", complete);
+  if (window.TrackViz) TrackViz.set({ frac, running, idle: false, complete });
 
   $("#pom-task-title").textContent = current.title;
-  $("#pom-state-icon").textContent = running ? "🔥" : "⏸";
+  $("#pom-state-icon").textContent = running ? themeIcons().runIcon : "⏸";
   $("#pom-elapsed").textContent = mmss(inPom);
   const subBits = [`of ${state.data.pom_minutes}:00`];
   if (pomsDone > 0) subBits.push(`· ${pomsDone} pom${pomsDone === 1 ? "" : "s"} done`);

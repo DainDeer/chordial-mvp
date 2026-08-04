@@ -113,7 +113,8 @@ class WebService:
             raise RuntimeError(
                 "WEB_PUBLIC_URL is set but WEB_SESSION_SECRET is not - "
                 "generate one: openssl rand -hex 32")
-        app = web.Application(middlewares=[self._origin_guard])
+        app = web.Application(
+            middlewares=[self._security_headers, self._origin_guard])
         app.router.add_get("/", self._index)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login/redeem", self._api_login_redeem)
@@ -141,6 +142,23 @@ class WebService:
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
+
+    # --- response headers -----------------------------------------------------
+
+    @web.middleware
+    async def _security_headers(self, request: web.Request, handler):
+        """every response names who may frame it. an unset header lets any
+        site iframe the logged-in view and clickjack its buttons; the config
+        default allows only ourselves, and deployments widen it deliberately
+        (the portfolio desktop embeds focus.exe in a window)."""
+        csp = "frame-ancestors " + Config.WEB_FRAME_ANCESTORS
+        try:
+            response = await handler(request)
+        except web.HTTPException as e:
+            e.headers["Content-Security-Policy"] = csp
+            raise
+        response.headers["Content-Security-Policy"] = csp
+        return response
 
     # --- cross-origin writes --------------------------------------------------
 

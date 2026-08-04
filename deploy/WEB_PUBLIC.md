@@ -67,6 +67,25 @@ poetry run alembic upgrade head
 sudo systemctl restart chordial
 ```
 
+## embedding in the portfolio desktop (focus.exe)
+
+the portfolio site shows the focus view inside an iframe window. every
+response carries `Content-Security-Policy: frame-ancestors ...`, and the
+default is `'self'` — nobody else may frame the page (clickjacking
+protection). to let the portfolio embed it, widen the list in prod `.env`:
+
+```
+WEB_FRAME_ANCESTORS="'self' https://internetcreature.dev"
+```
+
+(the double quotes matter: dotenv strips them and keeps the inner `'self'`,
+which is CSP syntax. an unquoted line doesn't parse and silently leaves the
+default in place.)
+
+the subdomains are same-*site*, so the SameSite=Lax session cookie flows
+inside the iframe with no further changes; the page detects it's framed and
+switches to a compact embed layout on its own.
+
 ## the dev daemon
 
 both daemons default to port 8484; `.env.dev` moves dev to 8485 so they can

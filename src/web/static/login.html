@@ -31,7 +31,7 @@
       line-height: 1.5;
       margin: 0 0 24px;
     }
-    .login-hint b { color: var(--ember-soft); font-weight: 600; }
+    .login-hint b { color: var(--accent-soft); font-weight: 600; }
     #code {
       width: 100%;
       background: var(--bg-raise);
@@ -46,11 +46,11 @@
       outline: none;
       font-family: inherit;
     }
-    #code:focus { border-color: var(--ember); box-shadow: 0 0 0 3px var(--ember-glow); }
+    #code:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
     #enter {
       width: 100%;
       margin-top: 14px;
-      background: var(--ember);
+      background: var(--accent);
       border: none;
       border-radius: 10px;
       color: #1a120b;
@@ -60,7 +60,7 @@
       cursor: pointer;
       font-family: inherit;
     }
-    #enter:hover { background: var(--ember-soft); }
+    #enter:hover { background: var(--accent-soft); }
     #enter:disabled { opacity: 0.6; cursor: default; }
     .login-status {
       min-height: 22px;
@@ -87,6 +87,12 @@
     </div>
   </div>
   <script>
+    // embedded in the portfolio's focus.exe window: same ready handshake as
+    // the main page (themes.js), so the login card counts as a healthy load
+    if (window.self !== window.top) {
+      window.parent.postMessage("chordial:focus-ready", "*");
+    }
+
     const form = document.getElementById("login-form");
     const input = document.getElementById("code");
     const button = document.getElementById("enter");

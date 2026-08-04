@@ -14,7 +14,10 @@
         <h1 id="greeting">today</h1>
         <p class="date" id="date-line"></p>
       </div>
-      <div class="day-total" id="day-total" title="total focused time across tasks"></div>
+      <div class="mast-right">
+        <div class="theme-picker" id="theme-picker" role="group" aria-label="theme"></div>
+        <div class="day-total" id="day-total" title="total focused time across tasks"></div>
+      </div>
     </header>
 
     <div id="banner" class="banner hidden"></div>
@@ -52,11 +55,13 @@
     </div>
     <div class="track" id="track">
       <div class="fill" id="fill"></div>
+      <canvas class="track-viz" id="track-viz" aria-hidden="true"></canvas>
     </div>
   </footer>
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="/static/themes.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
