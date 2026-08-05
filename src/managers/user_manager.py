@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from src.database.models import User, PlatformIdentity
 from src.database.database import get_db
+from src.utils.timezone_utils import canonicalize_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,10 @@ class UserManager:
                 user.preferred_name = preferences['preferred_name']
             
             if 'timezone' in preferences:
-                user.timezone = preferences['timezone']
+                # canonical IANA only - a stored legacy alias ("US/Pacific")
+                # is unresolvable for stdlib-zoneinfo consumers (the pulse's
+                # quiet hours then fails closed and silences proactive sends)
+                user.timezone = canonicalize_timezone(preferences['timezone'])
             
             if 'schedule_preferences' in preferences:
                 user.schedule_preferences = preferences['schedule_preferences']
@@ -100,11 +104,13 @@ class UserManager:
             return True
 
     async def get_user_timezone(self, user_uuid: str) -> str:
-        """get a user's timezone, defaulting to UTC if unset or user not found"""
+        """get a user's timezone, defaulting to UTC if unset or user not found.
+        canonicalized on the way out so rows written before the legacy-alias
+        migration still hand consumers a zone stdlib zoneinfo can resolve."""
         with get_db() as db:
             user = db.query(User).filter(User.uuid == user_uuid).first()
             if user and user.timezone:
-                return user.timezone
+                return canonicalize_timezone(user.timezone)
             return "UTC"
 
     async def get_user_profile(self, user_uuid: str) -> tuple[Optional[str], str]:
@@ -113,7 +119,7 @@ class UserManager:
             user = db.query(User).filter(User.uuid == user_uuid).first()
             if user is None:
                 return None, "UTC"
-            return user.preferred_name, user.timezone or "UTC"
+            return user.preferred_name, canonicalize_timezone(user.timezone or "UTC")
 
     async def get_scheduled_users(self) -> List[str]:
         """distinct user_uuids eligible for proactive sends: the human is

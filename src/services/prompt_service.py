@@ -63,7 +63,7 @@ _INTRO_SHARED_GUIDANCE = (
     "than a stranger; don't skip it).\n"
     "2. quick practical beat (light, not an interview): roughly where in the "
     "world are they, so your check-ins land at sane hours - save it with "
-    "set_preference (an IANA timezone like 'US/Pacific').\n"
+    "set_preference (an IANA timezone like 'America/Los_Angeles').\n"
     "3. ask your ONE signature question (it rides just below, in your card) - in "
     "your own voice, not read verbatim. you may riff on their answer with at "
     "most ONE warm follow-up, then move on. save what you learn with save_memory "
