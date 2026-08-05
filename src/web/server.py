@@ -150,14 +150,23 @@ class WebService:
         """every response names who may frame it. an unset header lets any
         site iframe the logged-in view and clickjack its buttons; the config
         default allows only ourselves, and deployments widen it deliberately
-        (the portfolio desktop embeds focus.exe in a window)."""
+        (the portfolio desktop embeds focus.exe in a window).
+
+        Cache-Control: no-cache on everything: without it, browsers
+        heuristically reuse the html for ~10% of its Last-Modified age (a
+        page cached before a deploy masked that deploy for days), and
+        cloudflare edge-caches static js/css for hours. no-cache still
+        permits storing - Last-Modified revalidation keeps 304s fast - but
+        every load asks the origin, so a deploy is visible on next reload."""
         csp = "frame-ancestors " + Config.WEB_FRAME_ANCESTORS
         try:
             response = await handler(request)
         except web.HTTPException as e:
             e.headers["Content-Security-Policy"] = csp
+            e.headers.setdefault("Cache-Control", "no-cache")
             raise
         response.headers["Content-Security-Policy"] = csp
+        response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     # --- cross-origin writes --------------------------------------------------

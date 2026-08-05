@@ -204,3 +204,15 @@ def test_frame_ancestors_header(env, monkeypatch):
             "frame-ancestors 'self' https://internetcreature.dev"
 
     _run(_with_client(widened))
+
+
+def test_no_cache_header(env):
+    """html, api, and static responses all demand revalidation - a browser's
+    heuristically-fresh copy of a pre-deploy page once masked a deploy (and
+    its CSP fix) for days, and cloudflare edge-caches statics for hours."""
+    async def scenario(client):
+        for path in ("/", "/api/today", "/static/style.css"):
+            res = await client.get(path)
+            assert res.headers["Cache-Control"] == "no-cache", path
+
+    _run(_with_client(scenario))
