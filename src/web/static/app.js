@@ -12,11 +12,23 @@
  */
 
 const POLL_MS = 45000;
+const BREAK_KEY = "chordial-break";
 const state = {
   data: null,          // last /api/today payload
   fetchedAt: null,     // performance.now() at fetch, for local ticking
-  lastPomCount: null,  // for rollover celebration
+  lastPomCount: null,  // for rollover detection (break + celebration)
+  break: null,         // { endsAt: epoch ms, taskTitle } while on a break
 };
+
+// a break survives a refresh: wall-clock end time lives in localStorage
+try {
+  const saved = JSON.parse(localStorage.getItem(BREAK_KEY) || "null");
+  if (saved && typeof saved.endsAt === "number" && saved.endsAt > Date.now()) {
+    state.break = saved;
+  } else {
+    localStorage.removeItem(BREAK_KEY);
+  }
+} catch (e) { /* corrupt storage is just no break */ }
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -52,6 +64,76 @@ async function post(url, body) {
   } finally {
     await refresh();
   }
+}
+
+// --- desktop notifications + sounds ---------------------------------------------
+//
+// sounds are optional drop-ins: if /static/sounds/<name>.<ext> exists on the
+// server we play it (and tell the Notification to stay silent); if not, the
+// notification keeps the OS default sound. probed once at boot with HEADs.
+
+const SOUNDS = { "pom-end": null, "break-end": null };
+
+async function probeSounds() {
+  for (const name of Object.keys(SOUNDS)) {
+    for (const ext of ["mp3", "ogg", "wav"]) {
+      const url = `/static/sounds/${name}.${ext}`;
+      try {
+        const res = await fetch(url, { method: "HEAD" });
+        if (res.ok) { SOUNDS[name] = url; break; }
+      } catch (e) { /* server unreachable — refresh() already complains */ }
+    }
+  }
+}
+
+function ensureNotifyPermission() {
+  // must ride a user gesture; called from the start/resume click handlers
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+function notify(title, body, soundName) {
+  toast(body ? `${title} · ${body}` : title);
+  const customSound = soundName ? SOUNDS[soundName] : null;
+  if (customSound) {
+    try { new Audio(customSound).play().catch(() => {}); } catch (e) {}
+  }
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      new Notification(title, { body, silent: !!customSound });
+    } catch (e) { /* e.g. denied inside an embed iframe — toast already shown */ }
+  }
+}
+
+// --- break lifecycle --------------------------------------------------------------
+
+function breakMinutes() {
+  return state.data?.break_minutes || 5;
+}
+
+function startBreak(task) {
+  const mins = breakMinutes();
+  state.break = { endsAt: Date.now() + mins * 60000, taskTitle: task.title };
+  localStorage.setItem(BREAK_KEY, JSON.stringify(state.break));
+  post("/api/focus/pause");   // bank the clock — break time never accrues
+  notify("pomodoro complete 🍅",
+         `"${task.title}" — take a ${mins} minute break`, "pom-end");
+}
+
+function endBreak(skipped) {
+  state.break = null;
+  localStorage.removeItem(BREAK_KEY);
+  $("#pom-bar").classList.remove("break");
+  if (skipped) toast("break skipped");
+  else notify("break's over 🌱", "ready when you are", "break-end");
+  render();
+}
+
+function startFocus(taskId) {
+  ensureNotifyPermission();
+  if (state.break) endBreak(true);   // starting work is skipping the break
+  return post("/api/focus/start", { task_id: taskId });
 }
 
 // --- derived clock ------------------------------------------------------------
@@ -134,7 +216,7 @@ function taskCard(t) {
   actions.append(
     iconButton(isActive ? "⏸" : "▶", "play",
       isActive ? "pause" : (secs > 0 ? "resume" : "start"),
-      () => isActive ? post("/api/focus/pause") : post("/api/focus/start", { task_id: t.id })),
+      () => isActive ? post("/api/focus/pause") : startFocus(t.id)),
     iconButton("✓", "done", "mark complete", async () => {
       const r = await post(`/api/tasks/${t.id}/status`, { status: "done" });
       if (r) toast(`"${t.title}" — done ✨`);
@@ -180,7 +262,9 @@ function renderDayTotal() {
 }
 
 function renderBar() {
+  if (state.break) { renderBreakBar(); return; }
   const bar = $("#pom-bar");
+  bar.classList.remove("break");
   const id = activeTaskId();
   const pomSecs = (state.data?.pom_minutes || 25) * 60;
   const toggle = $("#pom-toggle");
@@ -232,15 +316,38 @@ function renderBar() {
   toggle.classList.remove("hidden");
   toggle.textContent = running ? "pause" : "resume";
   toggle.onclick = () =>
-    running ? post("/api/focus/pause") : post("/api/focus/start", { task_id: current.id });
+    running ? post("/api/focus/pause") : startFocus(current.id);
 
   $("#fill").style.width = `${Math.min(100, frac * 100)}%`;
 
-  // pom rollover: celebrate once when the count ticks up while running
+  // pom rollover: when the count ticks up while running, the block is done —
+  // pause the clock, say so on the desktop, and start the break countdown
   if (running && state.lastPomCount !== null && pomsDone > state.lastPomCount) {
-    toast(`pomodoro complete on "${current.title}" 🍅✨`);
+    startBreak(current);
   }
   state.lastPomCount = running ? pomsDone : null;
+}
+
+function renderBreakBar() {
+  const remaining = (state.break.endsAt - Date.now()) / 1000;
+  if (remaining <= 0) { endBreak(false); return; }
+
+  const bar = $("#pom-bar");
+  const toggle = $("#pom-toggle");
+  const frac = Math.max(0, Math.min(1, 1 - remaining / (breakMinutes() * 60)));
+
+  bar.classList.remove("idle", "paused", "complete");
+  bar.classList.add("break");
+  $("#pom-task-title").textContent = "break time";
+  $("#pom-state-icon").textContent = "🌿";
+  $("#pom-elapsed").textContent = mmss(remaining);
+  $("#pom-sub").textContent =
+    state.break.taskTitle ? `then back to "${state.break.taskTitle}"` : "";
+  toggle.classList.remove("hidden");
+  toggle.textContent = "skip break";
+  toggle.onclick = () => endBreak(true);
+  $("#fill").style.width = `${Math.min(100, frac * 100)}%`;
+  if (window.TrackViz) TrackViz.set({ frac, running: true, idle: false, complete: false });
 }
 
 // --- little helpers ------------------------------------------------------------
@@ -283,6 +390,7 @@ function hideBanner() {
 // --- boot -----------------------------------------------------------------------
 
 refresh();
+probeSounds();
 setInterval(refresh, POLL_MS);
 setInterval(() => { if (state.data) { renderBar(); renderDayTotal(); } }, 500);
 // re-sync promptly when the window comes back (laptop wake, tab switch)

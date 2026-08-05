@@ -187,6 +187,9 @@ class Config:
     WEB_USER_UUID = os.getenv("WEB_USER_UUID")
     # one pomodoro, in minutes - the bar's "full" mark
     POM_MINUTES = int(os.getenv("POM_MINUTES", "25"))
+    # the breather between pomodoros - the frontend runs the countdown and
+    # pauses the focus clock, so break time never accrues to the task
+    BREAK_MINUTES = int(os.getenv("BREAK_MINUTES", "5"))
 
     # public deployment (e.g. behind a cloudflared tunnel at
     # https://focus.example.com). setting WEB_PUBLIC_URL is the ONE switch
