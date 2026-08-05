@@ -10,24 +10,55 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEZONE = "UTC"
 
 
+# legacy/deprecated zone names -> canonical IANA. pytz resolves these from its
+# bundled backward-links, but the dainframe pulse uses stdlib zoneinfo, which
+# only knows them when the host tzdata ships the links - a stored "US/Pacific"
+# once silenced every proactive send (quiet hours fails closed on a zone it
+# can't resolve). canonical names work everywhere; nothing else may be stored.
+_LEGACY_TO_CANONICAL = {
+    "US/Pacific": "America/Los_Angeles",
+    "US/Mountain": "America/Denver",
+    "US/Arizona": "America/Phoenix",
+    "US/Central": "America/Chicago",
+    "US/Eastern": "America/New_York",
+    "US/East-Indiana": "America/Indiana/Indianapolis",
+    "US/Michigan": "America/Detroit",
+    "US/Hawaii": "Pacific/Honolulu",
+    "US/Alaska": "America/Anchorage",
+    "US/Aleutian": "America/Adak",
+    "US/Samoa": "Pacific/Pago_Pago",
+    "GB": "Europe/London",
+    "Eire": "Europe/Dublin",
+    "Japan": "Asia/Tokyo",
+    "NZ": "Pacific/Auckland",
+}
+
+
+def canonicalize_timezone(tz_name: str) -> str:
+    """map a legacy zone alias to its canonical IANA name; anything else
+    passes through unchanged. applied wherever a timezone enters or leaves
+    storage, so downstream consumers can rely on canonical names."""
+    return _LEGACY_TO_CANONICAL.get(tz_name, tz_name)
+
+
 # freeform answers -> IANA timezone, for resolving what a user types during
 # onboarding ("california", "pacific time", "PST"). multi-word keys are matched
 # as substrings; single-word keys only as whole words (so "et" doesn't match
 # "meeting"). US-leaning, plus the common international zones.
 _TZ_ALIASES = {
     # --- US ---
-    "pacific": "US/Pacific", "pst": "US/Pacific", "pdt": "US/Pacific",
-    "california": "US/Pacific", "los angeles": "US/Pacific", "san francisco": "US/Pacific",
-    "seattle": "US/Pacific", "portland": "US/Pacific", "washington state": "US/Pacific",
-    "mountain": "US/Mountain", "mst": "US/Mountain", "mdt": "US/Mountain",
-    "denver": "US/Mountain", "colorado": "US/Mountain", "utah": "US/Mountain",
-    "arizona": "US/Arizona", "phoenix": "US/Arizona",
-    "central": "US/Central", "cst": "US/Central", "cdt": "US/Central",
-    "chicago": "US/Central", "texas": "US/Central", "austin": "US/Central", "dallas": "US/Central",
-    "eastern": "US/Eastern", "est": "US/Eastern", "edt": "US/Eastern",
-    "new york": "US/Eastern", "nyc": "US/Eastern", "boston": "US/Eastern",
-    "florida": "US/Eastern", "miami": "US/Eastern", "atlanta": "US/Eastern",
-    "hawaii": "US/Hawaii", "hst": "US/Hawaii", "alaska": "US/Alaska",
+    "pacific": "America/Los_Angeles", "pst": "America/Los_Angeles", "pdt": "America/Los_Angeles",
+    "california": "America/Los_Angeles", "los angeles": "America/Los_Angeles", "san francisco": "America/Los_Angeles",
+    "seattle": "America/Los_Angeles", "portland": "America/Los_Angeles", "washington state": "America/Los_Angeles",
+    "mountain": "America/Denver", "mst": "America/Denver", "mdt": "America/Denver",
+    "denver": "America/Denver", "colorado": "America/Denver", "utah": "America/Denver",
+    "arizona": "America/Phoenix", "phoenix": "America/Phoenix",
+    "central": "America/Chicago", "cst": "America/Chicago", "cdt": "America/Chicago",
+    "chicago": "America/Chicago", "texas": "America/Chicago", "austin": "America/Chicago", "dallas": "America/Chicago",
+    "eastern": "America/New_York", "est": "America/New_York", "edt": "America/New_York",
+    "new york": "America/New_York", "nyc": "America/New_York", "boston": "America/New_York",
+    "florida": "America/New_York", "miami": "America/New_York", "atlanta": "America/New_York",
+    "hawaii": "Pacific/Honolulu", "hst": "Pacific/Honolulu", "alaska": "America/Anchorage",
     # --- international ---
     "london": "Europe/London", "britain": "Europe/London", "england": "Europe/London",
     "gmt": "Europe/London", "bst": "Europe/London",
@@ -60,11 +91,13 @@ def resolve_timezone(text: str) -> Optional[str]:
     lowered = raw.lower()
 
     # 1. an exact IANA name, case-insensitively ("US/Pacific", "america/new_york"),
-    #    except the legacy bare-abbreviation zones we'd rather map DST-aware
+    #    except the legacy bare-abbreviation zones we'd rather map DST-aware.
+    #    canonicalized on the way out: a typed "US/Pacific" is welcome, but
+    #    only "America/Los_Angeles" may be stored.
     if lowered not in _LEGACY_ABBREV_ZONES:
         for tz in pytz.all_timezones:
             if tz.lower() == lowered:
-                return tz
+                return canonicalize_timezone(tz)
 
     # 2. alias table: multi-word keys as substrings, single-word keys as whole words
     tokens = set(re.findall(r"[a-z0-9+]+", lowered))

@@ -10,6 +10,7 @@ import logging
 import pytz
 
 from src.managers.user_manager import UserManager
+from src.utils.timezone_utils import canonicalize_timezone
 from dainframe.providers.types import ToolDef
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
@@ -38,8 +39,11 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         except pytz.UnknownTimeZoneError:
             return (
                 f"'{tz}' isn't a timezone i recognize. use an IANA name like "
-                "'US/Pacific', 'America/New_York', or 'Europe/London'."
+                "'America/Los_Angeles', 'America/New_York', or 'Europe/London'."
             )
+        # legacy aliases ("US/Pacific") validate under pytz but break
+        # stdlib-zoneinfo consumers - store the canonical name instead
+        tz = canonicalize_timezone(tz)
         updates["timezone"] = tz
         notes.append(f"set your timezone to {tz}")
 
@@ -77,7 +81,7 @@ SET_PREFERENCE = Tool(
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "IANA timezone name, e.g. 'US/Pacific', 'Europe/London'.",
+                    "description": "IANA timezone name, e.g. 'America/Los_Angeles', 'Europe/London'.",
                 },
                 "bot_personality": {
                     "type": "string",

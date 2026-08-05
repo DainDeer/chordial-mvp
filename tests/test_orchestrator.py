@@ -202,7 +202,9 @@ def test_scheduler_stimulus_resolves_profile_from_db(db):
     run(orch.handle(_tick()))
     b = companion.briefings[0]
     assert b.extras["user_name"] == "dain"
-    assert b.extras["user_timezone"] == "US/Pacific"
+    # the seeded row is legacy 'US/Pacific'; profile reads canonicalize so
+    # stdlib-zoneinfo consumers (the pulse's quiet hours) always resolve
+    assert b.extras["user_timezone"] == "America/Los_Angeles"
 
 
 # --- recording -----------------------------------------------------------------
