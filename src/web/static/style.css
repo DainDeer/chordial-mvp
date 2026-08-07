@@ -340,6 +340,10 @@ h1 {
 }
 
 #pom-bar.paused .fill { filter: saturate(.35) brightness(.8); box-shadow: none; }
+
+/* break: the bar goes sage while the countdown runs down the breather */
+#pom-bar.break .fill { background: var(--sage); box-shadow: 0 0 14px rgba(134, 168, 121, 0.35); }
+#pom-bar.break #pom-task-title { color: var(--sage); }
 #pom-bar.idle .fill { width: 0 !important; }
 
 #pom-bar.complete .fill { animation: glow 1.2s ease-in-out infinite alternate; }

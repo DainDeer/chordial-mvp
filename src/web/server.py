@@ -285,6 +285,7 @@ class WebService:
             "today": today_iso,
             "user": {"name": name},
             "pom_minutes": Config.POM_MINUTES,
+            "break_minutes": Config.BREAK_MINUTES,
             "buckets": buckets,
             "focus": {
                 "active_task_id": snap["active_task_id"],
