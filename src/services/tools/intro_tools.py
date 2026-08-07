@@ -99,6 +99,7 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
     cards = load_personas()
 
     lines = []
+    offered: list[tuple[str, bool]] = []
     for helper_id, card in sorted(cards.items()):
         if helper_id == acting:
             continue
@@ -115,6 +116,18 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
         if username:
             bits += f" - meet them: {_deep_link(username)}"
         lines.append(bits)
+        offered.append((helper_id, bool(username)))
+
+    # the audit trail for this tool. record_event stays False (a roster goes
+    # stale immediately and would sit in cache-stable history forever, inviting
+    # exactly the stale-reread this tool exists to prevent), so the log line IS
+    # the record of what the model was handed - and, by its absence, of the
+    # turns where a helper answered a roster question without asking.
+    logger.info(
+        "list_available_guides: actor=%s user=%s -> %s",
+        acting, user_uuid,
+        ", ".join(f"{h}{'' if l else ' (no link)'}" for h, l in offered) or "none",
+    )
 
     if not lines:
         return "no other guides left to introduce - everyone's already been met (or passed on)."
@@ -125,14 +138,32 @@ LIST_AVAILABLE_GUIDES = Tool(
     definition=ToolDef(
         name="list_available_guides",
         description=(
-            "Look up which other helpers in the crew this user hasn't met yet "
-            "(or has met but hasn't decided about) - each with its specialty "
-            "and a deep link that opens that helper's own chat and starts its "
-            "introduction. Use this when offering to introduce the other "
-            "guides, e.g. after your own introduction wraps up."
+            "The ONLY source of truth for who else is in this person's crew. "
+            "Returns the helpers they haven't met yet (or have met but haven't "
+            "decided about), each with its real specialty and a working deep "
+            "link that opens that helper's own chat and starts its "
+            "introduction.\n"
+            "\n"
+            "Call this ANY time the other helpers come up - not just at the end "
+            "of your own introduction. That includes: \"who else is there?\", "
+            "\"introduce me to the other helpers / companions / guides / "
+            "crew\", \"can I get a link to X?\", \"who should I talk to about "
+            "<topic>?\", or you offering the crew unprompted.\n"
+            "\n"
+            "You do not know the roster without calling this, and a plausible "
+            "guess is worse than asking: crewmate names, what each one "
+            "specializes in, and every link are known ONLY here. Never write a "
+            "crewmate's name, specialty, or URL from memory or from an earlier "
+            "message - an invented helper doesn't exist and an invented link "
+            "goes nowhere. Call it fresh each time; who's been met changes."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
     handler=_list_available_guides,
-    record_event=False,  # pure read: the roster goes stale immediately
+    # pure read: the roster goes stale immediately, and recording it would park
+    # a frozen copy in cache-stable history for the model to answer FROM next
+    # time instead of asking again. auditability comes from the handler's log
+    # line plus agent_traces.tool_trace (which records every call, tool-by-tool,
+    # whatever this flag says).
+    record_event=False,
 )
