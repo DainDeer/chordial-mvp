@@ -34,6 +34,7 @@ from src.personas import PersonaCard, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.tools import ToolRegistry  # noqa: E402
 from dainframe.tools.context import ToolContext  # noqa: E402
+from config import Config  # noqa: E402
 
 
 def _ctx(user_uuid: str, actor: str) -> ToolContext:
@@ -273,7 +274,107 @@ def test_list_available_guides_excludes_active_and_declined(db):
 
 
 def test_list_available_guides_is_read_only():
+    """record_event stays False on purpose: a recorded roster freezes into
+    cache-stable history, and the model answers the NEXT roster question from
+    that stale copy instead of calling again. auditability rides on the
+    handler's log line + agent_traces.tool_trace instead."""
     assert LIST_AVAILABLE_GUIDES.record_event is False
+
+
+def test_list_available_guides_logs_what_it_handed_back(db, monkeypatch, caplog):
+    """the audit trail that replaces record_event. this tool's calls were
+    invisible in the event log, so 'did it even ask?' was unanswerable from
+    the DB alone after a helper confabulated a roster (2026-08-05)."""
+    _clear_telegram_usernames(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_USERNAME_MOCHI", "chordial_mvp_v3_mochi_bot")
+    user_uuid = run(_make_user())
+
+    with caplog.at_level("INFO", logger="src.services.tools.intro_tools"):
+        run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
+
+    line = next(r.getMessage() for r in caplog.records if "list_available_guides" in r.getMessage())
+    assert "actor=chordial" in line and user_uuid in line
+    assert "mochi (no link)" not in line  # configured: a link went out
+    assert "tempo (no link)" in line  # unconfigured: flagged, still offered
+
+
+def test_list_available_guides_description_covers_mid_conversation_asks():
+    """the description used to scope itself to 'after your own introduction
+    wraps up', so a mid-conversation "introduce me to the other companions?"
+    didn't match it and the helper answered from imagination instead."""
+    text = LIST_AVAILABLE_GUIDES.definition.description.lower()
+    for phrasing in ("companions", "guides", "who else"):
+        assert phrasing in text
+    assert "never" in text  # the don't-invent-a-link rule
+
+
+# --- standing crew awareness in the system prompt ---------------------------
+
+
+def _block2(card, **overrides) -> str:
+    kwargs = dict(
+        conversation_history=[
+            Event(author_type="user", author="user", kind="message", content="hi")
+        ],
+        user_name="Dain",
+        user_uuid=None,
+        user_timezone="UTC",
+    )
+    kwargs.update(overrides)
+    prompts = PromptService(persona=card, enable_prompt_logging=False)
+    return run(prompts.build_conversation_request(**kwargs)).system[1].text
+
+
+def test_conversation_turns_carry_crew_awareness(monkeypatch):
+    """the actual 2026-08-05 bug: on an ordinary conversation turn nothing in
+    the prompt said a crew existed or that the roster had to be fetched - that
+    instruction lived only in the introduction flow. asked about the other
+    helpers, chordial invented four of them, with wrong specialties and dead
+    links, without ever calling the tool."""
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo", "mochi"])
+
+    text = _block2(_card())
+
+    assert "list_available_guides" in text
+    assert "rest of the crew" in text
+
+
+def test_crew_awareness_reaches_scheduled_and_introduction_turns(monkeypatch):
+    """it lives in the shared system block, so no turn kind is exempt - a
+    proactive check-in can be asked about the crew just as easily."""
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo"])
+    prompts = PromptService(persona=_card(), enable_prompt_logging=False)
+
+    for build in (prompts.build_scheduled_request, prompts.build_introduction_request):
+        request = run(
+            build(
+                conversation_history=[],
+                user_name="Dain",
+                user_uuid=None,
+                user_timezone="UTC",
+            )
+        )
+        assert "list_available_guides" in request.system[1].text
+
+
+def test_no_crew_awareness_in_a_solo_deployment(monkeypatch):
+    """one enabled helper has no crew to offer; promising one would be its own
+    invented roster (.env.dev runs exactly this shape)."""
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial"])
+
+    assert "list_available_guides" not in _block2(_card())
+
+
+def test_no_crew_awareness_when_the_card_cannot_call_the_tool(monkeypatch):
+    """guidance and tool surface stay in sync: a card whose allowlist omits the
+    tool is never told to call it."""
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo"])
+
+    without = _card(id="tempo", tools=["save_memory"])
+    with_it = _card(id="tempo", tools=["save_memory", "list_available_guides"])
+
+    assert "list_available_guides" not in _block2(without)
+    assert "list_available_guides" in _block2(with_it)
 
 
 # --- PromptService.build_introduction_request -------------------------------

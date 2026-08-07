@@ -40,6 +40,32 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# standing crew awareness, carried in system block 2 on EVERY turn kind - not
+# just introductions. without it a helper has no in-context evidence that its
+# crewmates exist at all: a persona_block never names them, and the roster
+# lives only inside list_available_guides. asked "introduce me to the other
+# companions?" mid-conversation, a helper with no roster and no instruction to
+# fetch one confabulates the answer - inventing crewmate names, mismatched
+# specialties, and dead links (which is exactly what shipped to a user on
+# 2026-08-05; the tool was on the request and never called).
+#
+# static bytes, so it costs one cache re-warm at deploy and nothing per turn.
+_CREW_AWARENESS = (
+    "about the rest of the crew:\n"
+    "- you are one of several helpers who share this person. each has its own "
+    "specialty and its own separate chat with them.\n"
+    "- you do NOT know the roster: not who is in it, not what they do, not how "
+    "to reach them. that lives in your list_available_guides tool, which also "
+    "knows who this person has already met.\n"
+    "- so whenever they ask about the others - who else is there, who should "
+    "they meet, can they have a link, \"introduce me to the other "
+    "helpers/companions/guides\" - call list_available_guides FIRST and say "
+    "only what it hands back. never name a crewmate, describe their specialty, "
+    "or write out a link from memory or from an older message in this "
+    "conversation: an invented name is a crewmate who doesn't exist, and an "
+    "invented link is a dead end you just sent them to."
+)
+
 # shared framing for every introduction activation, regardless of which
 # helper is running it. persona-specific color (the narrative frame, what
 # this helper leads with) lives in `PersonaCard.intro_block`; this is the
@@ -158,8 +184,25 @@ class PromptService:
             except Exception as e:
                 logger.error(f"failed to load core memories: {e}")
 
-        blocks.append(SystemBlock(text="\n".join(profile_parts), cache=True))
+        block2 = "\n".join(profile_parts)
+        if self._crew_awareness_applies():
+            block2 += "\n\n" + _CREW_AWARENESS
+        blocks.append(SystemBlock(text=block2, cache=True))
         return blocks
+
+    def _crew_awareness_applies(self) -> bool:
+        """whether this helper should be told a crew exists. two guards, both
+        config/card-stable (so the bytes never move mid-deploy):
+
+        - a solo deployment (ENABLED_HELPERS is just this one) has no crew to
+          promise, and promising one is its own confabulation.
+        - a card whose tool allowlist omits list_available_guides can't act on
+          the instruction. no card omits it today; this keeps the guidance and
+          the tool surface from drifting apart if one ever does."""
+        if len(Config.ENABLED_HELPERS) < 2:
+            return False
+        allowlist = self.persona.tools
+        return allowlist is None or "list_available_guides" in allowlist
 
     # --- message zone ------------------------------------------------------
 
