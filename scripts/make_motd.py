@@ -1,6 +1,6 @@
 """generates the ssh login banner in assets/: the wordmark "chorial" with an
-eighth note standing in for the d, rainbow-shaded left-to-right, framed by an
-mlm pride stripe above and a trans pride stripe below.
+eighth note standing in for the d, shaded left-to-right in the nonbinary pride
+colors, framed by a rainbow pride stripe above and a trans pride stripe below.
 
     poetry run python scripts/make_motd.py             > assets/motd_plain.txt
     poetry run python scripts/make_motd.py --color      > assets/motd.txt
@@ -58,8 +58,10 @@ def compose():
 ROWS = compose()
 WIDTH = max(len(r) for r in ROWS)
 
-RAINBOW = [196, 208, 226, 46, 33, 129]         # red..violet, one sweep left to right
-MLM = [29, 43, 158, 15, 110, 62, 54]           # mlm pride flag, 7 stripes
+RAINBOW = [196, 208, 226, 46, 33, 129]         # rainbow pride flag, 6 stripes
+# nonbinary pride flag: yellow, white, purple, black. the black stripe is a dark
+# grey here so the glyphs still read against a black terminal background.
+NONBINARY = [226, 15, 141, 240]
 TRANS = [117, 218, 15, 218, 117]               # trans pride flag, 5 stripes
 
 
@@ -72,7 +74,9 @@ def stripe_line(palette):
     return "".join(out) + "\033[0m"
 
 
-def art_colored():
+def art_colored(palette):
+    n = len(palette)
+    reach = WIDTH + (len(ROWS) - 1) * 2       # largest c + r * 2 the sweep sees
     out = []
     for r, row in enumerate(ROWS):
         line = []
@@ -80,7 +84,7 @@ def art_colored():
             if ch == " ":
                 line.append(ch)
             else:
-                color = RAINBOW[min((c + r * 2) // 10, 5)]  # diagonal sweep
+                color = palette[min((c + r * 2) * n // reach, n - 1)]  # diagonal sweep
                 line.append(f"\033[38;5;{color}m{ch}")
         out.append("".join(line) + "\033[0m")
     return out
@@ -88,8 +92,8 @@ def art_colored():
 
 if __name__ == "__main__":
     if "--color" in sys.argv:
-        print(stripe_line(MLM))
-        print("\n".join(art_colored()))
+        print(stripe_line(RAINBOW))
+        print("\n".join(art_colored(NONBINARY)))
         print(stripe_line(TRANS))
     else:
         print("-" * WIDTH)
