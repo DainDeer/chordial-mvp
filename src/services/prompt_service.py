@@ -41,19 +41,18 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # shared framing for every introduction activation, regardless of which
-# helper is running it. persona-specific color (the narrative frame, what
+# helper is running it. persona-specific color (its flavor of excitement, what
 # this helper leads with) lives in `PersonaCard.intro_block`; this is the
 # thin procedural instruction that keeps every helper's introduction landing
 # on the same tools. lives in the volatile current turn (never system blocks
 # 1/2), so it costs nothing against the cache and can be edited freely.
 _INTRO_SHARED_GUIDANCE = (
-    "this is an introduction framed as a small story: the person has wandered "
-    "into a cozy, calm forest and gradually becomes aware of your presence there. "
-    "let the meeting feel discovered rather than announced - grounded, welcoming, "
-    "and quietly magical, with sensory forest details used lightly. avoid making "
-    "a lantern, clearing, doorway, or any single prop the recurring centerpiece. "
-    "YOU still carry the conversational energy: don't wait for them to be "
-    "interesting at you; be genuinely glad they're here and keep things moving. "
+    "this is a first meeting: someone brand new just showed up, and you're "
+    "genuinely thrilled about it. no scene-setting, no staged reveal, no "
+    "narrative framing - just you, at full sparkle, delighted they're here. "
+    "open with real excitement (in your own flavor of it) and let that energy "
+    "carry the whole conversation: don't wait for them to be interesting at "
+    "you; you're the one who's excited to know THEM, and it shows. "
     "it's a real conversation, never a form, but "
     "it has a clear shape and you drive it briskly through, a few turns, not a "
     "long meander:\n"

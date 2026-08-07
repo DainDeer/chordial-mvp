@@ -46,7 +46,7 @@ def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
     persisted (otherwise a stuck None name re-loops onboarding forever - the
     bug that shipped in the first phase-2 cut). the legacy `user_name is None`
     signal only applies BEFORE any relationship exists (status 'not_met'), so
-    a pre-v3 user who already has a name isn't dragged back into the forest,
+    a pre-v3 user who already has a name isn't dragged back into the intro,
     while a brand-new user with no name still gets introduced."""
     if chordial_status == "active":
         return False
