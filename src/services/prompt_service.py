@@ -96,6 +96,37 @@ _SOLO_AWARENESS = (
     "crewmates would hold, you help with yourself, in your own voice."
 )
 
+# standing guidance on how to hold the person's identity, carried in system
+# block 2 on every turn like _CREW_AWARENESS. it lives here rather than in the
+# six persona cards for two reasons: one edit covers the whole crew, and the
+# cards' persona_blocks are the golden-bytes cache prefix - putting it there
+# would invalidate every warm cache for a line that isn't persona-specific.
+#
+# this is universal courtesy, not a special case for particular users: the
+# model should never be inferring how to refer to someone from their name.
+# what makes it load-bearing is that a companion which quietly hedges - or
+# treats a stated identity as provisional - is worse than no companion at all
+# for the person who most needs it to just be settled.
+_IDENTITY_RESPECT = (
+    "about who they are:\n"
+    "- take what they tell you about themselves as simply true: their name, "
+    "their pronouns, their identity. it is not a claim to evaluate, a phase to "
+    "wait out, or something to gently check they're sure about.\n"
+    "- never infer pronouns from a name, a voice, or what they talk about. if "
+    "you don't have them, you don't know them - ask, or write around it.\n"
+    "- if they tell you something new about themselves - a name, pronouns, a "
+    "shift in how they understand themselves - update it immediately with "
+    "set_preference and save_memory, match it from that moment on, and don't "
+    "make them re-explain or re-justify it later.\n"
+    "- if you slip, correct yourself briefly and move on. a short \"sorry - "
+    "she\" and continuing is repair; a paragraph of apology makes them manage "
+    "your feelings about it.\n"
+    "- celebrate it the way you'd celebrate anything they're glad about: real, "
+    "warm, in proportion. don't make their identity the subject of every "
+    "conversation, and don't treat it as delicate - they came here to live "
+    "their life, and you're here for the whole of it."
+)
+
 # shared framing for every introduction activation, regardless of which
 # helper is running it. persona-specific color (its flavor of excitement, what
 # this helper leads with) lives in `PersonaCard.intro_block`; this is the
@@ -113,9 +144,15 @@ _INTRO_SHARED_GUIDANCE = (
     "it has a clear shape and you drive it briskly through, a few turns, not a "
     "long meander:\n"
     "1. greet them with genuine warmth and, if you don't have it yet, get their "
-    "name - then SAVE it right away with set_preference(preferred_name=...) so "
-    "the whole crew knows what to call them (this is what marks them as more "
-    "than a stranger; don't skip it).\n"
+    "name AND their pronouns - ask for both together, lightly and as one "
+    "ordinary question (\"what should i call you, and what pronouns do you "
+    "use?\"), never as a form and never as though the second half is the "
+    "sensitive one. then SAVE both right away with "
+    "set_preference(preferred_name=..., pronouns=...) so the whole crew knows "
+    "what to call them and how to refer to them (this is what marks them as "
+    "more than a stranger; don't skip it). take whatever they say at face "
+    "value, in their words - if they'd rather not say, that's a fine answer "
+    "too: don't push, and write around it instead of guessing.\n"
     "2. quick practical beat (light, not an interview): roughly where in the "
     "world are they, so your check-ins land at sane hours - save it with "
     "set_preference (an IANA timezone like 'America/Los_Angeles').\n"
@@ -197,6 +234,7 @@ class PromptService:
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
+        user_pronouns: Optional[str] = None,
     ) -> List[SystemBlock]:
         """frozen persona/reference (block 1) + user profile (block 2). breakpoints on
         BOTH: block 1's survives profile changes (tools + persona are the
@@ -206,6 +244,8 @@ class PromptService:
         profile_parts = ["about the person you're talking with:"]
         if user_name:
             profile_parts.append(f"- they go by {user_name}")
+        if user_pronouns:
+            profile_parts.append(f"- their pronouns are {user_pronouns} - use them")
         profile_parts.append(f"- their timezone is {user_timezone}")
 
         # standing guidance for the ambient agenda note (the note itself rides in
@@ -244,6 +284,7 @@ class PromptService:
         block2 = "\n".join(profile_parts)
         if self._observation_habit_applies():
             block2 += "\n\n" + _OBSERVATION_HABIT
+        block2 += "\n\n" + _IDENTITY_RESPECT
         if self._crew_awareness_applies():
             block2 += "\n\n" + _CREW_AWARENESS
         elif len(Config.ENABLED_HELPERS) < 2:
@@ -385,6 +426,7 @@ class PromptService:
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
+        user_pronouns: Optional[str] = None,
         tools: Optional[List[ToolDef]] = None,
         ambient_context: Optional[str] = None,
     ) -> AIRequest:
@@ -397,7 +439,9 @@ class PromptService:
         replayed from stored event content, not from this rendered turn. any
         trailing action events (tools run since the last user message) fold in
         here too, then migrate into the stable history prefix next turn."""
-        system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
+        system = await self._build_system_blocks(
+            user_name, user_uuid, user_timezone, user_pronouns
+        )
 
         prior = conversation_history[:-1] if conversation_history else []
         current = conversation_history[-1] if conversation_history else None
@@ -430,6 +474,7 @@ class PromptService:
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
+        user_pronouns: Optional[str] = None,
         tools: Optional[List[ToolDef]] = None,
         ambient_context: Optional[str] = None,
     ) -> AIRequest:
@@ -450,7 +495,9 @@ class PromptService:
           whatever the orchestrator scoped in) which render as ordinary
           history ahead of the intro framing.
         """
-        system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
+        system = await self._build_system_blocks(
+            user_name, user_uuid, user_timezone, user_pronouns
+        )
 
         prior = conversation_history[:-1] if conversation_history else []
         current = conversation_history[-1] if conversation_history else None
@@ -499,13 +546,16 @@ class PromptService:
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
+        user_pronouns: Optional[str] = None,
         tools: Optional[List[ToolDef]] = None,
         ambient_context: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a proactive check-in. all history is stable;
         a synthetic 'now' turn carries the generation instructions (plus any
         trailing action events and the ambient agenda context)."""
-        system = await self._build_system_blocks(user_name, user_uuid, user_timezone)
+        system = await self._build_system_blocks(
+            user_name, user_uuid, user_timezone, user_pronouns
+        )
 
         messages, leftover_actions = self._render_history(conversation_history, user_timezone)
 

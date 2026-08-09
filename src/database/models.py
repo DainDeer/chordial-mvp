@@ -19,7 +19,14 @@ class User(Base):
     
     # what the user wants to be called
     preferred_name = Column(String, nullable=True)
-    
+
+    # how the user wants to be referred to, verbatim as they said it
+    # ("she/her", "they/them", "he/they", "any"). free text on purpose: an
+    # enum here would tell someone their answer wasn't on the list. renders
+    # into system block 2 next to preferred_name, so every helper carries it
+    # on every turn instead of inferring from a name.
+    pronouns = Column(String, nullable=True)
+
     # when they joined
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

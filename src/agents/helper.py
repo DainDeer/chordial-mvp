@@ -46,6 +46,7 @@ class HelperAgent:
         user_uuid = user_of_briefing(briefing)
         user_name = briefing.extras.get("user_name")
         user_timezone = briefing.extras.get("user_timezone") or "UTC"
+        user_pronouns = briefing.extras.get("user_pronouns")
         history = [Event.from_dainframe(e) for e in briefing.events]
 
         if briefing.kind == "introduction":
@@ -54,6 +55,7 @@ class HelperAgent:
                 user_name=user_name,
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
+                user_pronouns=user_pronouns,
                 tools=self.registry.definitions(),
                 ambient_context=briefing.ambient_context,
             )
@@ -64,6 +66,7 @@ class HelperAgent:
                 user_name=user_name,
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
+                user_pronouns=user_pronouns,
                 tools=self.registry.definitions(),
                 ambient_context=briefing.ambient_context,
             )
@@ -74,6 +77,7 @@ class HelperAgent:
                 user_name=user_name,
                 user_uuid=user_uuid,
                 user_timezone=user_timezone,
+                user_pronouns=user_pronouns,
                 tools=self.registry.definitions(),
                 ambient_context=briefing.ambient_context,
             )

@@ -323,10 +323,13 @@ class ChordialContext:
         user_uuid = user_of_stimulus(stimulus)
         user_name = stimulus.extras.get("user_name")
         user_timezone = stimulus.extras.get("user_timezone")
+        user_pronouns = stimulus.extras.get("user_pronouns")
         if user_timezone is None:
-            user_name, user_timezone = await self.user_manager.get_user_profile(
-                user_uuid
-            )
+            (
+                user_name,
+                user_timezone,
+                user_pronouns,
+            ) = await self.user_manager.get_user_profile(user_uuid)
 
         if stimulus.kind == "introduction":
             briefing_kind = "introduction"
@@ -348,6 +351,7 @@ class ChordialContext:
                 "user_id": user_uuid,
                 "user_name": user_name,
                 "user_timezone": user_timezone or "UTC",
+                "user_pronouns": user_pronouns,
             },
         )
 
