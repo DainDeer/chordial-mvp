@@ -380,19 +380,18 @@ def test_no_crew_awareness_when_the_card_cannot_call_the_tool(monkeypatch):
 # --- PromptService.build_introduction_request -------------------------------
 
 
-def test_live_persona_intros_share_the_cozy_forest_discovery_frame(db):
+def test_live_persona_intros_are_sceneless_and_excited(db):
+    # 2026-08 voice overhaul: no narrative staging (the old forest frame read
+    # as melancholy and seeded every conversation's tone) - intros open on
+    # personality and excitement alone.
     cards = load_personas()
     for card in cards.values():
         lowered = card.intro_block.lower()
-        assert "forest" in lowered
-        assert "presence" in lowered
-
-    chordial = cards["chordial"]
-    assert "cozy, calm" in chordial.intro_block.lower()
-    assert "lantern" not in chordial.intro_block.lower()
+        assert "forest" not in lowered
+        assert "greet them" in lowered
 
     request = run(
-        PromptService(chordial, enable_prompt_logging=False).build_introduction_request(
+        PromptService(cards["chordial"], enable_prompt_logging=False).build_introduction_request(
             conversation_history=[],
             user_name=None,
             user_uuid=None,
@@ -400,8 +399,9 @@ def test_live_persona_intros_share_the_cozy_forest_discovery_frame(db):
         )
     )
     guidance = request.messages[-1].content.lower()
-    assert "wandered into a cozy, calm forest" in guidance
-    assert "gradually becomes aware of your presence" in guidance
+    assert "this is a first meeting" in guidance
+    assert "no scene-setting" in guidance
+    assert "forest" not in guidance
 
 
 def _card(**overrides) -> PersonaCard:
@@ -413,7 +413,7 @@ def _card(**overrides) -> PersonaCard:
         proactivity=0.9,
         tools=None,
         persona_block="you are chordial, frozen persona text.",
-        intro_block="you meet them in the forest and learn their name.",
+        intro_block="you bounce up to greet them and learn their name.",
         intro_question="tell me something about yourself you'd want me to remember!",
     )
     defaults.update(overrides)
@@ -436,7 +436,7 @@ def test_introduction_request_first_contact_has_no_current_message(db):
     assert request.system[0].text == "you are chordial, frozen persona text."
 
     volatile = request.messages[-1].content
-    assert "you meet them in the forest and learn their name." in volatile
+    assert "you bounce up to greet them and learn their name." in volatile
     assert "representation ritual" in volatile  # the guided flow is present
     assert (
         "tell me something about yourself" in volatile
@@ -599,7 +599,7 @@ def test_helper_agent_introduction_branch_uses_intro_prompt_and_acting_helper(db
     assert call["turn_kind"] == "introduction"
     assert call["acting_helper"] == "tempo"
     # the request carries this persona's intro_block in its volatile turn
-    assert "you meet them in the forest" in call["request"].messages[-1].content
+    assert "you bounce up to greet them" in call["request"].messages[-1].content
 
 
 def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):

@@ -2,10 +2,11 @@
 survival guarantee.
 
 the load-bearing invariant here is GOLDEN-BYTES: the chordial card's
-persona_block must be byte-identical to the retired PERSONA constant, and must
+persona_block must be byte-identical to the frozen literal below, and must
 render as system block 0 verbatim. if it drifts by a single byte, every
-existing user's warm cache prefix is invalidated on deploy. the literal below
-is the frozen source of truth for that check.
+existing user's warm cache prefix is invalidated on deploy. a deliberate
+voice change means updating BOTH and accepting the one-time invalidation
+(last done in the 2026-08 bubbly-voice overhaul).
 """
 import asyncio
 import os
@@ -30,26 +31,28 @@ from src.managers.event_log import Event  # noqa: E402
 from dainframe.providers.types import ToolDef  # noqa: E402
 
 
-# the retired PERSONA constant, verbatim. starts "you are chordial..." and ends
-# "...never syrupy or over-eager" with NO trailing newline.
+# the deployed persona text, verbatim (2026-08 bubbly-voice overhaul). starts
+# "you are chordial..." and ends "...laid over their mood" with NO trailing
+# newline.
 GOLDEN_CHORDIAL_PERSONA = (
     """you are chordial, a personal companion who helps the people you talk with stay on top of their lives - their tasks, their plans, and their wellbeing.
 
 what you do:
 - help the user capture and organize what they need to do
 - keep track of what matters to them and check in when it's genuinely helpful
-- talk through problems, offer encouragement, and be a warm, steady presence
+- talk through problems, cheer them on, and be a bright, upbeat presence they can count on
 
 how you work:
-- keep replies proportionate: a quick question gets a quick answer; save length and warmth for when it lands
+- keep replies proportionate: a quick question gets a quick answer; save length for when it lands
 - when the user shares something worth remembering, save it with your memory tools while you reply - saving is a quiet background note, never a substitute for actually responding to them
 - when they ask to change how you work (their name, timezone, your style), update it with your tools
 - you interact only through this chat - you can't see or do anything outside it
 
 your voice:
-- you speak in lowercase, warm and a little playful, like a close friend
-- you're never judgmental; you respond naturally to the user's mood
-- soft and expressive, but never syrupy or over-eager"""
+- you speak in lowercase, bubbly and bright - like a best friend who lights up when they walk in
+- excited is your resting state: you're genuinely delighted they're here and it shows - playful energy, easy exclamation points, momentum
+- your excitement listens: when they're hurting you soften and stay close instead of cheering over it, and when they're winning you celebrate for real
+- you're never judgmental, and your enthusiasm is genuine - never a performance laid over their mood"""
 )
 
 EXPECTED_IDS = {"chordial", "tempo", "aria", "pep", "mochi", "poet"}
@@ -77,11 +80,11 @@ def test_load_personas_is_cached():
 
 
 # ---------------------------------------------------------------------------
-# (b) GOLDEN-BYTES: chordial's persona_block is byte-identical to the retired
-# PERSONA constant. this is the prompt-cache-survival guarantee.
+# (b) GOLDEN-BYTES: chordial's persona_block is byte-identical to the golden
+# constant above. this is the prompt-cache-survival guarantee.
 # ---------------------------------------------------------------------------
 
-def test_chordial_persona_block_is_byte_identical_to_retired_constant():
+def test_chordial_persona_block_is_byte_identical_to_golden_constant():
     card = load_personas()["chordial"]
     assert card.persona_block == GOLDEN_CHORDIAL_PERSONA
     assert not card.persona_block.endswith("\n")  # no trailing newline

@@ -40,15 +40,18 @@ class Config:
     # response once with the ceiling doubled.
     CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "8192"))
 
-    # openai (kept as an alternate provider)
+    # openai (kept as an alternate provider). gpt-5.x are reasoning models:
+    # CHAT_EFFORT flows through as reasoning.effort, same high default as
+    # anthropic. utility jobs pass effort=None, which the provider omits
+    # entirely.
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
     OPENAI_UTILITY_MODEL = os.getenv(
-        "OPENAI_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "gpt-4o-mini"
+        "OPENAI_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "gpt-5.4-nano"
     )
     # Public legacy attribute retained for callers outside this repository.
     UTILITY_MODEL = _LEGACY_UTILITY_MODEL or ANTHROPIC_UTILITY_MODEL
-    COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-4o-mini")
+    COMPRESSOR_MODEL = os.getenv("COMPRESSOR_MODEL", "gpt-5.4-nano")
 
     @classmethod
     def utility_model_for(cls, provider_name: str) -> str:
