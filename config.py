@@ -41,8 +41,8 @@ class Config:
     CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "8192"))
 
     # openai (kept as an alternate provider). gpt-5.x are reasoning models:
-    # CHAT_EFFORT flows through as reasoning.effort (provider-aware default
-    # above). utility jobs pass effort=None, which the provider omits
+    # CHAT_EFFORT flows through as reasoning.effort, same high default as
+    # anthropic. utility jobs pass effort=None, which the provider omits
     # entirely.
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
