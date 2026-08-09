@@ -58,9 +58,19 @@ def test_openai_route_uses_its_own_default_model():
     assert resolved.model == Config.OPENAI_MODEL
 
 
-def test_effort_hint_toward_openai_fails_loudly():
+def test_effort_hint_toward_openai_routes():
+    # the dainframe's openai adapter maps effort onto reasoning.effort now,
+    # so an effort hint routed there resolves instead of raising.
+    resolver = _build_resolver("anthropic")
+    resolved = resolver.resolve(
+        ExecutionHints(provider="openai", effort="medium"), agent="a"
+    )
+    assert (resolved.provider_name, resolved.effort) == ("openai", "medium")
+
+
+def test_unknown_effort_level_still_fails_loudly():
     resolver = _build_resolver("anthropic")
     with pytest.raises(HintResolutionError):
         resolver.resolve(
-            ExecutionHints(provider="openai", effort="low"), agent="a"
+            ExecutionHints(provider="openai", effort="maximal"), agent="a"
         )
