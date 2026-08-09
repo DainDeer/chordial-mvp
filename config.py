@@ -23,12 +23,17 @@ class Config:
     ANTHROPIC_UTILITY_MODEL = os.getenv(
         "ANTHROPIC_UTILITY_MODEL", _LEGACY_UTILITY_MODEL or "claude-haiku-4-5"
     )
-    # effort for chat turns: low | medium | high (anthropic only; maps to
-    # output_config.effort). default high: low produced hollow/empty turns in
-    # prod (thinking got starved, replies went generic or blank); the persona
-    # work is exactly where reasoning depth shows. dial down via env if cost
-    # ever matters more than voice.
-    CHAT_EFFORT = os.getenv("CHAT_EFFORT", "high")
+    # effort for chat turns (anthropic output_config.effort / openai
+    # reasoning.effort). the default is provider-aware:
+    # - anthropic: high. low produced hollow/empty turns in prod (thinking
+    #   got starved, replies went generic or blank); the persona work is
+    #   exactly where reasoning depth shows.
+    # - openai: medium - the API's own default for gpt-5.x reasoning models,
+    #   a saner chat latency/cost point than anthropic's high.
+    # CHAT_EFFORT in the env overrides either.
+    CHAT_EFFORT = os.getenv("CHAT_EFFORT") or (
+        "medium" if AI_PROVIDER == "openai" else "high"
+    )
     # max output tokens for a chat/scheduled turn. CRITICAL: with adaptive
     # thinking on, this cap covers thinking + reply TOGETHER - at 2048 an
     # instruction-heavy turn (e.g. an introduction) could burn the whole budget
