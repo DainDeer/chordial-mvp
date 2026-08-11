@@ -214,10 +214,14 @@ class CompletionReconcilerService:
         open_by_id = {t["id"]: t for t in open_tasks}
         # the reconciler acts as chordial (the companion's own bookkeeping
         # pass); actions it records read as chordial's next turn
+        # stream_id doubles as the user here only because the reconciler is
+        # invoked with the user uuid directly; the metadata thread is what
+        # tools actually read (identity split, ROOMS_DESIGN.md section 11)
         context = ToolContext(
             stream_id=user_uuid,
             activation_id=f"reconcile-{uuid.uuid4().hex[:12]}",
             actor="chordial",
+            metadata={"user_id": user_uuid},
         )
         # dedupe while preserving order
         for tid in dict.fromkeys(completed_ids):

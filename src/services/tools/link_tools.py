@@ -15,6 +15,7 @@ from src.services.platform_link_service import PlatformLinkService, deep_link
 from config import Config
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
+from src.services.identity import user_of_context
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ async def _link_platform(tool_input: dict, context: ToolContext) -> str:
             "in this chat could redeem one as themselves. tell the user to "
             "message you privately and ask again there."
         )
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     code = _links.create_code(user_uuid)
     ttl = Config.LINK_CODE_TTL_MINUTES
     link = deep_link(code)
@@ -77,7 +78,7 @@ async def _web_login(tool_input: dict, context: ToolContext) -> str:
             "privately and ask again there."
         )
 
-    code = mint_login_code(context.stream_id)
+    code = mint_login_code(user_of_context(context))
     url = login_url(code)
     ttl = Config.LINK_CODE_TTL_MINUTES
     lines = [f"login code: {code} (expires in {ttl} minutes, single-use)"]
@@ -121,7 +122,7 @@ async def _link_device(tool_input: dict, context: ToolContext) -> str:
             "in this chat could enroll their own computer as the user. tell "
             "the user to message you privately and ask again there."
         )
-    code = mint_device_link_code(context.stream_id)
+    code = mint_device_link_code(user_of_context(context))
     ttl = Config.LINK_CODE_TTL_MINUTES
     return (
         f"device link code: {code} (expires in {ttl} minutes, single-use)\n"

@@ -14,6 +14,7 @@ from src.utils.timezone_utils import canonicalize_timezone
 from dainframe.providers.types import ToolDef
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
+from src.services.identity import user_of_context
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ _VALID_PERSONALITIES = {"friendly", "professional", "cheerful", "calm"}
 
 
 async def _set_preference(tool_input: dict, context: ToolContext) -> str:
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     updates: dict = {}
     notes: list[str] = []
 

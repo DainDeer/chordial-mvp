@@ -191,11 +191,15 @@ class ChordialStimulusFactory:
         )
 
     async def build(self, plan: FiringPlan) -> Stimulus:
+        # pulse rhythms are per-USER; the stream they fire into happens to be
+        # the legacy user-keyed stream today and becomes the daily room in
+        # phase 2b - the explicit user_id extra is what stays true throughout
         if plan.kind == "curation_due":
             return Stimulus(
                 kind="curation_due",
                 stream_id=plan.key.stream_id,
                 record_inbound=False,
+                extras={"user_id": plan.key.stream_id},
             )
         return Stimulus(
             kind="scheduled_tick",
@@ -207,6 +211,7 @@ class ChordialStimulusFactory:
             target=plan.target,
             reason=plan.reason,
             precondition=plan.precondition,
+            extras={"user_id": plan.key.stream_id},
         )
 
 

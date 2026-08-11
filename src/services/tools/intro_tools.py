@@ -16,6 +16,7 @@ from src.personas import load_personas
 from dainframe.providers.types import ToolDef
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
+from src.services.identity import user_of_context
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ _helper_states = HelperStateManager()
 
 
 async def _complete_introduction(tool_input: dict, context: ToolContext) -> str:
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     accepted = bool(tool_input.get("accepted", False))
     persona_name = tool_input.get("persona_name")
     persona_form = tool_input.get("persona_form")
@@ -94,7 +95,7 @@ def _deep_link(handle: str) -> str:
 
 
 async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     acting = context.actor
     cards = load_personas()
 

@@ -146,6 +146,7 @@ class ChatService:
                             if group_chat_id else None
                         ),
                         extras={
+                            "user_id": user_uuid,
                             "user_name": user_name,
                             "user_timezone": user_timezone,
                         },
@@ -165,6 +166,7 @@ class ChatService:
                             platform=platform, target_id=platform_user_id
                         ),
                         extras={
+                            "user_id": user_uuid,
                             "user_name": user_name,
                             "user_timezone": user_timezone,
                         },
@@ -212,6 +214,7 @@ class ChatService:
                             platform=platform, target_id=platform_user_id
                         ),
                         extras={
+                            "user_id": user_uuid,
                             "user_name": user_name,
                             "user_timezone": user_timezone,
                         },

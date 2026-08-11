@@ -6,7 +6,7 @@ pace; swap for a batched/async sink if write volume ever matters.
 
 this is also chordial's dainframe UsageSink: `emit` receives the loop's
 ProviderCallUsage / AgentRunTrace events and maps them onto the two ledger
-writes (actor -> helper_id, stream_id -> user_uuid, turn_kind -> role). the
+writes (actor -> helper_id, stream_id -> user via the resolver, turn_kind -> role). the
 sync record_call/record_trace methods stay for the direct utility-model
 callers (curator, reconciler) that don't run through an AgentLoop.
 """
@@ -19,17 +19,25 @@ from dainframe.providers.types import Usage
 
 from src.database.database import get_db
 from src.database.models import UsageLog, AgentTrace
+from src.services.identity import resolve_stream_user
 
 logger = logging.getLogger(__name__)
 
 
 class UsageRecorder:
+    def __init__(self, stream_user_resolver=resolve_stream_user):
+        # usage events carry only the engine's stream id (upstream finding:
+        # no metadata channel on ProviderCallUsage/AgentRunTrace); this
+        # resolver maps stream -> user. legacy streams ARE user uuids;
+        # phase 2b swaps in the rooms lookup.
+        self._stream_user = stream_user_resolver
+
     async def emit(self, event: UsageEvent) -> None:
         """the dainframe UsageSink entry point. failure is already guarded on
         the loop side; the sync writes below guard themselves too."""
         if isinstance(event, ProviderCallUsage):
             self.record_call(
-                user_uuid=event.stream_id,
+                user_uuid=self._stream_user(event.stream_id),
                 platform=event.platform,
                 provider=event.provider,
                 model=event.model,
@@ -39,7 +47,7 @@ class UsageRecorder:
             )
         elif isinstance(event, AgentRunTrace):
             self.record_trace(
-                user_uuid=event.stream_id,
+                user_uuid=self._stream_user(event.stream_id),
                 platform=event.platform,
                 turn_kind=event.turn_kind,
                 iterations=event.iterations,
