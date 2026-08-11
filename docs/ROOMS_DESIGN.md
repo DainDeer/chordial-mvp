@@ -1,4 +1,4 @@
-# chordial: rooms, cycles, and the plushie council
+# chordial: rooms, cycles, and the council
 
 **status:** design doc v2 · direction locked
 **date:** 2026-08-11
@@ -16,7 +16,7 @@ small, purpose-built **rooms** — a room for today, a cycle-planning room, a
 project work room, a temporary "help me get unstuck" room, or simply a room to
 talk.
 
-The space is inhabited by the **plushie council**: small animal characters with
+The space is inhabited by the **council**: small animal characters with
 names, personalities, lanes, and speaking policies — chaired by a deer who also
 lives quietly on the desktop as an ambient body-double. Beneath every room sits
 one shared reality: cycles, plans, tasks, events, observations, and decisions in
@@ -75,7 +75,7 @@ feet.
 
 ---
 
-## 3. the plushie council
+## 3. the council
 
 Seven residents. One character definition drives both AI runtime behavior and
 UI presentation. Personalities shape presentation; underlying observations stay

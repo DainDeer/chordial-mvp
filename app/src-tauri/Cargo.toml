@@ -1,7 +1,7 @@
 [package]
 name = "chordial-app"
 version = "0.1.0"
-description = "chordial desktop app — rooms, cycles, and the plushie council"
+description = "chordial desktop app — rooms, cycles, and the council"
 authors = ["Megan (DainDeer)"]
 edition = "2021"
 
