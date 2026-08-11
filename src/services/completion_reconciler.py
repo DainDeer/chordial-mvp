@@ -116,7 +116,8 @@ class CompletionReconcilerService:
             result.error = str(e)
             return result
 
-        await self._apply(user_uuid, open_tasks, completed_ids, result)
+        await self._apply(user_uuid, open_tasks, completed_ids, result,
+                          stream_id=stream_id)
         if result.actions:
             logger.info("reconciler marked %d task(s) done for user %s",
                         len(result.actions), user_uuid)
@@ -208,7 +209,8 @@ class CompletionReconcilerService:
                 ids.append(tid)
         return ids
 
-    async def _apply(self, user_uuid, open_tasks, completed_ids, result) -> None:
+    async def _apply(self, user_uuid, open_tasks, completed_ids, result,
+                     stream_id=None) -> None:
         """mark each proposed id Done - but only if it's genuinely one of this
         user's open tasks. the model proposed; we verify against the real open
         set (a hallucinated or already-closed id is rejected, never written)."""
