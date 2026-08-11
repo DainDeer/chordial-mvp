@@ -174,10 +174,40 @@ def test_rejected_events_never_block_the_batch(env):
     result = device_sync.apply_events(
         pk, [_event(1), bad_type, bad_seq, bad_id, "not even a dict"])
     assert result.applied == 1
-    assert result.acked_seq == 1
+    # the semantically-bad event tombstones and CONSUMES seq 2 - the cursor
+    # passes it instead of pinning at 1 forever (structurally-unparseable
+    # entries have no seq to consume, so 3 stays open for the client to fix)
+    assert result.acked_seq == 2
     assert len(result.rejected) == 4
     errors = " ".join(str(r["error"]) for r in result.rejected)
     assert "unknown event type" in errors
+
+
+def test_tombstone_consumes_its_seq_and_dedupes_on_retry(env):
+    """the P1: a rejected event must never pin the ACK cursor. seq 2 is
+    semantically invalid; 3 lands after it; the cursor still reaches 3, and
+    retrying the batch is pure duplicates."""
+    device_uuid, _ = _link()
+    pk = _device_pk(env, device_uuid)
+    batch = [_event(1), _event(2, event_type="nope.nope"), _event(3)]
+    result = device_sync.apply_events(pk, batch)
+    assert result.acked_seq == 3
+    assert result.applied == 2          # tombstones aren't "applied" facts
+    assert [r["error"] for r in result.rejected] == \
+        ["unknown event type: 'nope.nope'"]
+
+    retry = device_sync.apply_events(pk, batch)
+    assert retry.acked_seq == 3
+    assert retry.applied == 0
+    assert retry.duplicates == 3        # tombstone dedupes like any row
+    assert retry.rejected == []
+
+    with env() as s:
+        row = s.query(DeviceEvent).filter(DeviceEvent.seq == 2).one()
+        assert row.rejected is True
+        assert "unknown event type" in row.error
+        clean = s.query(DeviceEvent).filter(DeviceEvent.seq == 3).one()
+        assert clean.rejected is False
 
 
 def test_batch_size_and_daily_quota_guard(env, monkeypatch):
@@ -188,9 +218,24 @@ def test_batch_size_and_daily_quota_guard(env, monkeypatch):
         device_sync.apply_events(pk, [_event(1), _event(2), _event(3)])
     monkeypatch.setattr(Config, "SYNC_MAX_BATCH", 500)
     monkeypatch.setattr(Config, "SYNC_DAILY_EVENT_CAP", 3)
-    device_sync.apply_events(pk, [_event(1), _event(2)])
+    batch = [_event(1), _event(2), _event(3)]
+    device_sync.apply_events(pk, batch)
     with pytest.raises(device_sync.QuotaExceeded):
-        device_sync.apply_events(pk, [_event(3), _event(4)])
+        device_sync.apply_events(pk, [_event(4), _event(5)])
+
+
+def test_retry_at_the_cap_still_returns_the_ack(env, monkeypatch):
+    """the P1: quota counts only newly inserted rows. a user at the cap
+    retrying already-applied events gets the durable cursor back - a 429
+    there would deadlock dropped-response recovery."""
+    device_uuid, _ = _link()
+    pk = _device_pk(env, device_uuid)
+    monkeypatch.setattr(Config, "SYNC_DAILY_EVENT_CAP", 2)
+    batch = [_event(1), _event(2)]
+    device_sync.apply_events(pk, batch)
+    result = device_sync.apply_events(pk, batch)   # retry, at the cap
+    assert result.acked_seq == 2
+    assert result.duplicates == 2
 
 
 def test_events_are_tenant_stamped(env):
@@ -314,4 +359,100 @@ def test_today_is_scoped_to_the_devices_user(env):
         assert resp.status == 200
         body = await resp.json()
         assert body["user"]["name"] == "megan"
+    _run(_with_client(flow))
+
+
+# --- the link_device tool (the production mint path) --------------------------
+
+
+def test_link_device_tool_mints_a_working_code(env):
+    from dainframe.tools.context import ToolContext
+    from src.services.tools.link_tools import LINK_DEVICE
+
+    ctx = ToolContext(stream_id=U1, activation_id="test-act",
+                      actor="chordial", metadata={"scope": "dm"})
+    result = _run(LINK_DEVICE.handler({}, ctx))
+    assert "device link code:" in result
+    code = result.split("device link code:")[1].split()[0]
+    linked = device_auth.link_device(code, "megans-mac")
+    assert linked is not None
+    identity = device_auth.verify_device_token(linked[1])
+    assert identity.user_uuid == U1
+
+
+def test_link_device_tool_refuses_outside_dm(env):
+    from dainframe.tools.context import ToolContext
+    from src.services.tools.link_tools import LINK_DEVICE
+
+    ctx = ToolContext(stream_id=U1, activation_id="test-act",
+                      actor="chordial", metadata={"scope": "group"})
+    result = _run(LINK_DEVICE.handler({}, ctx))
+    assert result.startswith("refused")
+    with env() as s:
+        from src.database.models import LinkCode
+        assert s.query(LinkCode).count() == 0
+
+
+def test_link_device_tool_is_registered(env):
+    from src.services.tools import build_default_registry
+    registry = build_default_registry()
+    assert "link_device" in {d.name for d in registry.definitions()}
+
+
+# --- /api/v1 CORS (the tauri webview's path in) -------------------------------
+
+
+def test_cors_preflight_and_headers_for_allowed_origin(env):
+    async def flow(client):
+        origin = "tauri://localhost"
+        resp = await client.options(
+            "/api/v1/sync/events",
+            headers={"Origin": origin,
+                     "Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "authorization"})
+        assert resp.status == 204
+        assert resp.headers["Access-Control-Allow-Origin"] == origin
+        assert "Authorization" in resp.headers["Access-Control-Allow-Headers"]
+
+        # the real request carries the headers too, even on an error status
+        resp = await client.get("/api/v1/today", headers={"Origin": origin})
+        assert resp.status == 401
+        assert resp.headers["Access-Control-Allow-Origin"] == origin
+    _run(_with_client(flow))
+
+
+def test_cors_refuses_unknown_origins(env):
+    async def flow(client):
+        resp = await client.options(
+            "/api/v1/sync/events",
+            headers={"Origin": "https://evil.example",
+                     "Access-Control-Request-Method": "POST"})
+        assert resp.status == 403
+
+        _, token = _link()
+        resp = await client.get(
+            "/api/v1/today",
+            headers={"Authorization": f"Bearer {token}",
+                     "Origin": "https://evil.example"})
+        # the request itself succeeds (bearer auth is the real gate) but no
+        # CORS headers are granted, so a browser page cannot read the body
+        assert resp.status == 200
+        assert "Access-Control-Allow-Origin" not in resp.headers
+    _run(_with_client(flow))
+
+
+def test_origin_guard_does_not_block_v1_in_public_mode(env, monkeypatch):
+    monkeypatch.setattr(Config, "WEB_PUBLIC_URL", "https://focus.example")
+    monkeypatch.setattr(Config, "WEB_SESSION_SECRET", "test-secret")
+
+    async def flow(client):
+        _, token = _link()
+        resp = await client.post(
+            "/api/v1/sync/events",
+            json={"events": [_event(1)]},
+            headers={"Authorization": f"Bearer {token}",
+                     "Origin": "tauri://localhost"})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["acked_seq"] == 1
     _run(_with_client(flow))

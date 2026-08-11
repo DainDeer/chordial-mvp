@@ -697,6 +697,14 @@ class DeviceEvent(Base):
     occurred_at = Column(DateTime, nullable=True)  # device wall clock (naive utc)
     applied_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    # rejection tombstones: a semantically invalid event (unknown type, bad
+    # payload shape) still CONSUMES its (device, seq) so the ACK cursor can
+    # pass it - a rejected event must never pin the outbox forever. the error
+    # is preserved for debugging; processors skip rejected rows.
+    rejected = Column(Boolean, nullable=False, default=False,
+                      server_default=text('0'))
+    error = Column(String, nullable=True)
+
     __table_args__ = (
         UniqueConstraint('device_id', 'seq', name='uq_device_events_device_seq'),
         {'sqlite_autoincrement': True},

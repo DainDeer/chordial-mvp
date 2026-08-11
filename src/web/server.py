@@ -115,7 +115,8 @@ class WebService:
                 "WEB_PUBLIC_URL is set but WEB_SESSION_SECRET is not - "
                 "generate one: openssl rand -hex 32")
         app = web.Application(
-            middlewares=[self._security_headers, self._origin_guard])
+            middlewares=[self._security_headers, self._origin_guard,
+                         self._cors_v1])
         app.router.add_get("/", self._index)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login/redeem", self._api_login_redeem)
@@ -188,11 +189,54 @@ class WebService:
         aiohttp parses json out of text/plain "simple" requests). browsers
         always send Origin on cross-origin POSTs, so a mismatch is decisive;
         absent means non-browser (curl), which csrf doesn't apply to."""
+        if request.path.startswith("/api/v1"):
+            # bearer-token routes carry no ambient credentials (no cookies),
+            # so csrf doesn't apply; _cors_v1 owns their origin policy
+            return await handler(request)
         if Config.web_auth_enabled() and request.method not in ("GET", "HEAD"):
             origin = request.headers.get("Origin")
             if origin is not None and origin != Config.WEB_PUBLIC_URL:
                 return _error("cross-origin request refused", status=403)
         return await handler(request)
+
+    # --- /api/v1 CORS ---------------------------------------------------------
+
+    @web.middleware
+    async def _cors_v1(self, request: web.Request, handler):
+        """lets the tauri webview (and the vite dev server) call the app api
+        from its own origin. scoped to /api/v1 only; the allowlist is exact
+        origins from config, never a wildcard. non-browser clients (no
+        Origin header) pass straight through - the api's real gate is the
+        bearer token, this just satisfies the browser's preflight."""
+        if not request.path.startswith("/api/v1"):
+            return await handler(request)
+        origin = request.headers.get("Origin")
+        allowed = origin in Config.APP_ALLOWED_ORIGINS if origin else False
+
+        def _stamp(headers) -> None:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
+            headers["Access-Control-Allow-Headers"] = \
+                "Authorization, Content-Type"
+            headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            headers["Access-Control-Max-Age"] = "600"
+
+        if request.method == "OPTIONS":
+            # the preflight; no route handlers register OPTIONS
+            if not allowed:
+                return _error("origin not allowed", status=403)
+            response = web.Response(status=204)
+            _stamp(response.headers)
+            return response
+        try:
+            response = await handler(request)
+        except web.HTTPException as e:
+            if allowed:
+                _stamp(e.headers)
+            raise
+        if allowed:
+            _stamp(response.headers)
+        return response
 
     # --- who is asking --------------------------------------------------------
 

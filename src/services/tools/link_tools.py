@@ -106,3 +106,42 @@ WEB_LOGIN = Tool(
     ),
     handler=_web_login,
 )
+
+
+async def _link_device(tool_input: dict, context: ToolContext) -> str:
+    # imported here so the tool module stays importable if the web server
+    # is ever disabled - device linking rides the same aiohttp app
+    from src.web.device_auth import mint_device_link_code
+
+    # same hazard as the other two: a device code redeemed by another group
+    # member enrolls THEIR device against this user. dm-only, default-deny.
+    if context.metadata.get("scope") != "dm":
+        return (
+            "refused: device codes are only issued in a private DM - anyone "
+            "in this chat could enroll their own computer as the user. tell "
+            "the user to message you privately and ask again there."
+        )
+    code = mint_device_link_code(context.stream_id)
+    ttl = Config.LINK_CODE_TTL_MINUTES
+    return (
+        f"device link code: {code} (expires in {ttl} minutes, single-use)\n"
+        "the user types this code into the chordial desktop app when it "
+        "asks to link."
+    )
+
+
+LINK_DEVICE = Tool(
+    definition=ToolDef(
+        name="link_device",
+        description=(
+            "Generate a one-time code when the user wants to connect the "
+            "chordial desktop app on their computer. Returns the code - "
+            "include it in your reply, and mention it expires in "
+            f"{Config.LINK_CODE_TTL_MINUTES} minutes. Only for the person "
+            "you are talking to; never for someone else. Only works in a "
+            "private DM, never in a group chat."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    handler=_link_device,
+)

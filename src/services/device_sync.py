@@ -7,6 +7,19 @@ duplicate apply is a no-op that still counts toward the ACK. the ACK is a
 durable cursor - the highest CONTIGUOUSLY applied seq for the device - and
 the outbox trims at the cursor and retries everything after it.
 
+two kinds of bad event, two different fates:
+- SEMANTICALLY invalid (unknown type, wrong payload shape): persisted as a
+  rejection TOMBSTONE that consumes its (device, seq) and uuid. the cursor
+  advances past it and the outbox moves on - a rejected event must never pin
+  the cursor forever. the error rides in the row and the response.
+- STRUCTURALLY unparseable (no valid uuid, no valid seq): cannot claim a
+  sequence, so it is reported in the response only. the client owns its
+  outbox; an unparseable entry there is a client bug the ACK cannot absolve.
+
+quota counts only NEWLY INSERTED rows - retrying already-applied events at
+the cap must return the durable ACK, not a 429, or dropped-response recovery
+deadlocks exactly when it matters.
+
 events are append-only facts. anything that mutates canonical rows (tasks,
 cycles) is NOT a sync write - it goes through the server-side stores, which
 own the invariants. later phases subscribe processors to applied events
@@ -29,7 +42,7 @@ from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
-# event types the server accepts. a typo'd type is a rejected event, loudly,
+# event types the server accepts. a typo'd type is a tombstoned event, loudly,
 # rather than a silently unprocessable row. grows with the phases.
 KNOWN_EVENT_TYPES = frozenset({
     "focus_block.started",
@@ -65,8 +78,10 @@ class QuotaExceeded(RuntimeError):
     """the per-user daily event cap; the endpoint maps this to 429."""
 
 
-def _validate(raw: object) -> tuple[Optional[dict], Optional[str]]:
-    """shape-check one event; returns (clean, None) or (None, error)."""
+def _parse_structural(raw: object) -> tuple[Optional[dict], Optional[str]]:
+    """id + seq are the outbox's identity for an event - without them the
+    server cannot even say WHICH event it is rejecting. returns
+    (parsed, None) or (None, error)."""
     if not isinstance(raw, dict):
         return None, "event must be an object"
     event_id = raw.get("id")
@@ -79,6 +94,12 @@ def _validate(raw: object) -> tuple[Optional[dict], Optional[str]]:
     seq = raw.get("seq")
     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
         return None, "seq (positive integer) required"
+    return {"id": event_id.lower(), "seq": seq, "raw": raw}, None
+
+
+def _check_semantic(raw: dict) -> tuple[Optional[dict], Optional[str]]:
+    """type/payload/timestamp validity. an error here becomes a tombstone
+    row, never a cursor pin. returns (fields, None) or (None, error)."""
     event_type = raw.get("type")
     if event_type not in KNOWN_EVENT_TYPES:
         return None, f"unknown event type: {event_type!r}"
@@ -97,13 +118,8 @@ def _validate(raw: object) -> tuple[Optional[dict], Optional[str]]:
         # stored naive utc like every other timestamp in the schema
         occurred_at = (parsed.replace(tzinfo=None) if parsed.tzinfo is None
                        else (parsed - parsed.utcoffset()).replace(tzinfo=None))
-    return {
-        "id": event_id.lower(),
-        "seq": seq,
-        "type": event_type,
-        "payload": payload,
-        "occurred_at": occurred_at,
-    }, None
+    return {"type": event_type, "payload": payload,
+            "occurred_at": occurred_at}, None
 
 
 def _daily_count(db, user_uuid: str, now: datetime) -> int:
@@ -117,12 +133,12 @@ def _daily_count(db, user_uuid: str, now: datetime) -> int:
 def apply_events(device_id: int, events: list) -> SyncResult:
     """apply one outbox batch for a device; always returns the durable cursor.
 
-    per-event outcomes: applied (new row), duplicate (event_uuid or
-    (device, seq) already landed - no-op that still ACKs), or rejected
-    (shape/type error - reported by id, never blocks the rest of the batch).
-    the cursor advances over contiguous seqs only; a gap holds it, the
-    outbox re-sends from the cursor, and the already-landed later events
-    dedupe to no-ops on the retry.
+    per-event outcomes: applied (new fact row), tombstoned (semantically
+    invalid - lands as a rejected row that consumes its seq and reports its
+    error), duplicate (uuid or (device, seq) already landed - no-op that
+    still ACKs), or unparseable (no identity to consume - response-only).
+    the cursor advances over contiguous seqs; a gap holds it, the outbox
+    re-sends from the cursor, and already-landed rows dedupe on the retry.
     """
     if len(events) > Config.SYNC_MAX_BATCH:
         raise ValueError(
@@ -130,58 +146,97 @@ def apply_events(device_id: int, events: list) -> SyncResult:
 
     now = utc_now()
     rejected: list[dict] = []
-    clean: list[dict] = []
+    parsed: list[dict] = []
     for raw in events:
-        validated, error = _validate(raw)
-        if validated is None:
+        structural, error = _parse_structural(raw)
+        if structural is None:
             rid = raw.get("id") if isinstance(raw, dict) else None
             rejected.append({"id": rid, "error": error})
         else:
-            clean.append(validated)
+            parsed.append(structural)
     # apply in seq order regardless of batch order - contiguity is the point
-    clean.sort(key=lambda e: e["seq"])
+    parsed.sort(key=lambda e: e["seq"])
 
     applied = duplicates = 0
     with get_db() as db:
         device = db.query(Device).filter(Device.id == device_id).one()
-        if clean and (_daily_count(db, device.user_uuid, now) + len(clean)
+
+        # dedup BEFORE quota: a retry of already-applied events must always
+        # get its ACK back, even for a user sitting at the cap
+        batch_uuids = [e["id"] for e in parsed]
+        batch_seqs = [e["seq"] for e in parsed]
+        existing_uuids = {u for (u,) in db.query(DeviceEvent.event_uuid)
+                          .filter(DeviceEvent.event_uuid.in_(batch_uuids))
+                          .all()} if batch_uuids else set()
+        existing_seqs = {s for (s,) in db.query(DeviceEvent.seq)
+                         .filter(DeviceEvent.device_id == device.id,
+                                 DeviceEvent.seq.in_(batch_seqs))
+                         .all()} if batch_seqs else set()
+        fresh = []
+        for event in parsed:
+            if event["id"] in existing_uuids or event["seq"] in existing_seqs:
+                duplicates += 1
+            else:
+                fresh.append(event)
+
+        if fresh and (_daily_count(db, device.user_uuid, now) + len(fresh)
                       > Config.SYNC_DAILY_EVENT_CAP):
             raise QuotaExceeded(
                 f"daily event cap ({Config.SYNC_DAILY_EVENT_CAP}) exceeded")
 
-        landed_seqs = set()
-        for event in clean:
+        for event in fresh:
+            fields, error = _check_semantic(event["raw"])
+            if fields is None:
+                # tombstone: consume the seq so the cursor can pass it
+                raw_type = event["raw"].get("type")
+                raw_payload = event["raw"].get("payload")
+                row = DeviceEvent(
+                    event_uuid=event["id"],
+                    device_id=device.id,
+                    user_uuid=device.user_uuid,
+                    seq=event["seq"],
+                    event_type=(str(raw_type)[:100]
+                                if isinstance(raw_type, str) else "invalid"),
+                    payload=raw_payload if isinstance(raw_payload, dict) else {},
+                    rejected=True,
+                    error=error,
+                    applied_at=now,
+                )
+                rejected.append({"id": event["id"], "error": error})
+            else:
+                row = DeviceEvent(
+                    event_uuid=event["id"],
+                    device_id=device.id,
+                    user_uuid=device.user_uuid,
+                    seq=event["seq"],
+                    event_type=fields["type"],
+                    payload=fields["payload"],
+                    occurred_at=fields["occurred_at"],
+                    rejected=False,
+                    applied_at=now,
+                )
             try:
                 with db.begin_nested():
-                    db.add(DeviceEvent(
-                        event_uuid=event["id"],
-                        device_id=device.id,
-                        user_uuid=device.user_uuid,
-                        seq=event["seq"],
-                        event_type=event["type"],
-                        payload=event["payload"],
-                        occurred_at=event["occurred_at"],
-                        applied_at=now,
-                    ))
-                applied += 1
+                    db.add(row)
+                if not row.rejected:
+                    applied += 1
             except IntegrityError:
+                # a race with a concurrent batch; the row is landed either way
                 duplicates += 1
-            landed_seqs.add(event["seq"])
 
-        # advance the cursor over everything now contiguous - both this
-        # batch's rows and any earlier-landed rows past a since-filled gap
+        # advance the cursor over everything now contiguous - this batch's
+        # rows, tombstones included, and earlier rows past a since-filled gap
         cursor = device.acked_seq
-        if landed_seqs:
-            existing = {
-                s for (s,) in db.query(DeviceEvent.seq).filter(
-                    DeviceEvent.device_id == device.id,
-                    DeviceEvent.seq > cursor,
-                ).all()
-            }
-            while cursor + 1 in existing:
-                cursor += 1
-            if cursor != device.acked_seq:
-                device.acked_seq = cursor
+        existing = {
+            s for (s,) in db.query(DeviceEvent.seq).filter(
+                DeviceEvent.device_id == device.id,
+                DeviceEvent.seq > cursor,
+            ).all()
+        }
+        while cursor + 1 in existing:
+            cursor += 1
+        if cursor != device.acked_seq:
+            device.acked_seq = cursor
         db.commit()
 
     if rejected:

@@ -54,6 +54,12 @@ def build_default_registry() -> ToolRegistry:
         registry.register(WEB_LOGIN)
         logger.info("web login tool enabled (%s)", Config.WEB_PUBLIC_URL)
 
+    # desktop-app enrollment (ROOMS_DESIGN.md section 10): always on - the
+    # /api/v1 device routes ride the always-running aiohttp app, and this
+    # tool is the production path to a device_link code.
+    from .link_tools import LINK_DEVICE
+    registry.register(LINK_DEVICE)
+
     return registry
 
 

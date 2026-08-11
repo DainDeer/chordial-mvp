@@ -259,5 +259,15 @@ class Config:
     SYNC_DAILY_EVENT_CAP = int(os.getenv("SYNC_DAILY_EVENT_CAP", "5000"))
     SYNC_MAX_BATCH = int(os.getenv("SYNC_MAX_BATCH", "500"))
 
+    # browser origins allowed to call /api/v1 (the tauri webview's origins:
+    # production shell + vite dev server). the api is bearer-token'd - no
+    # cookies - so CORS here is about letting OUR app in, not csrf defense.
+    APP_ALLOWED_ORIGINS = [
+        o.strip() for o in os.getenv(
+            "APP_ALLOWED_ORIGINS",
+            "tauri://localhost,http://localhost:1420").split(",")
+        if o.strip()
+    ]
+
     # features
     ENABLE_DISCORD = os.getenv("ENABLE_DISCORD", "true").lower() == "true"

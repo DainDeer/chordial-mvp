@@ -448,6 +448,16 @@ endpoint:
 - **ACKs are durable cursors**: the server acknowledges the highest
   contiguously-applied `seq` per device; the outbox trims at the cursor and
   retries everything after it. At-least-once delivery, exactly-once apply.
+- **Rejections never pin the cursor.** A semantically invalid event (unknown
+  type, bad payload shape) is persisted as a rejection *tombstone* that
+  consumes its `(device, seq)` — the cursor passes it, the error rides in the
+  row and the response. Only a structurally unparseable entry (no valid
+  uuid/seq — a client bug) is response-only, since it has no sequence to
+  consume.
+- **Quota counts only newly inserted rows.** Deduplication happens before the
+  cap check, so a device retrying already-applied events at the cap gets its
+  durable ACK back instead of a 429 — dropped-response recovery must never
+  deadlock on quota.
 - **Ordering is per-device**, which is all the domain needs: device events are
   append-only facts (`focus_block.completed`, `drift.detected`) and never
   conflict with each other. Mutations of canonical rows (tasks, cycles) are not
