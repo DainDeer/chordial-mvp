@@ -26,9 +26,12 @@ shell — useful for pure UI work.
 
 ## security posture
 
-- Production CSP is restrictive (`default-src 'self'`; no remote origins).
-  When the phase-1 server API lands, add its origin to `connect-src` —
-  nothing else.
+- Production CSP is restrictive (`default-src 'self'`). `connect-src`
+  permits only IPC and the chordial server (currently the local dev server,
+  `http://localhost:8484`; swap for the real server origin at deploy).
+  The server allows the app's origins (`tauri://localhost`, the vite dev
+  origin) via a scoped CORS allowlist on `/api/v1` only — configured with
+  `APP_ALLOWED_ORIGINS` on the server side.
 - The template's opener plugin was removed (nothing opens external URLs yet).
   If/when the app needs to open links, re-add it with a scoped URL allowlist,
   not `opener:default`.

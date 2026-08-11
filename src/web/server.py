@@ -42,8 +42,9 @@ from src.database.models import User
 from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
+from src.services import device_sync
 from src.utils.timezone_utils import utc_now
-from src.web import auth
+from src.web import auth, device_auth
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,8 @@ class WebService:
                 "WEB_PUBLIC_URL is set but WEB_SESSION_SECRET is not - "
                 "generate one: openssl rand -hex 32")
         app = web.Application(
-            middlewares=[self._security_headers, self._origin_guard])
+            middlewares=[self._security_headers, self._origin_guard,
+                         self._cors_v1])
         app.router.add_get("/", self._index)
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/api/login/redeem", self._api_login_redeem)
@@ -123,6 +125,14 @@ class WebService:
         app.router.add_post("/api/focus/start", self._api_focus_start)
         app.router.add_post("/api/focus/pause", self._api_focus_pause)
         app.router.add_post("/api/tasks/{task_id}/status", self._api_task_status)
+        # --- /api/v1: the app-facing api (docs/ROOMS_DESIGN.md section 10).
+        # device-bearer auth on every route; tenant scoping is structural -
+        # handlers only ever see the authenticated device's user.
+        app.router.add_post("/api/v1/devices/link", self._api_device_link)
+        app.router.add_get("/api/v1/devices", self._api_devices_list)
+        app.router.add_post("/api/v1/devices/revoke", self._api_device_revoke)
+        app.router.add_post("/api/v1/sync/events", self._api_sync_events)
+        app.router.add_get("/api/v1/today", self._api_v1_today)
         app.router.add_static("/static", STATIC_DIR)
         return app
 
@@ -179,11 +189,54 @@ class WebService:
         aiohttp parses json out of text/plain "simple" requests). browsers
         always send Origin on cross-origin POSTs, so a mismatch is decisive;
         absent means non-browser (curl), which csrf doesn't apply to."""
+        if request.path.startswith("/api/v1"):
+            # bearer-token routes carry no ambient credentials (no cookies),
+            # so csrf doesn't apply; _cors_v1 owns their origin policy
+            return await handler(request)
         if Config.web_auth_enabled() and request.method not in ("GET", "HEAD"):
             origin = request.headers.get("Origin")
             if origin is not None and origin != Config.WEB_PUBLIC_URL:
                 return _error("cross-origin request refused", status=403)
         return await handler(request)
+
+    # --- /api/v1 CORS ---------------------------------------------------------
+
+    @web.middleware
+    async def _cors_v1(self, request: web.Request, handler):
+        """lets the tauri webview (and the vite dev server) call the app api
+        from its own origin. scoped to /api/v1 only; the allowlist is exact
+        origins from config, never a wildcard. non-browser clients (no
+        Origin header) pass straight through - the api's real gate is the
+        bearer token, this just satisfies the browser's preflight."""
+        if not request.path.startswith("/api/v1"):
+            return await handler(request)
+        origin = request.headers.get("Origin")
+        allowed = origin in Config.APP_ALLOWED_ORIGINS if origin else False
+
+        def _stamp(headers) -> None:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
+            headers["Access-Control-Allow-Headers"] = \
+                "Authorization, Content-Type"
+            headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            headers["Access-Control-Max-Age"] = "600"
+
+        if request.method == "OPTIONS":
+            # the preflight; no route handlers register OPTIONS
+            if not allowed:
+                return _error("origin not allowed", status=403)
+            response = web.Response(status=204)
+            _stamp(response.headers)
+            return response
+        try:
+            response = await handler(request)
+        except web.HTTPException as e:
+            if allowed:
+                _stamp(e.headers)
+            raise
+        if allowed:
+            _stamp(response.headers)
+        return response
 
     # --- who is asking --------------------------------------------------------
 
@@ -344,6 +397,79 @@ class WebService:
         except ValueError as e:
             return _error(str(e), status=404 if "not found" in str(e) else 400)
         return web.json_response({"ok": True, "task": _task_row(task)})
+
+
+    # --- /api/v1: devices & sync ---------------------------------------------
+
+    async def _device(self, request: web.Request) -> device_auth.DeviceIdentity:
+        """the device this request acts as, or 401. handlers await it first -
+        it IS the tenant boundary (user_uuid only ever comes from here)."""
+        header = request.headers.get("Authorization", "")
+        token = header[7:] if header.startswith("Bearer ") else None
+        identity = await asyncio.to_thread(
+            device_auth.verify_device_token, token)
+        if identity is None:
+            raise web.HTTPUnauthorized(
+                text='{"error": "invalid or revoked device token"}',
+                content_type="application/json")
+        return identity
+
+    async def _api_device_link(self, request: web.Request) -> web.Response:
+        if not self._limiter.allow(_client_ip(request)):
+            return _error("too many attempts - wait a few minutes", status=429)
+        body = await _json_body(request)
+        code = body.get("code") if isinstance(body, dict) else None
+        if not isinstance(code, str):
+            return _error("code (string) required")
+        name = body.get("name") if isinstance(body, dict) else None
+        result = await asyncio.to_thread(
+            device_auth.link_device, code,
+            name if isinstance(name, str) and name else "device")
+        if result is None:
+            return _error("that code is invalid or expired - ask chordial "
+                          "for a fresh one", status=401)
+        device_uuid, token = result
+        return web.json_response(
+            {"device_id": device_uuid, "token": token}, status=201)
+
+    async def _api_devices_list(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        devices = await asyncio.to_thread(
+            device_auth.list_devices, identity.user_uuid)
+        for d in devices:
+            d["current"] = d["device_id"] == identity.device_uuid
+        return web.json_response({"devices": devices})
+
+    async def _api_device_revoke(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        body = await _json_body(request)
+        target = body.get("device_id") if isinstance(body, dict) else None
+        if not isinstance(target, str):
+            return _error("device_id (string) required")
+        revoked = await asyncio.to_thread(
+            device_auth.revoke_device, identity.user_uuid, target)
+        if not revoked:
+            return _error("no such active device", status=404)
+        return web.json_response({"ok": True})
+
+    async def _api_sync_events(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        body = await _json_body(request)
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list):
+            return _error("events (array) required")
+        try:
+            result = await asyncio.to_thread(
+                device_sync.apply_events, identity.id, events)
+        except device_sync.QuotaExceeded as e:
+            return _error(str(e), status=429)
+        except ValueError as e:
+            return _error(str(e))
+        return web.json_response(result.as_dict())
+
+    async def _api_v1_today(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        return await asyncio.to_thread(self._today_payload, identity.user_uuid)
 
 
 def _client_ip(request: web.Request) -> str:

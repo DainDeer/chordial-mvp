@@ -129,8 +129,8 @@ class LinkCode(Base):
     code = Column(String, nullable=False, unique=True)   # 8 chars, unambiguous alphabet
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
     # what redeeming this code does: 'platform_link' binds a platform account,
-    # 'web_login' mints a browser session. the two paths never accept each
-    # other's codes.
+    # 'web_login' mints a browser session, 'device_link' enrolls a desktop-app
+    # device. the paths never accept each other's codes.
     purpose = Column(String, nullable=False, default='platform_link',
                      server_default='platform_link')
 
@@ -634,4 +634,78 @@ class AgentTrace(Base):
 
     __table_args__ = (
         {'sqlite_autoincrement': True}
+    )
+
+# --- app devices & sync (docs/ROOMS_DESIGN.md section 10) --------------------
+# the desktop app's identity and the offline sync contract. devices are
+# individually revocable credentials; device events are append-only facts
+# applied exactly once no matter how many times the outbox retries them.
+
+
+class Device(Base):
+    """a linked desktop-app installation - the app-facing api's identity.
+
+    linking redeems a one-time LinkCode (purpose='device_link') and mints a
+    bearer secret returned exactly once; only its sha256 is stored. every
+    /api/v1 request resolves `Authorization: Bearer <device_uuid>.<secret>`
+    to a live (non-revoked) device row and acts as that device's user - the
+    tenant scoping the design doc requires from the first endpoint.
+    """
+    __tablename__ = 'devices'
+
+    id = Column(Integer, primary_key=True)
+    device_uuid = Column(String, nullable=False, unique=True,
+                         default=lambda: str(uuid.uuid4()))
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    name = Column(String, nullable=False, default='device')
+    token_hash = Column(String, nullable=False)   # sha256 hex of the secret
+
+    # sync contract: highest contiguously-applied per-device sequence - the
+    # durable ACK cursor the sidecar's outbox trims at.
+    acked_seq = Column(Integer, nullable=False, default=0, server_default='0')
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
+    )
+
+
+class DeviceEvent(Base):
+    """device-origin domain events (the sync contract's server side).
+
+    append-only facts from the sidecar (focus_block.completed, drift.detected,
+    ...). the client stamps event_uuid and (device, seq) at write time; both
+    carry unique constraints, so a retry after a dropped ACK is a no-op that
+    still ACKs - at-least-once delivery, exactly-once apply.
+    """
+    __tablename__ = 'device_events'
+
+    id = Column(Integer, primary_key=True)
+    event_uuid = Column(String, nullable=False, unique=True)
+    device_id = Column(Integer, ForeignKey('devices.id'), nullable=False)
+    # denormalized from the device so tenant-scoped queries never join
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    seq = Column(Integer, nullable=False)
+
+    event_type = Column(String, nullable=False)   # 'focus_block.completed', ...
+    payload = Column(JSON, default={})
+    occurred_at = Column(DateTime, nullable=True)  # device wall clock (naive utc)
+    applied_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # rejection tombstones: a semantically invalid event (unknown type, bad
+    # payload shape) still CONSUMES its (device, seq) so the ACK cursor can
+    # pass it - a rejected event must never pin the outbox forever. the error
+    # is preserved for debugging; processors skip rejected rows.
+    rejected = Column(Boolean, nullable=False, default=False,
+                      server_default=text('0'))
+    error = Column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('device_id', 'seq', name='uq_device_events_device_seq'),
+        {'sqlite_autoincrement': True},
     )
