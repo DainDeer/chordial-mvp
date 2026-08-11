@@ -84,6 +84,7 @@ class CompletionReconcilerService:
         platform: Optional[str],
         message_text: str,
         recent: Optional[List] = None,
+        stream_id: Optional[str] = None,
     ) -> ReconcileResult:
         """look at one user message against their open tasks and mark done the
         ones they reported doing. returns the executed Done actions (empty when
@@ -214,11 +215,11 @@ class CompletionReconcilerService:
         open_by_id = {t["id"]: t for t in open_tasks}
         # the reconciler acts as chordial (the companion's own bookkeeping
         # pass); actions it records read as chordial's next turn
-        # stream_id doubles as the user here only because the reconciler is
-        # invoked with the user uuid directly; the metadata thread is what
+        # the conversation key is threaded from the hook (falls back to the
+        # user uuid only for legacy callers); the metadata user_id is what
         # tools actually read (identity split, ROOMS_DESIGN.md section 11)
         context = ToolContext(
-            stream_id=user_uuid,
+            stream_id=stream_id or user_uuid,
             activation_id=f"reconcile-{uuid.uuid4().hex[:12]}",
             actor="chordial",
             metadata={"user_id": user_uuid},

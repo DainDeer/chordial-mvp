@@ -167,3 +167,50 @@ def test_usage_default_resolver_keeps_legacy_equality(env):
         actor="chordial")))
     with db_mod.SessionLocal() as s:
         assert s.query(UsageLog).one().user_uuid == U1
+
+
+# --- the helper preserves the conversation key --------------------------------
+
+
+def test_helper_tool_context_keeps_stream_and_user_separate(env, monkeypatch):
+    """the P1 regression pin: HelperAgent must hand tools the CONVERSATION
+    key (briefing.stream_id) with the user in metadata - assigning the user
+    to stream_id would collapse the split right back."""
+    from src.agents.helper import HelperAgent
+    from src.personas import PersonaCard
+
+    card = PersonaCard(
+        id="pip", archetype="test", telegram_handle="", specialty="",
+        proactivity=0.5, tools=None, persona_block="test",
+        intro_block="test", intro_question="test")
+
+    captured = {}
+
+    class StubLoop:
+        async def run(self, request, *, context, **kwargs):
+            captured["context"] = context
+            return SimpleNamespace(text="ok", actions=(), refused=False)
+
+    class StubRegistry:
+        def definitions(self):
+            return []
+
+    agent = HelperAgent(card, StubLoop(), StubRegistry())
+
+    async def stub_request(**kwargs):
+        captured["prompt_user"] = kwargs.get("user_uuid")
+        return object()
+    monkeypatch.setattr(agent.prompts, "build_conversation_request",
+                        stub_request)
+
+    briefing = SimpleNamespace(
+        stream_id="room-1", kind="user_message", events=(),
+        extras={"user_id": U1, "user_name": "megan", "user_timezone": "UTC"},
+        ambient_context=None, activation_id="act-1", scope="dm",
+        platform="app", execution=None)
+    _run(agent.act(briefing))
+
+    context = captured["context"]
+    assert context.stream_id == "room-1"          # the conversation, verbatim
+    assert context.metadata["user_id"] == U1      # the user, in metadata
+    assert captured["prompt_user"] == U1          # prompts built for the user

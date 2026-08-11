@@ -376,6 +376,7 @@ class ChordialHooks:
             ][-6:]
             reconcile_result = await self.reconciler.reconcile(
                 user_uuid=user_of_stimulus(stimulus),
+                stream_id=stimulus.stream_id,
                 platform=stimulus.platform,
                 message_text=stimulus.content,
                 recent=recent,

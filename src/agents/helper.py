@@ -84,13 +84,16 @@ class HelperAgent:
             # the engine's activation id ties this run's tool actions to the
             # turn that produced them
             context=ToolContext(
-                stream_id=user_uuid,
+                # the CONVERSATION key, verbatim - never the user. usage
+                # events inherit it (so room streams attribute through the
+                # resolver) and future room-scoped tools read it to know
+                # which conversation they are in
+                stream_id=briefing.stream_id,
                 activation_id=briefing.activation_id,
                 actor=self.name,
                 # where this reply will land. scope-sensitive tools (web_login
                 # mints bearer credentials!) must know a group is listening.
-                # user_id is the identity-split thread (stream_id becomes a
-                # room id in phase 2b; tools act for the USER)
+                # user_id is the identity-split thread: tools act for the USER
                 metadata={"scope": briefing.scope, USER_ID_KEY: user_uuid},
             ),
             platform=briefing.platform,
