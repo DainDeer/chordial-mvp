@@ -90,7 +90,11 @@ class MessageRouter:
             return False
 
         try:
-            return await interface.send_message(target_id, message)
+            # speaker rides along for interfaces that attribute in-band (the
+            # app pushes it in the payload); bot-per-helper platforms already
+            # resolved it to the right account and ignore the kwarg
+            return await interface.send_message(target_id, message,
+                                                speaker=speaker)
         except UndeliverableError as e:
             logger.warning(
                 "permanent delivery failure for %s:%s (speaker=%s) - %s; deactivating link",
