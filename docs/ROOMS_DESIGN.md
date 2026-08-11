@@ -176,17 +176,37 @@ never asked to pick agents or attach context.
 
 ### daily room lifecycle
 
-- **Lazy open, lazy close.** Created on first interaction of the day; closed on
-  the first interaction of the *next* day or after long idleness — never a
-  midnight cron. A 1am "i can't sleep" lands in Monday's room, where it belongs.
+Rooms move through an explicit, idempotent state machine:
+`open → closing → closed`. Every transition is safe to retrigger; the close
+pass is safe to re-run (exactly one summary per room, enforced by a unique
+constraint on `room_summaries.room_id`).
+
+- **Lazy open, lazy close.** Created on first interaction of the day; the
+  `open → closing` transition fires on the first interaction of the *next* day
+  or after long idleness — never a midnight cron. A 1am "i can't sleep" lands
+  in Monday's room, where it belongs.
 - **Close pass.** A silent, curator-shaped pass distills the conversation into
   durable outputs: events, observations, decisions, task updates, and a daily
-  summary. Runs as a pulse rhythm with `delivery: none`.
+  summary. Runs asynchronously (pulse rhythm, `delivery: none`) and marks the
+  room `closed` when its outputs are committed.
+- **The new room never blocks on the close pass.** The first turn of a new
+  daily room must not race yesterday's summary. Its briefing hydrates from
+  (a) canonical structured state, which is *always* current — events, task
+  updates, and observations are written throughout the day, not at close — and
+  (b) yesterday's summary **if** the close pass has committed it. If the
+  summary isn't ready yet, the briefing instead includes a compact structured
+  digest (yesterday's events + open threads) marked `summary: pending`, and the
+  close pass backfills. No turn ever waits on an LLM summarization job.
 - **The next day's room reads only the compressed consequences** — the raw
   Tuesday transcript is never in Wednesday's prompt. (This is also the prompt-
   cache win: a closed room's prefix never changes again.)
-- **Archives.** Past rooms form a browsable journal-like timeline. Reopening one
-  is read-only with a gentle "continue in today's room?"
+- **Archives are forever.** Past rooms form a browsable journal-like timeline.
+  Reopening one is read-only with a gentle "continue in today's room?"
+  Room logs are never silently deleted: the existing per-user event-log
+  trim/cleanup path is **retired in phase 2** (it contradicts browsable
+  archives). If storage ever demands it, compaction to cold storage or a
+  user-visible retention policy are the acceptable shapes — silent deletion is
+  not.
 
 ### room artifacts
 
@@ -265,6 +285,26 @@ conversational negotiation → **freeze an immutable baseline**. Later changes
 are welcome but become explicit `scope_change` events instead of silently
 rewriting history — honest data for Edwin, guilt-free changes of mind for the
 user.
+
+### baseline persistence model
+
+"Immutable baseline" has a concrete shape (tasks and cycles today are mutable
+rows, so this must be explicit):
+
+- **Commitments are first-class rows** with stable UUIDs (`commitment_id`),
+  belonging to a cycle and optionally referencing a plan and/or task. Focus
+  events reference `commitment_id` — never a free-form slug — so progress
+  attribution survives renames.
+- **Freezing writes a baseline snapshot**: an append-only record of the
+  accepted commitments and allocations at freeze time (`cycle_baselines`, one
+  per cycle, unique-constrained). The live commitment rows may evolve; the
+  snapshot never does.
+- **Scope changes append.** `scope_change` rows (reason, deltas, timestamp)
+  are the only sanctioned way planned capacity moves after freeze.
+- **The current view is a projection**: baseline + scope changes + progress
+  events. Edwin compares projection against baseline; that diff *is* the
+  planning-accuracy signal, and it stays reliable because both sides are
+  append-only.
 
 > Cycles, plans, goals, tasks, wins, and check-ins already exist in the
 > workspace schema with locked lifecycle conventions (completed vs. released,
@@ -393,6 +433,37 @@ owns everything latency-critical, privacy-critical, or offline-critical.
 └───────────────────────────────┘          └─────────────────────────────────┘
 ```
 
+### the sync contract
+
+Offline-first sync is only trustworthy if idempotency and ordering are explicit
+— a focus block retried from the outbox after a dropped connection must never
+count twice. Defined **before** the phase 1 API, enforced from the first
+endpoint:
+
+- **Every device-origin event carries a client-generated event UUID** plus
+  `(device_id, seq)` — a per-device monotonic sequence stamped by the sidecar
+  at write time.
+- **The server applies idempotently**: unique constraints on the event UUID and
+  on `(device_id, seq)`; a duplicate apply is a no-op that still ACKs.
+- **ACKs are durable cursors**: the server acknowledges the highest
+  contiguously-applied `seq` per device; the outbox trims at the cursor and
+  retries everything after it. At-least-once delivery, exactly-once apply.
+- **Ordering is per-device**, which is all the domain needs: device events are
+  append-only facts (`focus_block.completed`, `drift.detected`) and never
+  conflict with each other. Mutations of canonical rows (tasks, cycles) are not
+  synced as blind writes — they go through the server-side store, which owns
+  the invariants.
+
+### multi-tenant invariants (from the first endpoint, not phase 7)
+
+Tenancy is schema and API shape, not late-stage hardening. From phase 1:
+every query is scoped by an authorized `user_id` (no ambient single-user
+assumptions); devices hold individually revocable credentials, not a shared
+secret; websocket connections are authenticated and scoped to room membership;
+per-user quotas and token budgets are enforced at the gateway. What phase 7
+keeps is *operational* maturity: load testing, metering dashboards, backups,
+tuning.
+
 ### why the line is drawn there
 
 - **LLM calls are server-only.** A distributed desktop binary can never contain
@@ -438,13 +509,29 @@ the reconciler, usage metering, and the whole lifecycle convention. Helpers
 propose; only the store mutates canonical state; Vel budgets all proactive
 speech.
 
+### the identity split (prerequisite for rooms)
+
+The current runtime equates the engine stream with the user: `stream_id` *is*
+`user_uuid` through helpers, tools, workspace queries, usage accounting,
+profile lookup, delivery, and pulse scheduling. Rooms break that equation —
+a room-scoped stream id would silently empty workspace queries and
+misattribute usage. So **before any room migration**, `user_id` and
+`stream_id` become separate, explicit fields threaded through `Stimulus`,
+`Briefing`, `ToolContext`, and usage events: `user_id` answers "whose reality?"
+(workspace, memories, budgets, delivery); `stream_id` answers "which
+conversation?" (room log, prompt history). This is phase 2's first step and a
+mechanical sweep — and a dainframe API finding to propose upstream (the
+engine's `ToolContext`/usage vocabulary currently lets consumers conflate the
+two).
+
 Example structured records:
 
 ```yaml
 event:
+  id: 7c9e6679-7425-40de-944b-e07fc1f90ae7   # client-generated, dedup key
+  source: { type: sidecar, device_id: dev_abc123, seq: 4182 }
   type: focus_block.completed
-  source: { type: sidecar, device: megans-mac }
-  payload: { commitment: room_runtime_v1, minutes: 25 }
+  payload: { commitment_id: cmt_9f2b41, minutes: 25 }
 
 observation:
   agent: productivity
@@ -476,13 +563,13 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | phase | scope | already have |
 |---|---|---|
 | **0 · scaffold** | this doc in the repo; `app/` created (tauri + react + ts) | ✓ decisions locked |
-| **1 · server api** | grow the existing web server into the app-facing api: accounts + devices, rooms, messages, websocket streaming, read models (`today_view`, `cycle_view`); runs on the existing server box | ✓ http server, auth, link codes |
-| **2 · rooms become streams** | rooms tables; stream id switches from user to room (the one delicate migration — the current single stream is grandfathered as a legacy room); per-room-type context policies; lazy daily lifecycle; silent close pass | ✓ engine + event store adapter |
+| **1 · server api** | grow the existing web server into the app-facing api: accounts + devices (individually revocable credentials), rooms, messages, authenticated websocket streaming scoped to room membership, read models (`today_view`, `cycle_view`); **the sync contract** (event UUIDs, per-device sequences, durable ACK cursors, server dedup constraints) and **tenant scoping + per-user quotas on every endpoint** — multi-user is API shape here, not phase-7 hardening; runs on the existing server box | ✓ http server, auth, link codes |
+| **2 · rooms become streams** | **first: the identity split** — separate `user_id` from `stream_id` through `Stimulus`/`Briefing`/`ToolContext`/usage events (§11; today the runtime equates them everywhere); then rooms tables; stream id becomes room id (the current single stream is grandfathered as a legacy room); per-room-type context policies; the `open → closing → closed` lifecycle with non-blocking close (§4); **retire the event-log trim/cleanup path** (archives are forever) | ✓ engine + event store adapter |
 | **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
-| **5 · the vertical slice** | cycle fields (theme, capacity, commitments, scope changes); a completed focus block flows device → server → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
+| **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then multi-user hardening | |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
 
 ### explicitly deferred
 
