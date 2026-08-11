@@ -1,6 +1,6 @@
 # chordial desktop app 🧸
 
-The Tauri shell for chordial — rooms, cycles, and the plushie council.
+The Tauri shell for chordial — rooms, cycles, and the council.
 Design: [`docs/ROOMS_DESIGN.md`](../docs/ROOMS_DESIGN.md) (authoritative).
 
 - **frontend:** React + TypeScript (Vite), in [`src/`](src/)
@@ -23,11 +23,6 @@ npm run tauri dev
 
 `npm run dev` alone runs the Vite frontend in a browser without the Tauri
 shell — useful for pure UI work.
-
-> **note:** `src-tauri/Cargo.lock` is not committed yet because this machine
-> doesn't have Rust installed. After installing Rust, the first
-> `npm run tauri dev` (or `cargo generate-lockfile` in `src-tauri/`) creates
-> it — commit it then so Rust dependency resolution is reproducible.
 
 ## security posture
 
