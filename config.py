@@ -251,5 +251,13 @@ class Config:
     ENABLE_COMPRESSION = os.getenv("ENABLE_COMPRESSION", "false").lower() == "true"
     MIN_LENGTH_TO_COMPRESS = int(os.getenv("MIN_LENGTH_TO_COMPRESS", "100"))
 
+    # app device sync (docs/ROOMS_DESIGN.md section 10): per-user quota on
+    # device-origin events (trailing 24h) and the max outbox batch size.
+    # generous by design - a 2s activity poll emits derived events, not raw
+    # samples, so real usage sits far below the cap; the cap exists so a
+    # buggy or hostile client can't grow the table unboundedly.
+    SYNC_DAILY_EVENT_CAP = int(os.getenv("SYNC_DAILY_EVENT_CAP", "5000"))
+    SYNC_MAX_BATCH = int(os.getenv("SYNC_MAX_BATCH", "500"))
+
     # features
     ENABLE_DISCORD = os.getenv("ENABLE_DISCORD", "true").lower() == "true"
