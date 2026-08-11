@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid as uuid_mod
 from pathlib import Path
 from typing import Optional
+from weakref import WeakValueDictionary
 
 from aiohttp import web
 
@@ -44,11 +46,15 @@ from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
 from src.services import device_sync
 from src.utils.timezone_utils import utc_now
-from src.web import auth, device_auth
+from src.web import auth, device_auth, receipts
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# how often an open websocket re-proves its device token. a revoked device's
+# socket dies within this window (module-level so tests can shrink it)
+WS_REVALIDATE_SECONDS = 60.0
 
 
 class WebUserError(RuntimeError):
@@ -98,10 +104,21 @@ class WebService:
     platform = "web"
 
     def __init__(self, store=None, focus: Optional[FocusStore] = None,
-                 user_resolver=resolve_web_user):
+                 user_resolver=resolve_web_user, chat_service=None,
+                 app_interface=None):
         self.store = store or get_store()
         self.focus = focus or FocusStore()
         self._resolve_user = user_resolver
+        # the app-facing chat seam: process_message runs a turn, the app
+        # interface's queues carry the delivered lines back. both None on
+        # deployments that run the focus view without the chat engine.
+        self.chat_service = chat_service
+        self.app_interface = app_interface
+        # one app-originated turn per user at a time: the reply-capture queue
+        # is user-wide, so a second concurrent POST would otherwise drain the
+        # first one's lines. weak values, same pattern as ChatService's locks.
+        self._send_locks: WeakValueDictionary[str, asyncio.Lock] = \
+            WeakValueDictionary()
         self._limiter = auth.RateLimiter()
         self._runner: Optional[web.AppRunner] = None
         self._stop_event: Optional[asyncio.Event] = None
@@ -133,6 +150,14 @@ class WebService:
         app.router.add_post("/api/v1/devices/revoke", self._api_device_revoke)
         app.router.add_post("/api/v1/sync/events", self._api_sync_events)
         app.router.add_get("/api/v1/today", self._api_v1_today)
+        # rooms v0: the legacy per-user stream presented as today's room.
+        # phase 2 makes rooms first-class; these routes keep their shape.
+        app.router.add_get("/api/v1/rooms/current", self._api_room_current)
+        app.router.add_get("/api/v1/rooms/current/messages",
+                           self._api_room_messages)
+        app.router.add_post("/api/v1/rooms/current/messages",
+                            self._api_room_send)
+        app.router.add_get("/api/v1/ws", self._api_ws)
         app.router.add_static("/static", STATIC_DIR)
         return app
 
@@ -470,6 +495,193 @@ class WebService:
     async def _api_v1_today(self, request: web.Request) -> web.Response:
         identity = await self._device(request)
         return await asyncio.to_thread(self._today_payload, identity.user_uuid)
+
+    # --- /api/v1: rooms (v0 - the legacy stream as today's room) --------------
+
+    async def _api_room_current(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+
+        def build() -> dict:
+            from src.services.workspace.agenda import user_today
+            return {
+                "room": {
+                    "id": "today",          # a real room id in phase 2
+                    "type": "daily",
+                    "date": user_today(identity.user_uuid).isoformat(),
+                    "status": "open",
+                },
+                "chat_available": self.chat_service is not None,
+            }
+        return web.json_response(await asyncio.to_thread(build))
+
+    async def _api_room_messages(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        try:
+            limit = max(1, min(int(request.query.get("limit", "50")), 200))
+        except ValueError:
+            return _error("limit must be an integer")
+
+        def read() -> list[dict]:
+            from src.managers.event_log import EventLog
+            events = EventLog(identity.user_uuid).recent(message_limit=limit)
+            return [{
+                "id": e.db_id,
+                "author": e.author,
+                "author_type": e.author_type,
+                "content": e.content,
+                "at": e.created_at.isoformat() if e.created_at else None,
+                "platform": e.platform,
+            } for e in events if e.kind == "message"]
+        return web.json_response({"messages": await asyncio.to_thread(read)})
+
+    async def _api_room_send(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        if self.chat_service is None or self.app_interface is None:
+            return _error("chat is not available on this deployment",
+                          status=503)
+        body = await _json_body(request)
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return _error("text (non-empty string) required")
+        if len(text) > 4000:
+            return _error("text too long (max 4000 characters)")
+        client_message_id = (body.get("client_message_id")
+                             if isinstance(body, dict) else None)
+        if not isinstance(client_message_id, str):
+            return _error("client_message_id (uuid string) required - it is "
+                          "the retry-safety key for this send")
+        try:
+            uuid_mod.UUID(client_message_id)
+        except ValueError:
+            return _error("client_message_id must be a uuid")
+        client_message_id = client_message_id.lower()
+        user_uuid = identity.user_uuid
+
+        # idempotency: claim before the model runs. a retry after a lost
+        # response replays the stored lines - it never costs a second turn
+        # (or duplicate tool mutations). same contract shape as sync events.
+        outcome = await asyncio.to_thread(
+            receipts.claim, identity.id, user_uuid, client_message_id)
+        if outcome.status == "replay":
+            return web.json_response(
+                {"ok": True, "messages": outcome.response, "replayed": True})
+        if outcome.status == "in_flight":
+            return _error("this message is already being processed - "
+                          "retry in a moment", status=409)
+
+        # bind the 'app' platform identity to THIS user before the turn runs.
+        # the app's platform_user_id IS the user_uuid (the device token
+        # already proved who they are), so get_or_create_user can never
+        # mint a stranger - but the identity row must exist for delivery
+        # targeting and active_platform() to mean anything.
+        link = await self.chat_service.user_manager.link_platform_identity(
+            user_uuid, "app", user_uuid)
+        if link == "conflict":     # structurally impossible; fail loudly
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
+            return _error("app identity conflict", status=500)
+
+        from src.models.unified_message import UnifiedMessage
+        lock = self._send_locks.get(user_uuid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[user_uuid] = lock
+        try:
+            async with lock:
+                queue = self.app_interface.subscribe(user_uuid)
+                try:
+                    fallback = await self.chat_service.process_message(
+                        UnifiedMessage(
+                            content=text.strip(),
+                            platform_user_id=user_uuid,
+                            platform="app",
+                            platform_message_id=client_message_id,
+                            metadata={"device": identity.device_uuid},
+                        ))
+                    replies = self.app_interface.drain(queue)
+                finally:
+                    self.app_interface.unsubscribe(user_uuid, queue)
+        except Exception:
+            # no response exists to replay; free the claim for honest retries
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
+            raise
+
+        if fallback and not replies:
+            # refusal/error copy: shown, never persisted (matches platforms).
+            # deliberately NOT stored in the receipt either - a retry of an
+            # errored turn should get a fresh chance, not a replayed apology.
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
+            replies = [{"type": "message", "author": "chordial",
+                        "content": fallback, "ephemeral": True}]
+        else:
+            await asyncio.to_thread(
+                receipts.store, identity.id, client_message_id, replies)
+        return web.json_response({"ok": True, "messages": replies})
+
+    # --- /api/v1: the websocket ----------------------------------------------
+
+    async def _api_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """the app's live channel. auth is first-message ({"token": ...}
+        within 10s) because webviews can't set headers on websocket
+        upgrades. after auth the socket receives every line delivered to
+        this user through the app interface (one socket, whole council -
+        attribution rides in the payload)."""
+        ws = web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+        if self.app_interface is None:
+            await ws.close(code=4503, message=b"chat not available")
+            return ws
+        try:
+            first = await asyncio.wait_for(ws.receive_json(), timeout=10)
+        except Exception:
+            await ws.close(code=4401, message=b"auth required")
+            return ws
+        token = first.get("token") if isinstance(first, dict) else None
+        identity = await asyncio.to_thread(
+            device_auth.verify_device_token, token)
+        if identity is None:
+            await ws.close(code=4401, message=b"invalid device token")
+            return ws
+
+        user_uuid = identity.user_uuid
+        queue = self.app_interface.subscribe(user_uuid)
+        await ws.send_json({"type": "hello", "device": identity.device_uuid})
+
+        async def pump():
+            """forward deliveries, revalidating the device on a cadence so a
+            revoked device's socket dies within the window instead of
+            listening to the user's council forever."""
+            next_check = asyncio.get_event_loop().time() + WS_REVALIDATE_SECONDS
+            while True:
+                remaining = next_check - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    still = await asyncio.to_thread(
+                        device_auth.verify_device_token, token)
+                    if still is None:
+                        await ws.close(code=4401, message=b"device revoked")
+                        return
+                    next_check = (asyncio.get_event_loop().time()
+                                  + WS_REVALIDATE_SECONDS)
+                    continue
+                try:
+                    payload = await asyncio.wait_for(queue.get(),
+                                                     timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue
+                await ws.send_json(payload)
+
+        pump_task = asyncio.create_task(pump())
+        try:
+            # reading keeps the connection's close/ping handling alive;
+            # inbound chat rides POST, so client frames are ignored
+            async for _ in ws:
+                pass
+        finally:
+            pump_task.cancel()
+            self.app_interface.unsubscribe(user_uuid, queue)
+        return ws
 
 
 def _client_ip(request: web.Request) -> str:

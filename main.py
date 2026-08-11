@@ -375,15 +375,22 @@ async def main():
     for interface in interfaces:
         router.register(interface)
 
-    # the web focus view: today's tasks + the pomodoro bar on localhost.
-    # supervised like any interface, but NOT router-registered - it serves a
-    # page, it never delivers messages.
+    # the web focus view + the app-facing /api/v1 surface. the WebService is
+    # supervised like any interface but NOT router-registered (it serves
+    # pages and the api); the AppInterface is the inverse - router-registered
+    # so the orchestrator can deliver to connected app surfaces, but not
+    # supervised (it has no loop to run; the web server owns the sockets).
     if Config.ENABLE_WEB:
+        from src.providers.platforms.app import AppInterface
         from src.web.server import WebService
 
-        interfaces.append(WebService())
+        app_interface = AppInterface(chat_service)
+        router.register(app_interface)
+        interfaces.append(WebService(chat_service=chat_service,
+                                     app_interface=app_interface))
         logger.info(
-            "web focus view enabled (http://%s:%s)", Config.WEB_HOST, Config.WEB_PORT
+            "web focus view + app api enabled (http://%s:%s)",
+            Config.WEB_HOST, Config.WEB_PORT
         )
 
     # the ambient loop: the dainframe pulse drives scheduled check-ins and
@@ -396,7 +403,12 @@ async def main():
             orchestrator=orchestrator,
             user_manager=user_manager,
             curator=curator_agent,
-            platforms=router.platforms(),
+            # 'app' is deliberately excluded from PROACTIVE targeting: the
+            # desktop app is often closed, and a failed send there means a
+            # missed check-in with no fallback at send time. presence-aware
+            # routing (deer bubble vs tether) lands in phase 7; until then
+            # ambient outreach sticks to the always-on messaging platforms.
+            platforms=[p for p in router.platforms() if p != "app"],
         )
 
     try:
