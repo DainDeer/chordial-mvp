@@ -1,0 +1,518 @@
+# chordial: rooms, cycles, and the plushie council
+
+**status:** design doc v2 · direction locked
+**date:** 2026-08-11
+**stack:** tauri shell · react + typescript frontend · bundled python sidecar · chordial server (postgres)
+**supersedes:** the v1 rooms concept doc and the velvet antler design doc
+**pretty version:** published as a claude artifact (visuals + mockups); this file is the authoritative repo copy
+
+---
+
+## 1. what this is
+
+Chordial is evolving from a chat companion into a **conversation-native personal
+operating environment**. Instead of one endless thread, the user moves through
+small, purpose-built **rooms** — a room for today, a cycle-planning room, a
+project work room, a temporary "help me get unstuck" room, or simply a room to
+talk.
+
+The space is inhabited by the **plushie council**: small animal characters with
+names, personalities, lanes, and speaking policies — chaired by a deer who also
+lives quietly on the desktop as an ambient body-double. Beneath every room sits
+one shared reality: cycles, plans, tasks, events, observations, and decisions in
+canonical storage. Conversations produce structured consequences; old rooms stay
+browsable but new reasoning never replays old transcripts.
+
+It should feel less like "a chatbot with lots of agents" and more like **a cozy
+personal workspace inhabited by a tiny collaborative team** — one that works
+hardest when you need it, and fades to a warm, watchful quiet as you find your
+feet.
+
+### decisions locked 2026-08-11 (don't re-litigate)
+
+1. **Authored cast.** The council ships with defined characters. Every name,
+   species, and look is user-reshapeable, but nobody starts as a blank form. A
+   new creative/hobby helper takes over the lanes of the retired
+   music/writing/comfort trio (aria, poet, mochi — comfort folds into Mabel).
+2. **Velvet antler is folded in completely.** The desktop deer, pomodoro
+   sessions, and ambient presence are core chordial — not a sibling app. The
+   deer chairs the council.
+3. **The arc bends, it doesn't end.** As the user becomes their more productive
+   self, chordial gets less intrusive — but stays as a barrier against sliding
+   back. Sentinel mode, not goodbye.
+4. **The tether** — a single-bot Telegram bridge into today's room (§9). The
+   per-helper multi-bot group chat is retired outright: delete, don't port.
+5. **"Cycles," not "sprints."** Existing vocabulary stays; conversation-flavored
+   engine vocabulary is renamed where it conflicts (§11).
+6. **Client/server from day one, designed for 100+ users at every stage.**
+   Server holds canonical state and all LLM calls; the desktop app is a rich
+   local client with its own sqlite and an offline ambient engine (§10).
+
+---
+
+## 2. principles
+
+- **Chat is a medium, not the whole app.** Home is orientation, not a blank
+  message box. Structured state stays visible outside conversation.
+- **Rooms are the interaction boundary.** A room = purpose + participants +
+  scoped context + conversation + artifacts + lifecycle. Its type decides who
+  attends, what context loads, and what outputs are expected.
+- **One shared reality.** Helpers don't own competing memories. Rooms and
+  helpers are views and reasoning processes over canonical state.
+- **Helpers reason more than they speak.** Receiving an event, reasoning about
+  it, emitting structured output, and speaking are four different privileges.
+  Default: one speaker per turn.
+- **Structured consequences outlive conversations.** A room's durable output is
+  events, observations, decisions, and a summary — not its transcript.
+- **The user never organizes the bureaucracy.** "i want to work on chordial for
+  a while" is enough. The system arranges itself around the user, not the
+  reverse.
+- **Success deletes bureaucracy.** Reliable routines lose their nudges; tracking
+  that stops informing gets retired; a thriving user gets a quieter council.
+- **Silence is the default gift.** (from velvet antler) Presence without demand.
+  Every proactive word costs attention budget; the strongest words are scarce on
+  purpose.
+
+---
+
+## 3. the plushie council
+
+Seven residents. One character definition drives both AI runtime behavior and
+UI presentation. Personalities shape presentation; underlying observations stay
+structured and evidence-tied.
+
+| helper | species | lane | character direction |
+|---|---|---|---|
+| **vel** (chair) | 🦌 deer | orchestrator & ambient presence | holds the room; routes every event, budgets the council's attention, lives on the desktop as the body-double; speaks for the house |
+| **pip** | 🐿️ squirrel | productivity | cycles, focus blocks, task breakdown; bright, practical, eager — turns intimidating work into tiny pieces |
+| **skip** | 🐰 bunny | movement | cheerful and energetic without being gym-bro-y; five minutes counts |
+| **remy** | 🦝 raccoon | nutrition | casual, resourceful, happy with approximate estimates |
+| **mabel** | 🐻 bear | wellbeing | warm protective mama-bear energy; rest, sustainability, the whole organism (absorbs mochi's comfort lane) |
+| **juniper** (new) | 🦊 fox | creative & hobbies | keeper of sparks — art, music, writing, play; curious, a little mischievous; defends unproductive joy as a first-class goal |
+| **edwin** | 🦉 owl | scoring & reflection | kind old librarian; precise, evidence-driven, gently skeptical; speaks rarely |
+
+Alternates considered for the creative helper: magpie (collector of shiny
+things), otter (playful tool-user). "Vel" (from velvet) is a working name.
+
+### identity policy
+
+Characters are **authored defaults, personally reshapeable**. The definition
+ships in YAML (identity, personality, visual set, capabilities, speaking
+policy); every user-facing aspect — name, species, pronouns, vibe — can be
+renamed or reshaped in conversation and stored as a per-user override in the
+database. The old representation ritual survives as an optional "make them
+yours" moment rather than mandatory onboarding.
+
+### example character definition
+
+```yaml
+id: productivity
+
+identity:
+  name: pip
+  species: squirrel
+  role: productivity companion
+
+personality:
+  traits: [energetic, practical, encouraging]
+  speaking_style: concise
+  disagreement_style: gentle_but_direct
+
+visual:
+  avatar: pip.png
+  expression_set: [neutral, excited, thinking, concerned, celebrating]
+  accessory: tiny_clipboard
+
+capabilities: [cycle_tracking, focus_blocks, task_breakdown]
+
+room_behavior:
+  default_rooms: [daily, cycle, work_session]
+  speak_when:
+    - productivity_relevant
+    - directly_addressed
+    - important_pattern_detected
+  otherwise: listen
+```
+
+### speaking policy
+
+Every message routes through three layers, cheapest first (the velvet antler
+scheduler conclusion, imported verbatim):
+
+```text
+message ──► routing rules ──► decider ──► reasoning ──► ONE speaker
+            deterministic     small fast   1–3 helpers
+            room type ×       model, only  emit silent
+            event type;       on genuine   observations
+            no tokens spent   ambiguity;
+                              may choose
+                              silence
+```
+
+- guarantees live in arithmetic and rules — never a model
+- a cheap enum-constrained decider handles gray zones only
+- expensive reasoning is the last resort, and reasoning ≠ speaking
+- **default: one speaker per turn**; council debate (productive disagreement,
+  multiple speakers) is an explicit mode of planning/review rooms, never
+  ambient behavior
+
+---
+
+## 4. rooms
+
+Room types are permanent categories or temporary meetings:
+
+```text
+workspace
+├── 🌤 daily rooms          one per day; the default place to be
+├── 🏃 cycle rooms          planning · mid-cycle review · retrospective
+├── 🛠 project rooms        work sessions hydrated with project context
+└── ✨ ad-hoc rooms         get unstuck · make a decision · brain dump · just talk
+```
+
+Room creation begins with intent, not configuration — the chosen intent
+determines template, participants, context, and available UI. The user is
+never asked to pick agents or attach context.
+
+### daily room lifecycle
+
+- **Lazy open, lazy close.** Created on first interaction of the day; closed on
+  the first interaction of the *next* day or after long idleness — never a
+  midnight cron. A 1am "i can't sleep" lands in Monday's room, where it belongs.
+- **Close pass.** A silent, curator-shaped pass distills the conversation into
+  durable outputs: events, observations, decisions, task updates, and a daily
+  summary. Runs as a pulse rhythm with `delivery: none`.
+- **The next day's room reads only the compressed consequences** — the raw
+  Tuesday transcript is never in Wednesday's prompt. (This is also the prompt-
+  cache win: a closed room's prefix never changes again.)
+- **Archives.** Past rooms form a browsable journal-like timeline. Reopening one
+  is read-only with a gentle "continue in today's room?"
+
+### room artifacts
+
+Conversation can produce durable interactive objects backed by canonical state,
+rendered by React in the app and degraded to text + inline buttons on the
+tether: next-action cards, cycle proposals, decisions. v1 ships `next_action`
+only.
+
+---
+
+## 5. presence & focus (velvet antler, folded in)
+
+The deer lives on the desktop — a small always-there window that is **presence
+without demand**. The body-double: someone in the room while you work, whose
+default state is companionable silence.
+
+- **Sessions are owned locally.** The pomodoro clock, drift detection, and
+  ambient reactions run in the bundled sidecar against the local database —
+  they work offline and never lag on a network call. A block completed on a
+  plane syncs when you land.
+- **Starting is one tap** from a next-action card — in the daily room, on a
+  project page, or on the deer itself. A block is 25 minutes of effort, not a
+  promise of completion.
+- **Drift and return are handled gently.** Rust-side collectors watch only the
+  frontmost app's bundle id and idle time (never window titles, never content).
+  Ten minutes adrift earns at most one soft check-in; an unanswered check-in is
+  silently assumed to be a break, never re-asked.
+- **The potency budget survives the merge.** Ambient words are metered (points
+  per hour, cooldowns per theme, week-scale cooldowns on the strongest
+  affirmations); the never-say list runs as an output validator; per-theme
+  instant mute is a right.
+- **Session outcomes become events** — `focus_block.completed` flows into the
+  shared reality, Pip processes it, cycle progress moves, Edwin eventually gets
+  honest data.
+
+### what the deer will not do
+
+- read window titles, screens, or content — bundle ids and idle time only,
+  sanitized at the Rust boundary before anything reaches the engine
+- carry coach pressure — no streaks, phases, or assessments ever render in
+  ambient presence
+- guilt-trip a drift — one soft check-in, then trust
+- spend affirmations cheaply — the strong words keep their scarcity
+- speak during meetings — blocklisted apps auto-silence everything
+
+---
+
+## 6. cycles
+
+Planning runs on **cycles** — two-week rhythms with a theme, a capacity
+estimate in focus blocks, one or two focus projects, explicit commitments,
+guardrails, and intentionally unallocated slack. The cycle is structured; the
+day stays adaptive, with exactly one clear next action per active commitment to
+minimize activation energy.
+
+```yaml
+cycle:
+  theme: build rhythm without overloading myself
+  span: aug 10 – aug 23            # two weeks
+  capacity: 24 focus blocks        # 25 min each
+  focus_projects: [chordial, health_routine]
+
+  commitments:
+    - room runtime v1 · chordial · 5 blocks · high
+      next_action: define the room model (1 block)
+    - 4 resistance sessions · health · medium
+
+  guardrails:
+    max_planned_blocks_per_day: 6
+    unallocated_capacity: 20%
+```
+
+Cycle planning is a room-based workflow: orient (previous cycle, goals, honest
+historical capacity) → intent in natural language → council proposal →
+conversational negotiation → **freeze an immutable baseline**. Later changes
+are welcome but become explicit `scope_change` events instead of silently
+rewriting history — honest data for Edwin, guilt-free changes of mind for the
+user.
+
+> Cycles, plans, goals, tasks, wins, and check-ins already exist in the
+> workspace schema with locked lifecycle conventions (completed vs. released,
+> no hard deletes, `closed_at` stamping — see
+> [NATIVE_WORKSPACE_DESIGN.md](NATIVE_WORKSPACE_DESIGN.md) §2.0). This section
+> *extends* `Cycle` with theme, block capacity, commitments, and scope-change
+> events — it does not replace it.
+
+---
+
+## 7. the arc: fade, don't leave
+
+Chordial works itself out of the loud part of the job. The council's attention
+budget is highest when support is needed most, then deliberately tapers as
+consistency becomes the user's own — but it never tapers to zero. The end state
+is a **sentinel**: a quiet companion who still holds the door against old
+habits.
+
+| phase | council posture | what changes |
+|---|---|---|
+| **settling in** | curious, frequent, calibrating | baseline observation; the intensity contract is agreed here — explicit consent for how pushy is welcome |
+| **building** | full coaching | daily rooms, cycle discipline, active nudges, the deer at your side |
+| **rhythm** | tapering | reliable routines lose their nudges one by one (inverted-backoff arithmetic: success extends the quiet); tracking that stops informing is retired on Edwin's recommendation |
+| **keeping watch** | sentinel | presence stays (the deer, the daily room, the tether); proactive voice reserved for evidence-backed early-warning patterns — skipped cycles, vanishing movement, joy-starvation — surfaced gently, re-escalation only by agreement |
+
+This is the covenant answer to "does it create dependency?": the product's
+success metric is how quiet it gets to be — while remaining the barrier between
+the user and the slide back.
+
+---
+
+## 8. edwin & the scorecard
+
+Edwin is deliberately separate from Vel. Vel asks *"given what we intended and
+what's happening, what should we do next?"* Edwin asks *"given what we intended
+and what actually happened, what are we learning about the plan?"*
+
+**He scores the system, never the person.** No single productivity grade —
+instead: execution, planning accuracy, priority alignment, consistency,
+sustainability, each with evidence attached.
+
+He hunts patterns: tasks that roll cycle to cycle, quietly growing scope,
+systematically optimistic estimates, exciting code eating the creative goals,
+unsustainable bursts, nudges that don't change behavior. And — just as
+important — **simplifications**: routines that no longer need nudges, tracking
+that stopped informing, goals consistently exceeded, tasks easier than
+expected. In sentinel phase his pattern library becomes the early-warning
+system.
+
+He speaks at cycle planning, mid-cycle review, retrospectives, and on strong
+evidence-backed patterns. Otherwise he reads, and files findings.
+
+```yaml
+cycle_health:
+  execution:      { score: 0.78, evidence: [11 / 14 expected blocks completed] }
+  prioritization: { score: 0.91, evidence: [8 / 9 work blocks on high-priority objectives] }
+  estimation:     { score: 0.62, findings: [event pipeline underestimated ~40%] }
+  consistency:    { score: 0.71 }
+  sustainability: { score: 0.84 }
+```
+
+---
+
+## 9. the tether
+
+Rooms live on the desktop, but ADHD support fails if it only exists on the
+machine you're avoiding. The tether is a **Telegram window into today's daily
+room** — the same room, the same stream, from the phone.
+
+- **One bot, whole council.** A single chordial bot per platform; speakers are
+  attributed inline — `🦝 remy — burrito logged, ~650`. This replaces the old
+  one-bot-per-helper group chat, which is **retired outright** (unscalable past
+  a handful of users; the rooms model doesn't need it). The tether is
+  deliberately a bridge — the long-term phone story is a native companion app
+  (deferred until the model proves out).
+- **One room only.** The tether always maps to the current daily room — never
+  project or planning rooms. The phone is for life logistics and staying held;
+  deep work belongs at the desk. No room bureaucracy over chat.
+- **Same stream, marked provenance.** Telegram messages append to the daily
+  room with platform provenance (the event model already carries this); the
+  desktop shows them seamlessly. One conversation, two windows.
+- **Presence-aware delivery.** Every proactive word picks exactly one channel:
+  desktop active → the deer's bubble; away or idle → Telegram. Never both, and
+  channel choice never increases the total — the attention budget is spent
+  *before* routing.
+- **Quick logging works anywhere.** "ate lunch" from the bus is Remy's event
+  either way. Artifacts degrade gracefully: a next-action card becomes a
+  message with inline buttons ("start when you're back at your desk?" → queued,
+  and the deer offers it on return).
+- **Server-side by construction.** The bridge runs on the chordial server (the
+  single-bot plumbing and single-use link-code flow carry over; the multi-bot
+  ensemble code does not); the desktop app being asleep never breaks the phone.
+
+---
+
+## 10. architecture for 100+ users
+
+Client/server from day one — even while there's exactly one user. The server is
+the brain and the source of truth; the desktop app is a rich local client that
+owns everything latency-critical, privacy-critical, or offline-critical.
+
+```text
+┌───────────────────────────────┐          ┌─────────────────────────────────┐
+│ 💻 your desk — tauri app      │          │ 🌲 chordial server               │
+│                               │          │                                 │
+│  react + typescript ui        │◄────────►│  api + sync (accounts, wss)     │
+│   home · rooms · cycles ·     │  rooms,  │  room runtime + council         │
+│   deer window · timers        │ messages,│  llm gateway (keys, caching,    │
+│                               │  nudges  │    metering — server-side ONLY) │
+│  rust collectors              │          │  telegram bridge (the tether)   │
+│   bundle id · idle · sanitize │          │  postgres — canonical shared    │
+│   at the boundary             │ derived  │    reality (rooms, cycles,      │
+│                               │ events ↑ │    events, observations,        │
+│  python sidecar               │ views  ↓ │    memories — per user)         │
+│   ambient engine · pulse ·    │          │        ▲                        │
+│   sessions · gates · budget   │          │        │ telegram               │
+│                               │          │   📱 her phone                  │
+│  local sqlite                 │          │                                 │
+│   cache + outbox · timer and  │          │                                 │
+│   deer work offline           │          │                                 │
+│                               │          │                                 │
+│ 🔒 raw activity signals never │          │  multi-tenant from the start:   │
+│    leave this box — only      │          │  per-user streams, usage        │
+│    derived events cross;      │          │  metering, attention budgets,   │
+│    no api keys in the app     │          │  prompt-cache discipline        │
+└───────────────────────────────┘          └─────────────────────────────────┘
+```
+
+### why the line is drawn there
+
+- **LLM calls are server-only.** A distributed desktop binary can never contain
+  API keys; the server gateway owns providers, prompt caching, model tiering,
+  and per-user metering (the existing usage-log machinery generalizes).
+- **Ambient must be instant and offline.** Drift detection at a 2-second poll
+  and a ticking timer can't ride a round-trip. The sidecar runs the pulse
+  engine locally with authored fallback lines for offline moments; generated
+  ambient lines come from a server-batched nightly pool (unread ahead of time —
+  surprise preserved, spend amortized).
+- **Privacy is enforced by topology.** Raw signals are sanitized at the Rust
+  boundary and consumed in-process; the server sees only derived events. This
+  is the parent-trust story too: any future guardian report covers *process*
+  (focus time, phase), never *content*.
+- **Cost posture for 100+:** one speaker per turn, deterministic routing before
+  any model call, small-model deciders, byte-stable cached prompt prefixes,
+  bounded room contexts, per-user attention and token budgets. The council must
+  be affordable *because* it's mostly silent.
+
+---
+
+## 11. data & vocabulary
+
+One canonical vocabulary, now that rooms make "conversation" the wrong frame.
+Engine-side names that conflict get renamed at the chordial layer (and proposed
+upstream to the dainframe as findings):
+
+| term | meaning | notes |
+|---|---|---|
+| **room** | bounded space: purpose, participants, scoped context, lifecycle | new; each room is its own engine stream |
+| **room log** | what was said and done in a room, with author + platform provenance | rename of "conversation events" — same store, per-room streams |
+| **event** | a domain fact: `focus_block.completed`, `meal.logged`, `scope_change.created` | new table; never mixed with the room log |
+| **observation** | a helper's structured, evidence-tied interpretation | new; confidence-scored, silent by default |
+| **assessment** | higher-level claim with evidence links + suggested action | new; Edwin's findings live here |
+| **cycle** | two-week rhythm: theme, capacity, commitments, guardrails | existing table, extended — *never "sprint"* |
+| **focus block** | 25 minutes of effort, not a completion promise | existing focus tracking, now session-owned by the sidecar |
+| **artifact** | durable interactive object born in conversation | new; typed rows rendered by React, degrade to text on the tether |
+| **the tether** | the single-bot Telegram window into today's room | new |
+
+Nearly everything else carries over untouched: plans, goals, tasks, wins,
+check-ins, notes ("jot" is still the verb), occasions, memories, the curator,
+the reconciler, usage metering, and the whole lifecycle convention. Helpers
+propose; only the store mutates canonical state; Vel budgets all proactive
+speech.
+
+Example structured records:
+
+```yaml
+event:
+  type: focus_block.completed
+  source: { type: sidecar, device: megans-mac }
+  payload: { commitment: room_runtime_v1, minutes: 25 }
+
+observation:
+  agent: productivity
+  fact: { type: commitment_progress, commitment: room_runtime_v1,
+          completed_blocks: 2, planned_blocks: 5 }
+  confidence: 1.0
+
+assessment:
+  agent: productivity
+  claim: chordial work is progressing, but initiation concentrates late in the day
+  evidence: [focus_block:123, focus_block:128, focus_block:141]
+  confidence: 0.81
+  suggested_action: try one chordial block before noon tomorrow
+```
+
+All helpers speak a shared runtime protocol — they return observations,
+assessments, proposed actions, and requested speech. Helpers never directly
+mutate canonical state or send arbitrary proactive messages.
+
+---
+
+## 12. building it
+
+The unfair advantage: most of the runtime already exists. The engine chordial
+runs on (the dainframe) treats a conversation as an opaque stream — rooms are
+simply *many streams per user* instead of one. The workspace schema, single-bot
+telegram plumbing, link codes, memory system, and cost guards all carry over.
+
+| phase | scope | already have |
+|---|---|---|
+| **0 · scaffold** | this doc in the repo; `app/` created (tauri + react + ts) | ✓ decisions locked |
+| **1 · server api** | grow the existing web server into the app-facing api: accounts + devices, rooms, messages, websocket streaming, read models (`today_view`, `cycle_view`); runs on the existing server box | ✓ http server, auth, link codes |
+| **2 · rooms become streams** | rooms tables; stream id switches from user to room (the one delicate migration — the current single stream is grandfathered as a legacy room); per-room-type context policies; lazy daily lifecycle; silent close pass | ✓ engine + event store adapter |
+| **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
+| **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
+| **5 · the vertical slice** | cycle fields (theme, capacity, commitments, scope changes); a completed focus block flows device → server → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
+| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then multi-user hardening | |
+
+### explicitly deferred
+
+Avatar animation beyond static expressions · user-created helper species ·
+large dashboards · fully autonomous helper actions · dozens of room templates ·
+deep behavioral analytics · drag-and-drop everywhere · native mobile app — the
+eventual real phone story; the tether is the honest interim, not the
+destination.
+
+### retired along the way
+
+The web focus view · the multi-bot telegram/discord ensemble (per-persona bot
+handles, group chat mechanics) · the mandatory representation ritual (becomes
+optional) · `chat_service`'s platform-adapter role beyond the single-bot tether.
+
+### the v1 milestone
+
+> a user can enter today's room, interact naturally, complete one focus block
+> with the deer at her side, see the shared cycle state update, and later
+> revisit the archived day — while a small council of characterful helpers
+> participates coherently (which means: visibly listens, and occasionally one
+> of them speaks).
+
+---
+
+## north star
+
+**A personal world made of small collaborative spaces, inhabited by helpful
+characters, with one shared memory beneath them** — cozy, playful, rigorous,
+and quiet by default. It meets you loudly when you're finding your feet, works
+alongside you while you build, and then earns the right to mostly hush: a small
+woodland government that dreams of being needed less, and a deer who stays
+either way. 🦌
