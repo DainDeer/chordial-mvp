@@ -10,6 +10,7 @@ keeps meaning something for the app.
 import asyncio
 import sys
 import tempfile
+import uuid as uuid_mod
 from pathlib import Path
 
 import pytest
@@ -59,13 +60,19 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _send_body(text, client_message_id=None):
+    return {"text": text,
+            "client_message_id": client_message_id or str(uuid_mod.uuid4())}
+
+
 class StubChatService:
     """the chat seam as the endpoint sees it: records the inbound message,
     delivers council lines through the app interface (the real router path),
     and returns None when delivery confirmed - or the fallback copy when the
     turn refused/errored."""
 
-    def __init__(self, app_interface, lines=(("pip", "one block!! just one.")),
+    def __init__(self, app_interface,
+                 lines=(("pip", "one block!! just one."),),
                  fallback=None):
         self.user_manager = UserManager()
         self.app_interface = app_interface
@@ -189,7 +196,7 @@ def test_send_message_round_trip(env):
         token = _token()
         resp = await client.post(
             "/api/v1/rooms/current/messages",
-            json={"text": "i want to start a chordial block"},
+            json=_send_body("i want to start a chordial block"),
             headers={"Authorization": f"Bearer {token}"})
         assert resp.status == 200
         body = await resp.json()
@@ -216,7 +223,7 @@ def test_send_fallback_copy_is_returned_not_persisted(env):
     async def flow(client):
         token = _token()
         resp = await client.post(
-            "/api/v1/rooms/current/messages", json={"text": "hi"},
+            "/api/v1/rooms/current/messages", json=_send_body("hi"),
             headers={"Authorization": f"Bearer {token}"})
         body = await resp.json()
         assert body["messages"][0]["ephemeral"] is True
@@ -232,7 +239,7 @@ def test_send_requires_chat_seam_and_valid_body(env):
         token = _token()
         headers = {"Authorization": f"Bearer {token}"}
         resp = await client.post("/api/v1/rooms/current/messages",
-                                 json={"text": "hi"}, headers=headers)
+                                 json=_send_body("hi"), headers=headers)
         assert resp.status == 503     # no chat service wired
     _run(_with_service(_service(), flow))
 
@@ -242,7 +249,9 @@ def test_send_requires_chat_seam_and_valid_body(env):
     async def flow2(client):
         token = _token()
         headers = {"Authorization": f"Bearer {token}"}
-        for bad in ({}, {"text": ""}, {"text": "  "}, {"text": "x" * 4001}):
+        for bad in ({}, _send_body(""), _send_body("  "),
+                    _send_body("x" * 4001), {"text": "hi"},
+                    {"text": "hi", "client_message_id": "not-a-uuid"}):
             resp = await client.post("/api/v1/rooms/current/messages",
                                      json=bad, headers=headers)
             assert resp.status == 400, bad
@@ -267,9 +276,10 @@ def test_ws_auth_then_receives_council_lines(env):
                                       speaker="skip") is True
         payload = await asyncio.wait_for(ws.receive_json(), timeout=5)
         assert payload == {
-            "type": "message", "author": "skip",
+            "type": "message", "id": payload["id"], "author": "skip",
             "content": "movement break?", "at": payload["at"],
         }
+        assert payload["id"]  # stable per-line id for cross-surface dedup
         await ws.close()
         # the socket's queue is gone once the connection closes
         await asyncio.sleep(0)
@@ -286,4 +296,127 @@ def test_ws_rejects_bad_token(env):
         msg = await ws.receive()
         assert msg.type.name in ("CLOSE", "CLOSING", "CLOSED")
         assert ws.close_code == 4401
+    _run(_with_service(_service(None, app), flow))
+
+
+# --- idempotent submission (the retry contract) -------------------------------
+
+
+def test_retry_replays_without_a_second_turn(env):
+    """a lost response + retry must never cost a second model turn."""
+    app = AppInterface()
+    chat = StubChatService(app, lines=[("pip", "on it!!")])
+
+    async def flow(client):
+        token = _token()
+        headers = {"Authorization": f"Bearer {token}"}
+        body = _send_body("start my block")
+        first = await client.post("/api/v1/rooms/current/messages",
+                                  json=body, headers=headers)
+        assert first.status == 200
+        first_body = await first.json()
+
+        retry = await client.post("/api/v1/rooms/current/messages",
+                                  json=body, headers=headers)
+        assert retry.status == 200
+        retry_body = await retry.json()
+        assert retry_body["replayed"] is True
+        assert retry_body["messages"] == first_body["messages"]
+        assert len(chat.seen) == 1          # the model ran exactly once
+    _run(_with_service(_service(chat, app), flow))
+
+
+def test_fallback_turns_release_the_claim_for_retry(env):
+    """error copy is never stored: a retry of an errored turn gets a fresh
+    chance, not a replayed apology."""
+    app = AppInterface()
+    chat = StubChatService(app, fallback="having trouble right now")
+
+    async def flow(client):
+        token = _token()
+        headers = {"Authorization": f"Bearer {token}"}
+        body = _send_body("hi")
+        await client.post("/api/v1/rooms/current/messages",
+                          json=body, headers=headers)
+        chat.fallback = None                 # the model recovers
+        retry = await client.post("/api/v1/rooms/current/messages",
+                                  json=body, headers=headers)
+        retry_body = await retry.json()
+        assert "replayed" not in retry_body
+        assert retry_body["messages"][0]["author"] == "pip"
+        assert len(chat.seen) == 2           # a real second attempt
+    _run(_with_service(_service(chat, app), flow))
+
+
+def test_concurrent_sends_do_not_cross_contaminate(env):
+    """two in-flight POSTs must each get their own turn's lines - the
+    per-user send lock serializes them end to end."""
+    app = AppInterface()
+
+    class EchoChat(StubChatService):
+        async def process_message(self, unified):
+            self.seen.append(unified)
+            await asyncio.sleep(0.05)   # let the second POST pile up
+            await self.app_interface.send_message(
+                unified.platform_user_id, f"re: {unified.content}",
+                speaker="pip")
+            return None
+
+    chat = EchoChat(app)
+
+    async def flow(client):
+        token = _token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async def send(text):
+            resp = await client.post("/api/v1/rooms/current/messages",
+                                     json=_send_body(text), headers=headers)
+            return await resp.json()
+
+        a, b = await asyncio.gather(send("alpha"), send("beta"))
+        assert [m["content"] for m in a["messages"]] == ["re: alpha"]
+        assert [m["content"] for m in b["messages"]] == ["re: beta"]
+    _run(_with_service(_service(chat, app), flow))
+
+
+# --- limit clamping -----------------------------------------------------------
+
+
+def test_negative_limit_is_clamped(env):
+    EventLog(U1).append_message("user", "user", "only row")
+
+    async def flow(client):
+        token = _token()
+        headers = {"Authorization": f"Bearer {token}"}
+        for bad_limit in ("-1", "0", "99999"):
+            resp = await client.get(
+                f"/api/v1/rooms/current/messages?limit={bad_limit}",
+                headers=headers)
+            assert resp.status == 200, bad_limit
+            assert len((await resp.json())["messages"]) == 1
+    _run(_with_service(_service(), flow))
+
+
+# --- websocket revocation -----------------------------------------------------
+
+
+def test_revoked_device_socket_closes_within_the_window(env, monkeypatch):
+    import src.web.server as server_mod
+    monkeypatch.setattr(server_mod, "WS_REVALIDATE_SECONDS", 0.1)
+    app = AppInterface()
+
+    async def flow(client):
+        code = device_auth.mint_device_link_code(U1)
+        device_uuid, token = device_auth.link_device(code, "revocable")
+        ws = await client.ws_connect("/api/v1/ws")
+        await ws.send_json({"token": token})
+        assert (await ws.receive_json())["type"] == "hello"
+
+        device_auth.revoke_device(U1, device_uuid)
+        msg = await asyncio.wait_for(ws.receive(), timeout=5)
+        assert msg.type.name in ("CLOSE", "CLOSING", "CLOSED")
+        assert ws.close_code == 4401
+        # and its queue is gone - the council can't be overheard
+        await asyncio.sleep(0.05)
+        assert await app.send_message(U1, "still there?") is False
     _run(_with_service(_service(None, app), flow))

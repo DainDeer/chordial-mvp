@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid as uuid_mod
 from pathlib import Path
 from typing import Optional
+from weakref import WeakValueDictionary
 
 from aiohttp import web
 
@@ -44,11 +46,15 @@ from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
 from src.services import device_sync
 from src.utils.timezone_utils import utc_now
-from src.web import auth, device_auth
+from src.web import auth, device_auth, receipts
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# how often an open websocket re-proves its device token. a revoked device's
+# socket dies within this window (module-level so tests can shrink it)
+WS_REVALIDATE_SECONDS = 60.0
 
 
 class WebUserError(RuntimeError):
@@ -108,6 +114,11 @@ class WebService:
         # deployments that run the focus view without the chat engine.
         self.chat_service = chat_service
         self.app_interface = app_interface
+        # one app-originated turn per user at a time: the reply-capture queue
+        # is user-wide, so a second concurrent POST would otherwise drain the
+        # first one's lines. weak values, same pattern as ChatService's locks.
+        self._send_locks: WeakValueDictionary[str, asyncio.Lock] = \
+            WeakValueDictionary()
         self._limiter = auth.RateLimiter()
         self._runner: Optional[web.AppRunner] = None
         self._stop_event: Optional[asyncio.Event] = None
@@ -506,7 +517,7 @@ class WebService:
     async def _api_room_messages(self, request: web.Request) -> web.Response:
         identity = await self._device(request)
         try:
-            limit = min(int(request.query.get("limit", "50")), 200)
+            limit = max(1, min(int(request.query.get("limit", "50")), 200))
         except ValueError:
             return _error("limit must be an integer")
 
@@ -534,7 +545,29 @@ class WebService:
             return _error("text (non-empty string) required")
         if len(text) > 4000:
             return _error("text too long (max 4000 characters)")
+        client_message_id = (body.get("client_message_id")
+                             if isinstance(body, dict) else None)
+        if not isinstance(client_message_id, str):
+            return _error("client_message_id (uuid string) required - it is "
+                          "the retry-safety key for this send")
+        try:
+            uuid_mod.UUID(client_message_id)
+        except ValueError:
+            return _error("client_message_id must be a uuid")
+        client_message_id = client_message_id.lower()
         user_uuid = identity.user_uuid
+
+        # idempotency: claim before the model runs. a retry after a lost
+        # response replays the stored lines - it never costs a second turn
+        # (or duplicate tool mutations). same contract shape as sync events.
+        outcome = await asyncio.to_thread(
+            receipts.claim, identity.id, user_uuid, client_message_id)
+        if outcome.status == "replay":
+            return web.json_response(
+                {"ok": True, "messages": outcome.response, "replayed": True})
+        if outcome.status == "in_flight":
+            return _error("this message is already being processed - "
+                          "retry in a moment", status=409)
 
         # bind the 'app' platform identity to THIS user before the turn runs.
         # the app's platform_user_id IS the user_uuid (the device token
@@ -544,26 +577,47 @@ class WebService:
         link = await self.chat_service.user_manager.link_platform_identity(
             user_uuid, "app", user_uuid)
         if link == "conflict":     # structurally impossible; fail loudly
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
             return _error("app identity conflict", status=500)
 
         from src.models.unified_message import UnifiedMessage
-        queue = self.app_interface.subscribe(user_uuid)
+        lock = self._send_locks.get(user_uuid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[user_uuid] = lock
         try:
-            fallback = await self.chat_service.process_message(UnifiedMessage(
-                content=text.strip(),
-                platform_user_id=user_uuid,
-                platform="app",
-                platform_message_id=f"app-{identity.device_uuid}",
-                metadata={"device": identity.device_uuid},
-            ))
-            replies = self.app_interface.drain(queue)
-        finally:
-            self.app_interface.unsubscribe(user_uuid, queue)
+            async with lock:
+                queue = self.app_interface.subscribe(user_uuid)
+                try:
+                    fallback = await self.chat_service.process_message(
+                        UnifiedMessage(
+                            content=text.strip(),
+                            platform_user_id=user_uuid,
+                            platform="app",
+                            platform_message_id=client_message_id,
+                            metadata={"device": identity.device_uuid},
+                        ))
+                    replies = self.app_interface.drain(queue)
+                finally:
+                    self.app_interface.unsubscribe(user_uuid, queue)
+        except Exception:
+            # no response exists to replay; free the claim for honest retries
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
+            raise
 
         if fallback and not replies:
-            # refusal/error copy: shown, never persisted (matches platforms)
+            # refusal/error copy: shown, never persisted (matches platforms).
+            # deliberately NOT stored in the receipt either - a retry of an
+            # errored turn should get a fresh chance, not a replayed apology.
+            await asyncio.to_thread(
+                receipts.release, identity.id, client_message_id)
             replies = [{"type": "message", "author": "chordial",
                         "content": fallback, "ephemeral": True}]
+        else:
+            await asyncio.to_thread(
+                receipts.store, identity.id, client_message_id, replies)
         return web.json_response({"ok": True, "messages": replies})
 
     # --- /api/v1: the websocket ----------------------------------------------
@@ -596,8 +650,26 @@ class WebService:
         await ws.send_json({"type": "hello", "device": identity.device_uuid})
 
         async def pump():
+            """forward deliveries, revalidating the device on a cadence so a
+            revoked device's socket dies within the window instead of
+            listening to the user's council forever."""
+            next_check = asyncio.get_event_loop().time() + WS_REVALIDATE_SECONDS
             while True:
-                payload = await queue.get()
+                remaining = next_check - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    still = await asyncio.to_thread(
+                        device_auth.verify_device_token, token)
+                    if still is None:
+                        await ws.close(code=4401, message=b"device revoked")
+                        return
+                    next_check = (asyncio.get_event_loop().time()
+                                  + WS_REVALIDATE_SECONDS)
+                    continue
+                try:
+                    payload = await asyncio.wait_for(queue.get(),
+                                                     timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue
                 await ws.send_json(payload)
 
         pump_task = asyncio.create_task(pump())

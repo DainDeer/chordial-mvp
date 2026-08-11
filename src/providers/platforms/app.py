@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any, Dict, Set
 
 from src.providers.platforms.base import BaseInterface
@@ -82,6 +83,10 @@ class AppInterface(BaseInterface):
         who they are - there is no foreign account id to map)."""
         payload = {
             "type": "message",
+            # a stable id per delivered line: a client that hears the same
+            # line on two surfaces (its POST response and its websocket)
+            # dedupes by id instead of guessing by content
+            "id": str(uuid.uuid4()),
             "author": kwargs.get("speaker") or "chordial",
             "content": content,
             "at": utc_now().isoformat(),

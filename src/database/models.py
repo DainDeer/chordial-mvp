@@ -709,3 +709,32 @@ class DeviceEvent(Base):
         UniqueConstraint('device_id', 'seq', name='uq_device_events_device_seq'),
         {'sqlite_autoincrement': True},
     )
+
+
+class AppMessageReceipt(Base):
+    """idempotency receipts for app-submitted chat messages.
+
+    a lost http response must not cost a second model turn (and duplicate
+    tool mutations) on retry: the client stamps every send with a
+    client_message_id, unique per device. the receipt row is claimed BEFORE
+    the turn runs and the delivered lines are stored into it after - a retry
+    replays the stored response instead of re-invoking the model. a claim
+    whose response never arrived (crash mid-turn) is reclaimable after a
+    short window.
+    """
+    __tablename__ = 'app_message_receipts'
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(Integer, ForeignKey('devices.id'), nullable=False)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    client_message_uuid = Column(String, nullable=False)
+    response = Column(JSON, nullable=True)   # delivered lines; null = in flight
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('device_id', 'client_message_uuid',
+                         name='uq_app_receipts_device_msg'),
+        {'sqlite_autoincrement': True},
+    )
