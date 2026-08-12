@@ -13,6 +13,7 @@ import {
   pauseFocus,
   SidecarSocket,
   startFocus,
+  type ActivityFlags,
   type FocusState,
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
@@ -51,6 +52,7 @@ export default function DeerWindow() {
   const [pendingDone, setPendingDone] = useState<number[]>(() =>
     listPendingDone(window.localStorage),
   );
+  const [activity, setActivity] = useState<ActivityFlags | null>(null);
   const [today, setToday] = useState<TodayPayload | null>(null);
   const [line, setLine] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -106,6 +108,7 @@ export default function DeerWindow() {
     fetchSidecarState()
       .then((state) => {
         setFocus(state.focus);
+        if (state.activity) setActivity(state.activity);
         if (state.line) setLine(state.line);
       })
       .catch(() => {});
@@ -115,7 +118,10 @@ export default function DeerWindow() {
   useEffect(() => {
     const socket = new SidecarSocket({
       onPush: (payload) => {
-        if (payload.type === "state") setFocus(payload.focus);
+        if (payload.type === "state") {
+          setFocus(payload.focus);
+          if (payload.activity) setActivity(payload.activity);
+        }
         if (payload.type === "line") showLine(payload.text);
       },
       onStatus: setConnected,
@@ -295,17 +301,25 @@ export default function DeerWindow() {
       <div
         className={`deer-self${focus.running ? " watching" : " loafing"}${
           overtime ? " perked" : ""
-        }`}
+        }${activity?.blocked ? " hushed" : ""}`}
         aria-hidden="true"
       >
         🦌
       </div>
       <p className="deer-caption">
-        {focus.running
-          ? overtime
-            ? "still here — every extra minute counts"
-            : "on watch beside you"
-          : "loafing nearby"}
+        <InlineContent
+          content={
+            activity?.blocked
+              ? "hushed — meeting nearby"
+              : activity?.drifting
+                ? "*ears soft* you wandered — that’s allowed"
+                : focus.running
+                  ? overtime
+                    ? "still here — every extra minute counts"
+                    : "on watch beside you"
+                  : "loafing nearby"
+          }
+        />
       </p>
 
       {focus.running && (

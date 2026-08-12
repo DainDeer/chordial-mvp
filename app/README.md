@@ -45,6 +45,27 @@ The deer window hands the sidecar your device credential automatically
 through the sync contract even after restarts — the sidecar's outbox
 retries until acked.
 
+## the collectors & gates
+
+In the Tauri shell, a Rust thread polls two signals every 2 seconds —
+the frontmost app's **bundle id** and **idle seconds** — and posts them to
+the sidecar. That thread ([`src-tauri/src/collector.rs`](src-tauri/src/collector.rs))
+is the privacy boundary: window titles, urls, and content are structurally
+absent, and bundle ids never leave the machine (the server only ever sees
+derived events like `drift.detected`). The tray icon can tuck the deer
+away and call her back.
+
+The sidecar turns those signals into at most one gentle drift check-in per
+episode (and a welcome back), gated by arithmetic, tunable by env:
+
+```bash
+SIDECAR_DRIFT_IDLE_MINUTES=10   # idle this long mid-block = one soft check-in
+SIDECAR_LINES_PER_HOUR=6        # unprompted-speech budget, rolling hour
+SIDECAR_QUIET_HOURS=            # e.g. "22-8" (machine-local; empty = off)
+SIDECAR_BLOCKLIST=              # meeting apps that hush the deer entirely
+                                # (defaults include zoom/teams/facetime/webex)
+```
+
 `npm run dev` alone runs the Vite frontend in a browser without the Tauri
 shell — useful for pure UI work. `npm test` runs the frontend unit tests
 (vitest); `npm run build` typechecks and bundles.

@@ -47,6 +47,22 @@ LINE_POOLS: dict[str, list[str]] = {
         "*approving ear flick* target reached. overtime is yours if you "
         "want it.",
     ],
+    "drift_checkin": [
+        "*ears soft* you've been quiet a bit - still with me? no pressure, "
+        "blocks wait.",
+        "hey, gently: the clock's still running. break or lost the thread? "
+        "either is fine.",
+        "*lifts head, unhurried* just noticing you wandered. i'll be here "
+        "whenever you land back.",
+        "soft check-in: still on this one? if you're resting, rest - i've "
+        "got the clock.",
+    ],
+    "drift_return": [
+        "*ears perk* welcome back. the clock never judged.",
+        "there you are. picking up right where you left it.",
+        "back!! okay. *settles again* we simply continue.",
+        "returned and accounted for. the block missed you, quietly.",
+    ],
     "task_finished": [
         "*FULL EMERGENCY UNLOAF* DONE!! you FINISHED it!! 🦌🎉 look at "
         "that - an actual completed thing, witnessed by an actual deer!!",

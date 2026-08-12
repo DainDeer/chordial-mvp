@@ -34,7 +34,9 @@ from typing import Optional, Set
 
 from aiohttp import web
 
+from src.sidecar.drift import ActivityState, DriftWatch
 from src.sidecar.focus import FocusEngine, FocusError
+from src.sidecar.gates import SpeechGates
 from src.sidecar.lines import pick_line
 from src.sidecar.store import SidecarStore
 from src.sidecar.sync import OutboxPump
@@ -53,12 +55,22 @@ ALLOWED_ORIGINS = [
 class SidecarService:
     def __init__(self, store: SidecarStore,
                  engine: Optional[FocusEngine] = None,
-                 pump: Optional[OutboxPump] = None):
+                 pump: Optional[OutboxPump] = None,
+                 activity: Optional[ActivityState] = None,
+                 drift: Optional[DriftWatch] = None,
+                 gates: Optional[SpeechGates] = None):
         self.store = store
         self.engine = engine or FocusEngine(store)
         self.pump = pump or OutboxPump(store)
+        self.activity = activity or ActivityState()
+        self.drift = drift or DriftWatch(store, self.activity)
+        self.gates = gates or SpeechGates()
         self._sockets: Set[web.WebSocketResponse] = set()
         self._last_line: Optional[str] = None
+        # the posture (blocked, drifting) as of the LAST broadcast - the
+        # ticker compares against this, never against the start of its own
+        # tick: time-based expiry happens BETWEEN ticks
+        self._posture: tuple[bool, bool] = (False, False)
         self._tasks: list[asyncio.Task] = []
 
     # --- app assembly -----------------------------------------------------
@@ -70,6 +82,7 @@ class SidecarService:
         app.router.add_post("/v1/focus/start", self._focus_start)
         app.router.add_post("/v1/focus/pause", self._focus_pause)
         app.router.add_post("/v1/focus/finish", self._focus_finish)
+        app.router.add_post("/v1/activity", self._activity)
         app.router.add_get("/v1/ws", self._ws)
         app.on_startup.append(self._start_background)
         app.on_cleanup.append(self._stop_background)
@@ -130,28 +143,64 @@ class SidecarService:
         for ws in dead:
             self._sockets.discard(ws)
 
+    def _world(self) -> dict:
+        """the state payload: the clock plus derived activity flags (never
+        the bundle id - the ui gets moods, not surveillance). building it
+        stamps the broadcast posture the ticker compares against."""
+        self._posture = (self.activity.blocked, self.drift.drifting)
+        return {
+            "type": "state",
+            "focus": self.engine.state(),
+            "activity": {**self.activity.snapshot(),
+                         "drifting": self._posture[1]},
+        }
+
     async def _announce(self, moment: str) -> str:
         line = pick_line(moment, last=self._last_line)
         self._last_line = line
         await self._broadcast({"type": "line", "moment": moment,
                                "text": line})
-        await self._broadcast({"type": "state",
-                               "focus": self.engine.state()})
+        await self._broadcast(self._world())
         return line
+
+    async def _announce_unprompted(self, moment: str) -> None:
+        """spontaneous speech rides the gate stack: hushed in meetings,
+        silent in quiet hours, capped per rolling hour. the state still
+        broadcasts either way - the ui may move even when the deer holds
+        her tongue."""
+        if self.gates.allow(blocked=self.activity.blocked):
+            self.gates.spend()
+            await self._announce(moment)
+        else:
+            await self._broadcast(self._world())
 
     # --- the ticker -----------------------------------------------------------
 
     async def _ticker(self) -> None:
-        """the gentle ding: announce a run crossing its target, once."""
         while True:
             await asyncio.sleep(1)
             try:
-                if self.engine.crossed_target():
-                    await self._announce("block_target")
+                await self._tick_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("ticker hiccup; continuing")
+
+    async def _tick_once(self) -> None:
+        """the second-hand: the target ding and the drift watch (both
+        unprompted, both gated) - plus posture honesty: blocked and
+        drifting can expire by TIME alone (a collector going stale lifts
+        the hush, disarms a drift), and those transitions carry no line,
+        so the state must broadcast on its own. the comparison is against
+        the last BROADCAST posture - the change happened between ticks,
+        so the tick's own before/after would never see it."""
+        if self.engine.crossed_target():
+            await self._announce_unprompted("block_target")
+        moment = self.drift.tick(self.engine.state().get("running", False))
+        if moment:
+            await self._announce_unprompted(moment)
+        elif (self.activity.blocked, self.drift.drifting) != self._posture:
+            await self._broadcast(self._world())
 
     # --- handlers ------------------------------------------------------------
 
@@ -179,10 +228,36 @@ class SidecarService:
     async def _state(self, _request: web.Request) -> web.Response:
         return web.json_response({
             "focus": self.engine.state(),
+            "activity": {**self.activity.snapshot(),
+                         "drifting": self.drift.drifting},
             "line": self._last_line,
             "linked": bool(self.store.get("device_token")),
             "sync_error": self.store.get("sync_error") or None,
         })
+
+    async def _activity(self, request: web.Request) -> web.Response:
+        """the collector's 2s heartbeat. the rust boundary already
+        sanitized; this re-checks shape because loopback posts can come
+        from anything on the machine."""
+        body = await _json_body(request)
+        if not isinstance(body, dict):
+            return _error("json object required")
+        bundle_id = body.get("bundle_id")
+        if bundle_id is not None and not (
+                isinstance(bundle_id, str) and 0 < len(bundle_id) <= 200
+                and all(c.isalnum() or c in ".-_" for c in bundle_id)):
+            bundle_id = None            # malformed = absent, never trusted
+        idle = body.get("idle_seconds")
+        if not isinstance(idle, (int, float)) or isinstance(idle, bool) \
+                or idle < 0:
+            return _error("idle_seconds (non-negative number) required")
+        was_blocked = self.activity.blocked
+        self.activity.observe(bundle_id, float(idle))
+        if self.activity.blocked != was_blocked:
+            # hush on/off changes the deer's whole posture, and it happens
+            # without a line - push the state so the window follows
+            await self._broadcast(self._world())
+        return web.json_response({"ok": True})
 
     async def _focus_start(self, request: web.Request) -> web.Response:
         body = await _json_body(request) or {}
@@ -230,8 +305,7 @@ class SidecarService:
         await ws.prepare(request)
         self._sockets.add(ws)
         try:
-            await ws.send_json({"type": "state",
-                                "focus": self.engine.state()})
+            await ws.send_json(self._world())
             async for _ in ws:
                 pass          # loopback push channel; client frames ignored
         finally:

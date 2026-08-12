@@ -18,7 +18,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# the collector's tiny loopback POST to the sidecar - deliberately not a
+# full async http stack; it runs on its own thread at a 2s cadence
+ureq = { version = "2", features = ["json"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# frontmost application's bundle id via NSWorkspace - the ONLY appkit
+# surface the collector touches (never window titles, never content)
+objc2-app-kit = "0.3"
 
