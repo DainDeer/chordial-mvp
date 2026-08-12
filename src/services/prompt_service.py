@@ -4,7 +4,8 @@ anthropic caching is a byte-exact prefix match, so the prompt is built in
 stability zones (most stable first):
 
   1. tools           - identical every request (rendered before system)
-  2. system block 1  - frozen persona; zero interpolation
+  2. system block 1  - frozen persona + hand-authored seed exemplars;
+                       zero interpolation
   3. system block 2  - user profile + core memories; changes rarely
   4. messages        - event history with ABSOLUTE timestamps on USER turns
                        (stable bytes; assistant turns carry no timestamp or
@@ -12,8 +13,8 @@ stability zones (most stable first):
                        into replies), then the current turn carrying all the
                        volatile "now" context
 
-cache breakpoints go on system block 1 (caches tools + frozen persona), system
-block 2 (adds the profile), and the last message before the current turn
+cache breakpoints go on system block 1 (caches tools + frozen persona and
+seed exemplars), system block 2 (adds the profile), and the last message before the current turn
 (caches conversation history). block 1 gets its own breakpoint so a profile
 change (set_preference, a new core memory) rewrites only block 2's ~200 tokens
 - without it, every profile edit re-wrote the whole tools+persona prefix. the
@@ -66,6 +67,20 @@ _CREW_AWARENESS = (
     "conversation: an invented link is a dead end you just sent them to. and "
     "if they've renamed a crewmate, the name they chose (in your memories) "
     "wins over the card name."
+)
+
+# the standing observation habit (phase 3): the council's structured
+# noticing only exists if helpers actually file it, and a tool description
+# alone doesn't build a habit. card-stable bytes (guarded on the allowlist,
+# like crew awareness), so the cache only moves at deploy.
+_OBSERVATION_HABIT = (
+    "your quiet noticing habit: while you talk, you also notice - patterns "
+    "forming, real progress, concerns building, context that explains a "
+    "stretch of days. when you catch one worth keeping, file it with "
+    "record_observation as you reply (it's silent bookkeeping, never the "
+    "reply itself). facts about them still go to save_memory; observations "
+    "are your own professional read of how things are GOING, and they're "
+    "what the council's honest reviews are built from."
 )
 
 # the solo-deployment counterpart: one enabled helper means the council in
@@ -140,8 +155,8 @@ class PromptService:
     """builds cache-aware AIRequests for a persona's ai interactions."""
 
     def __init__(self, persona: PersonaCard, enable_prompt_logging: bool = True):
-        # system block 1 is this card's frozen persona_block - NO interpolation,
-        # byte-stable so it caches across every request for this persona.
+        # system block 1 is this card's frozen persona_block + seed exemplars -
+        # NO interpolation, byte-stable across every request for this persona.
         self.persona = persona
         self.enable_prompt_logging = enable_prompt_logging
         self.prompt_log_dir = "prompt_logs"
@@ -153,16 +168,40 @@ class PromptService:
 
     # --- system zone -------------------------------------------------------
 
+    def _persona_reference_block(self) -> str:
+        """render the card's immutable voice reference as one cached prefix.
+
+        seed exemplars are deliberately not ChatTurns: they did not happen to
+        this person. keeping them in a clearly-labelled system reference gives
+        a helper day-one conversational instincts without manufacturing
+        history or weakening the real transcript's recency signal.
+        """
+        examples = []
+        for exemplar in self.persona.seed_exemplars:
+            examples.append(
+                f"situation: {exemplar.situation}\n{exemplar.exchange}"
+            )
+        rendered = "\n\n---\n\n".join(examples)
+        return (
+            f"{self.persona.persona_block}\n\n"
+            "reference interactions for your voice and judgment:\n"
+            "these are examples, not conversation history. match their warmth, "
+            "rhythm, initiative, and restraint without copying their wording. "
+            "never imply that one of these exchanges happened with the person "
+            "you are speaking to.\n\n"
+            f"{rendered}"
+        )
+
     async def _build_system_blocks(
         self,
         user_name: Optional[str],
         user_uuid: Optional[str],
         user_timezone: str,
     ) -> List[SystemBlock]:
-        """frozen persona (block 1) + user profile (block 2). breakpoints on
+        """frozen persona/reference (block 1) + user profile (block 2). breakpoints on
         BOTH: block 1's survives profile changes (tools + persona are the
         expensive stable prefix), block 2's covers the profile itself."""
-        blocks = [SystemBlock(text=self.persona.persona_block, cache=True)]
+        blocks = [SystemBlock(text=self._persona_reference_block(), cache=True)]
 
         profile_parts = ["about the person you're talking with:"]
         if user_name:
@@ -203,6 +242,8 @@ class PromptService:
                 logger.error(f"failed to load core memories: {e}")
 
         block2 = "\n".join(profile_parts)
+        if self._observation_habit_applies():
+            block2 += "\n\n" + _OBSERVATION_HABIT
         if self._crew_awareness_applies():
             block2 += "\n\n" + _CREW_AWARENESS
         elif len(Config.ENABLED_HELPERS) < 2:
@@ -212,6 +253,12 @@ class PromptService:
             block2 += "\n\n" + _SOLO_AWARENESS
         blocks.append(SystemBlock(text=block2, cache=True))
         return blocks
+
+    def _observation_habit_applies(self) -> bool:
+        """card-stable guard, same rule as crew awareness: only tell a helper
+        to file observations if its allowlist can actually call the tool."""
+        allowlist = self.persona.tools
+        return allowlist is None or "record_observation" in allowlist
 
     def _crew_awareness_applies(self) -> bool:
         """whether this helper should be told a live crew exists. two guards,
