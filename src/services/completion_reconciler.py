@@ -84,6 +84,7 @@ class CompletionReconcilerService:
         platform: Optional[str],
         message_text: str,
         recent: Optional[List] = None,
+        stream_id: Optional[str] = None,
     ) -> ReconcileResult:
         """look at one user message against their open tasks and mark done the
         ones they reported doing. returns the executed Done actions (empty when
@@ -115,7 +116,8 @@ class CompletionReconcilerService:
             result.error = str(e)
             return result
 
-        await self._apply(user_uuid, open_tasks, completed_ids, result)
+        await self._apply(user_uuid, open_tasks, completed_ids, result,
+                          stream_id=stream_id)
         if result.actions:
             logger.info("reconciler marked %d task(s) done for user %s",
                         len(result.actions), user_uuid)
@@ -207,17 +209,22 @@ class CompletionReconcilerService:
                 ids.append(tid)
         return ids
 
-    async def _apply(self, user_uuid, open_tasks, completed_ids, result) -> None:
+    async def _apply(self, user_uuid, open_tasks, completed_ids, result,
+                     stream_id=None) -> None:
         """mark each proposed id Done - but only if it's genuinely one of this
         user's open tasks. the model proposed; we verify against the real open
         set (a hallucinated or already-closed id is rejected, never written)."""
         open_by_id = {t["id"]: t for t in open_tasks}
         # the reconciler acts as chordial (the companion's own bookkeeping
         # pass); actions it records read as chordial's next turn
+        # the conversation key is threaded from the hook (falls back to the
+        # user uuid only for legacy callers); the metadata user_id is what
+        # tools actually read (identity split, ROOMS_DESIGN.md section 11)
         context = ToolContext(
-            stream_id=user_uuid,
+            stream_id=stream_id or user_uuid,
             activation_id=f"reconcile-{uuid.uuid4().hex[:12]}",
             actor="chordial",
+            metadata={"user_id": user_uuid},
         )
         # dedupe while preserving order
         for tid in dict.fromkeys(completed_ids):

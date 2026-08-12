@@ -54,6 +54,7 @@ from config import Config
 from src.managers.event_log import format_action_line
 from src.managers.event_store_adapter import SqlEventStore
 from src.managers.helper_state_manager import HelperStateManager
+from src.services.identity import user_of_stimulus
 from src.managers.user_manager import UserManager
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ class ChordialDirector:
         group_ec = EventContext(platform=stimulus.platform, scope="group")
         if not stimulus.addressed:
             return [ScriptLine(speaker=self.fallback, event_context=group_ec)]
-        cast = await self.helper_state_manager.active_helpers(stimulus.stream_id)
+        cast = await self.helper_state_manager.active_helpers(user_of_stimulus(stimulus))
         active_ids = {v.helper_id for v in cast if v.is_active}
         lines: list[ScriptLine] = []
         seen: set = set()
@@ -207,13 +208,16 @@ class ChordialContext:
     async def enrich(self, stimulus: Stimulus, line: ScriptLine) -> BriefingContext:
         # curation needs no conversation context - keep it light
         if stimulus.kind == "curation_due":
-            return BriefingContext(kind="curation")
+            return BriefingContext(
+                kind="curation",
+                extras={"user_id": user_of_stimulus(stimulus)})
 
+        user_uuid = user_of_stimulus(stimulus)
         user_name = stimulus.extras.get("user_name")
         user_timezone = stimulus.extras.get("user_timezone")
         if user_timezone is None:
             user_name, user_timezone = await self.user_manager.get_user_profile(
-                stimulus.stream_id
+                user_uuid
             )
 
         if stimulus.kind == "introduction":
@@ -230,9 +234,10 @@ class ChordialContext:
             ambient_context=(
                 None
                 if briefing_kind == "introduction"
-                else self._compose_ambient(stimulus.stream_id)
+                else self._compose_ambient(user_uuid)
             ),
             extras={
+                "user_id": user_uuid,
                 "user_name": user_name,
                 "user_timezone": user_timezone or "UTC",
             },
@@ -301,7 +306,7 @@ class ChordialHooks:
 
             # only notify a link we could actually reach
             identity = await self.user_manager.get_identity(
-                stimulus.stream_id, old_platform
+                user_of_stimulus(stimulus), old_platform
             )
             if identity is None or not identity[1]:
                 return
@@ -338,7 +343,8 @@ class ChordialHooks:
                 )
         except Exception as e:
             logger.error(
-                "platform-switch notice failed for user %s: %s", stimulus.stream_id, e
+                "platform-switch notice failed for user %s: %s",
+                user_of_stimulus(stimulus), e
             )
 
     # -- the completion reconciler ---------------------------------------------
@@ -369,7 +375,8 @@ class ChordialHooks:
                 )
             ][-6:]
             reconcile_result = await self.reconciler.reconcile(
-                user_uuid=stimulus.stream_id,
+                user_uuid=user_of_stimulus(stimulus),
+                stream_id=stimulus.stream_id,
                 platform=stimulus.platform,
                 message_text=stimulus.content,
                 recent=recent,
@@ -393,7 +400,8 @@ class ChordialHooks:
                 ))
         except Exception as e:
             logger.error(
-                "completion reconcile failed for user %s: %s", stimulus.stream_id, e
+                "completion reconcile failed for user %s: %s",
+                user_of_stimulus(stimulus), e
             )
 
 

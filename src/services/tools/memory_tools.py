@@ -11,6 +11,7 @@ from src.managers.memories_manager import MemoriesManager, MemoryType, MemorySou
 from dainframe.providers.types import ToolDef
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
+from src.services.identity import user_of_context
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _VALID_VISIBILITY = {"shared", "private"}
 
 
 async def _save_memory(tool_input: dict, context: ToolContext) -> str:
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     instruction = (tool_input.get("instruction") or "").strip()
     if not instruction:
         return "nothing to save - `instruction` was empty."
@@ -64,7 +65,7 @@ async def _save_memory(tool_input: dict, context: ToolContext) -> str:
 
 
 async def _search_memories(tool_input: dict, context: ToolContext) -> str:
-    user_uuid = context.stream_id
+    user_uuid = user_of_context(context)
     terms = tool_input.get("keywords") or []
     if isinstance(terms, str):
         terms = [t.strip() for t in terms.split(",") if t.strip()]

@@ -12,6 +12,7 @@ import logging
 
 from dainframe.core import AgentOutcome, Briefing
 
+from src.services.identity import user_of_briefing
 from src.services.memory_curator import MemoryCuratorService
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class CuratorAgent:
         return await self.service.find_users_needing_curation()
 
     async def act(self, briefing: Briefing) -> AgentOutcome:
-        result = await self.service.curate_user(briefing.stream_id)
+        result = await self.service.curate_user(user_of_briefing(briefing))
         # silent agent: no deliverable text, and (v2 decision) curation ops are
         # not recorded as conversation events - AgentTrace already has them
         return AgentOutcome(text=None, errored=bool(result.error))
