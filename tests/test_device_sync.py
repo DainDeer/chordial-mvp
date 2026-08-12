@@ -210,6 +210,49 @@ def test_tombstone_consumes_its_seq_and_dedupes_on_retry(env):
         assert clean.rejected is False
 
 
+def test_cross_device_uuid_duplicate_consumes_the_new_seq(env):
+    """the relink hazard: an event acked under the OLD device whose response
+    was lost gets re-sent by the rebased outbox under the NEW device at
+    seq 1. the fact must not apply twice - but if the new seq isn't
+    consumed, the new cursor pins at zero forever and every later event is
+    stuck behind it."""
+    d_old, _ = _link(name="old-life")
+    d_new, _ = _link(name="new-life")
+    old_pk, new_pk = _device_pk(env, d_old), _device_pk(env, d_new)
+
+    event = _event(1, minutes=25)
+    assert device_sync.apply_events(old_pk, [event]).acked_seq == 1
+
+    # the rebased outbox re-sends the same uuid as the new device's seq 1,
+    # with a genuinely new event behind it
+    replay = dict(event, seq=1)
+    fresh = _event(2, minutes=10)
+    result = device_sync.apply_events(new_pk, [replay, fresh])
+
+    assert result.acked_seq == 2          # NOT pinned at zero
+    assert result.applied == 1            # only the genuinely new fact
+    assert result.duplicates == 1
+
+    with env() as s:
+        rows = s.query(DeviceEvent).filter(
+            DeviceEvent.device_id == new_pk).order_by(DeviceEvent.seq).all()
+        assert [r.seq for r in rows] == [1, 2]
+        tombstone = rows[0]
+        assert tombstone.rejected is True
+        assert tombstone.event_type == "duplicate"
+        assert tombstone.payload["original_event_uuid"] == event["id"]
+        # the original fact exists exactly once, under the old device
+        facts = s.query(DeviceEvent).filter(
+            DeviceEvent.event_uuid == event["id"]).all()
+        assert len(facts) == 1 and facts[0].device_id == old_pk
+
+    # and the retry of that batch is a pure no-op that still acks
+    again = device_sync.apply_events(new_pk, [replay, fresh])
+    assert again.acked_seq == 2
+    assert again.applied == 0
+    assert again.duplicates == 2
+
+
 def test_batch_size_and_daily_quota_guard(env, monkeypatch):
     device_uuid, _ = _link()
     pk = _device_pk(env, device_uuid)

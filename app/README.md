@@ -16,8 +16,9 @@ version), plus the Tauri prerequisites for macOS
 (<https://tauri.app/start/prerequisites/> — Xcode CLT and Rust via
 `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
 
-The shell is a client: it needs the chordial server running beside it.
-The full dev loop, from the repo root:
+The shell is a client: it needs the chordial server running beside it, and
+the deer window needs the sidecar (the on-device engine that owns the
+focus-block clock). The full dev loop, from the repo root:
 
 ```bash
 # terminal 1 - the server (a disposable sqlite state; see scripts/dev_db.py)
@@ -28,13 +29,21 @@ DATABASE_URL=sqlite:///chordial_dev.db ENABLE_TELEGRAM=false \
 # terminal 2 - a one-time device link code (the no-telegram path)
 poetry run python scripts/dev_db.py link-code
 
-# terminal 3 - the shell
+# terminal 3 - the sidecar (loopback engine on :8485; own sqlite file)
+poetry run python -m src.sidecar
+
+# terminal 4 - the shell (opens the main window AND the deer window)
 cd app && npm install && npm run tauri dev
 ```
 
 Paste the code into the app's link screen and you're in. On a `fresh` db the
 first message runs the real front-door introduction (vel greets you); `seed`
 skips introductions with a lived-in workspace.
+
+The deer window hands the sidecar your device credential automatically
+(same-origin localStorage), so completed focus blocks flow up to the server
+through the sync contract even after restarts — the sidecar's outbox
+retries until acked.
 
 `npm run dev` alone runs the Vite frontend in a browser without the Tauri
 shell — useful for pure UI work. `npm test` runs the frontend unit tests

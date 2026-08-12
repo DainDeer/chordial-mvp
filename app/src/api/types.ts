@@ -66,6 +66,18 @@ export interface TaskRow {
   description: string | null;
 }
 
+/** a finished-today row: a lighter shape than TaskRow (no plan joins) */
+export interface DoneTaskRow {
+  id: number;
+  title: string;
+  status: string;
+  pom_estimate: number | null;
+  priority: string | null;
+  scheduled: string | null;
+  closed_at: string;
+  plan_title: string | null;
+}
+
 export interface TodayPayload {
   today: string;
   user: { name: string | null };
@@ -75,6 +87,7 @@ export interface TodayPayload {
     overdue: TaskRow[];
     today: TaskRow[];
     in_progress: TaskRow[];
+    done: DoneTaskRow[];
   };
   focus: {
     active_task_id: number | null;

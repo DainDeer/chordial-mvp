@@ -2,7 +2,10 @@
 // dev-mode answer (tauri's webview storage is per-app and local-only);
 // phase 7 packaging can graduate this to the stronghold/keychain plugin.
 
-const TOKEN_KEY = "chordial.device_token";
+// exported so other windows (the deer) can watch for link/relink/revoke
+// via the cross-window `storage` event
+export const TOKEN_STORAGE_KEY = "chordial.device_token";
+const TOKEN_KEY = TOKEN_STORAGE_KEY;
 const DEVICE_KEY = "chordial.device_id";
 
 export function storedToken(): string | null {

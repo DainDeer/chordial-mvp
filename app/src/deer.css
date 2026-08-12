@@ -1,0 +1,362 @@
+/* the deer's window: a small soft card that sits on top of the day.
+ * rides the clearing's tokens from styles.css. */
+
+.deer-window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 16px;
+  background: linear-gradient(165deg, #f4ecfa 0%, #fdf6fb 55%, #fbeaf3 100%);
+  border: 1px solid #c9b3ec;
+  border-radius: 16px;
+  overflow: hidden;
+  position: relative;
+}
+
+.deer-drag {
+  width: 100%;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.deer-drag:active {
+  cursor: grabbing;
+}
+
+.deer-link-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  pointer-events: none;
+}
+
+.deer-link-dot.on {
+  background: #4cd964;
+  box-shadow: 0 0 5px rgba(76, 217, 100, 0.8);
+}
+
+.deer-bubble {
+  position: absolute;
+  top: 34px;
+  left: 14px;
+  right: 14px;
+  z-index: 2;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 6px 18px -8px var(--shadow);
+  animation: bubble-in 0.3s ease;
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.deer-self {
+  font-size: 46px;
+  line-height: 1;
+  margin-top: 6px;
+  transition: transform 0.4s ease;
+}
+
+.deer-self.loafing {
+  transform: translateY(4px) scale(0.96);
+}
+
+.deer-self.watching {
+  transform: none;
+}
+
+.deer-self.perked {
+  transform: translateY(-3px) scale(1.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deer-self {
+    transition: none;
+  }
+
+  .deer-bubble {
+    animation: none;
+  }
+}
+
+.deer-caption {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+
+.deer-session {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.deer-label {
+  margin: 0;
+  max-width: 100%;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-clock {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.deer-fill {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(201, 179, 236, 0.3);
+  overflow: hidden;
+}
+
+.deer-fill-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  transition: width 1s linear;
+}
+
+.deer-clock .deer-extra {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sage);
+}
+
+.deer-clock.over {
+  color: #57975f;
+}
+
+.deer-controls {
+  display: flex;
+  gap: 7px;
+}
+
+.deer-pause,
+.deer-cancel {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.deer-pause:hover,
+.deer-cancel:hover {
+  color: var(--ink);
+  background: var(--bg-hover);
+}
+
+.deer-finish {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #b6ecc0, #97dca6 55%, #7fce90);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 10px -4px rgba(127, 206, 144, 0.8);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(40, 80, 50, 0.5);
+}
+
+.deer-finish.confirm {
+  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
+  box-shadow: 0 4px 10px -4px rgba(233, 143, 187, 0.8);
+  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+}
+
+.deer-pause:disabled,
+.deer-finish:disabled {
+  opacity: 0.5;
+}
+
+/* --- the day's tasks -------------------------------------------------- */
+
+.deer-tasks {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.deer-tasks ul {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.deer-task {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  box-shadow: 0 2px 8px -5px var(--shadow);
+}
+
+button.deer-task:hover:not(:disabled) {
+  border-color: rgba(233, 143, 187, 0.5);
+}
+
+.deer-task.active {
+  border-color: #e98fbb;
+  background: var(--blush-soft);
+}
+
+.deer-task-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-task-bar {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(201, 179, 236, 0.28);
+  overflow: hidden;
+}
+
+.deer-task-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  transition: width 1s linear;
+}
+
+.deer-task-fill.done {
+  background: linear-gradient(90deg, #b6ecc0, #7fce90);
+}
+
+.deer-task.done {
+  position: relative;
+  opacity: 0.55;
+  padding-left: 28px;
+}
+
+.deer-task.done .deer-task-title {
+  text-decoration: line-through;
+  text-decoration-color: rgba(58, 42, 64, 0.4);
+}
+
+.deer-task-check {
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #57975f;
+}
+
+.deer-task-note {
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
+.deer-empty {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-faint);
+  text-align: center;
+  padding: 10px 4px;
+}
+
+.deer-add {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.deer-add input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  padding: 7px 10px;
+}
+
+.deer-add button {
+  width: 34px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 16px;
+  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+}
+
+.deer-add button:disabled {
+  opacity: 0.45;
+}
+
+.deer-unlinked {
+  margin: auto 0;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-dim);
+  text-align: center;
+}
+
+.confetti {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  width: 100%;
+  height: 100%;
+}
