@@ -16,6 +16,12 @@ two kinds of bad event, two different fates:
   sequence, so it is reported in the response only. the client owns its
   outbox; an unparseable entry there is a client bug the ACK cannot absolve.
 
+and one subtle duplicate: an event uuid that already landed under ANOTHER
+device (a relinked outbox re-sending an event whose original ACK was lost).
+the fact must not apply twice, but the NEW device's seq must still be
+consumed - otherwise its cursor pins at the gap forever - so it lands as a
+tombstone row under a minted marker uuid, original uuid in the payload.
+
 quota counts only NEWLY INSERTED rows - retrying already-applied events at
 the cap must return the durable ACK, not a 429, or dropped-response recovery
 deadlocks exactly when it matters.
@@ -173,11 +179,40 @@ def apply_events(device_id: int, events: list) -> SyncResult:
                                  DeviceEvent.seq.in_(batch_seqs))
                          .all()} if batch_seqs else set()
         fresh = []
+        cross_device = []
         for event in parsed:
-            if event["id"] in existing_uuids or event["seq"] in existing_seqs:
+            if event["seq"] in existing_seqs:
+                # this device already consumed the seq - pure no-op, the
+                # cursor already covers it
                 duplicates += 1
+            elif event["id"] in existing_uuids:
+                # the uuid landed under ANOTHER device (or another seq):
+                # a relinked outbox re-sending an event whose original ACK
+                # was lost. the fact must not apply twice, but this device's
+                # seq must still be consumed - an un-consumed seq would pin
+                # the new cursor at zero forever. a tombstone row does both.
+                cross_device.append(event)
             else:
                 fresh.append(event)
+
+        for event in cross_device:
+            row = DeviceEvent(
+                event_uuid=f"dup-{uuid_mod.uuid4()}",
+                device_id=device.id,
+                user_uuid=device.user_uuid,
+                seq=event["seq"],
+                event_type="duplicate",
+                payload={"original_event_uuid": event["id"]},
+                rejected=True,
+                error="event uuid already applied under another sequence",
+                applied_at=now,
+            )
+            try:
+                with db.begin_nested():
+                    db.add(row)
+                duplicates += 1
+            except IntegrityError:
+                duplicates += 1     # raced a concurrent batch; seq consumed
 
         if fresh and (_daily_count(db, device.user_uuid, now) + len(fresh)
                       > Config.SYNC_DAILY_EVENT_CAP):

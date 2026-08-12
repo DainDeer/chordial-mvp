@@ -301,6 +301,12 @@ button.deer-task:hover:not(:disabled) {
   color: #57975f;
 }
 
+.deer-task-note {
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
 .deer-empty {
   font-size: 12px;
   font-style: italic;
