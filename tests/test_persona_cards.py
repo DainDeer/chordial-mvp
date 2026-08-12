@@ -169,3 +169,22 @@ def test_view_with_unknown_name_raises():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# (e) startup validation: the chair cannot be configured away.
+# ---------------------------------------------------------------------------
+
+def test_validate_enabled_requires_the_chair():
+    """sol's P1: the director casts fallback lines for the chair on every
+    conversational path, so ENABLED_HELPERS without the chair is a routing
+    break, not a preference - it must die at startup."""
+    from src.personas import validate_enabled
+
+    validate_enabled(["vel", "pip", "skip", "remy", "mabel", "juniper", "edwin"])
+    validate_enabled(["vel"])  # solo chair is a supported shape
+
+    with pytest.raises(RuntimeError, match="must include the chair"):
+        validate_enabled(["pip"])
+    with pytest.raises(RuntimeError, match="unknown persona"):
+        validate_enabled(["vel", "chordial"])

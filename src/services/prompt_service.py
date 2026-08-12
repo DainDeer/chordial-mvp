@@ -52,11 +52,11 @@ logger = logging.getLogger(__name__)
 # static bytes, so it costs one cache re-warm at deploy and nothing per turn.
 _CREW_AWARENESS = (
     "about the rest of the council:\n"
-    "- the roster in your persona is authored truth: those crewmates exist, "
-    "with those lanes. what it can NOT tell you is anything about THIS "
-    "person's council: who they have actually met, who they have declined, "
-    "what they may have renamed or reshaped anyone into, or how to reach a "
-    "crewmate.\n"
+    "- the roster in your persona is how the full council is AUTHORED. it "
+    "can NOT tell you anything about THIS deployment or THIS person: which "
+    "crewmates are actually available here, who they have actually met, who "
+    "they have declined, what they may have renamed or reshaped anyone "
+    "into, or how to reach a crewmate.\n"
     "- all of that lives in your list_available_guides tool. call it FIRST "
     "whenever meeting the others comes up - \"who else is there?\", \"can i "
     "get a link to X?\", \"who should i talk to about <topic>?\", or you "
@@ -66,6 +66,19 @@ _CREW_AWARENESS = (
     "conversation: an invented link is a dead end you just sent them to. and "
     "if they've renamed a crewmate, the name they chose (in your memories) "
     "wins over the card name."
+)
+
+# the solo-deployment counterpart: one enabled helper means the council in
+# its persona is authored fiction for THIS deployment - without this note the
+# card's own crew paragraph would have it offering introductions to residents
+# who can never answer. same config-stable bytes rule as _CREW_AWARENESS.
+_SOLO_AWARENESS = (
+    "about the rest of the council:\n"
+    "- your persona describes crewmates, but none of them are available in "
+    "this deployment: you are the only helper here. never offer to "
+    "introduce another helper, promise one will chime in, or hand out a "
+    "link to one - there is nowhere for that to go. the lanes your "
+    "crewmates would hold, you help with yourself, in your own voice."
 )
 
 # shared framing for every introduction activation, regardless of which
@@ -192,15 +205,21 @@ class PromptService:
         block2 = "\n".join(profile_parts)
         if self._crew_awareness_applies():
             block2 += "\n\n" + _CREW_AWARENESS
+        elif len(Config.ENABLED_HELPERS) < 2:
+            # solo deployment: the persona's authored council isn't here -
+            # say so, or the card's own crew paragraph invites offering
+            # introductions to residents who can never answer
+            block2 += "\n\n" + _SOLO_AWARENESS
         blocks.append(SystemBlock(text=block2, cache=True))
         return blocks
 
     def _crew_awareness_applies(self) -> bool:
-        """whether this helper should be told a crew exists. two guards, both
-        config/card-stable (so the bytes never move mid-deploy):
+        """whether this helper should be told a live crew exists. two guards,
+        both config/card-stable (so the bytes never move mid-deploy):
 
         - a solo deployment (ENABLED_HELPERS is just this one) has no crew to
-          promise, and promising one is its own confabulation.
+          promise, and promising one is its own confabulation - it gets the
+          _SOLO_AWARENESS counterpart instead.
         - a card whose tool allowlist omits list_available_guides can't act on
           the instruction. no card omits it today; this keeps the guidance and
           the tool surface from drifting apart if one ever does."""

@@ -175,3 +175,24 @@ def load_personas() -> dict[str, PersonaCard]:
             )
         _cache = cards
     return _cache
+
+
+def validate_enabled(enabled_ids) -> None:
+    """startup validation of ENABLED_HELPERS against the cards: every id must
+    be a known card, and the chair must be among them - the director casts
+    fallback lines for the chair on every conversational path, so a
+    deployment without it would route messages to an agent that was never
+    constructed. crashes loudly at startup, never quietly mid-conversation."""
+    cards = load_personas()
+    unknown = [h for h in enabled_ids if h not in cards]
+    if unknown:
+        raise RuntimeError(
+            f"ENABLED_HELPERS lists unknown persona(s) "
+            f"{', '.join(sorted(unknown))} (known: {', '.join(sorted(cards))})"
+        )
+    if CHAIR_ID not in enabled_ids:
+        raise RuntimeError(
+            f"ENABLED_HELPERS must include the chair '{CHAIR_ID}' - the "
+            f"director falls back to the chair on every conversational path, "
+            f"so a deployment without it cannot route messages"
+        )

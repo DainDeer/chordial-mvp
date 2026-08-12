@@ -33,6 +33,25 @@ from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
 from src.services.identity import user_of_context
 
+# the ids a plan may be stewarded by: the AUTHORED council (the persona
+# cards - repo truth, env-independent, so tool-definition bytes never drift
+# with a stale ENABLED_HELPERS). validated on write - a model-suggested
+# steward that isn't a real resident would create an orphaned stewardship
+# record. legacy rows keep their historical stewards; only new writes are
+# held to the roster.
+from src.personas import load_personas as _load_personas
+
+_STEWARD_IDS = sorted(_load_personas())
+
+
+def _valid_steward(helper: Optional[str]) -> Optional[str]:
+    """corrective string if `helper` names a steward that isn't deployed,
+    else None. absent/None is fine (handlers default to the acting helper)."""
+    if helper is None or helper in _STEWARD_IDS:
+        return None
+    return (f"'{helper}' isn't a helper in this council - steward must be "
+            f"one of: {', '.join(_STEWARD_IDS)}.")
+
 logger = logging.getLogger(__name__)
 
 # display-form enums for the model-facing schemas. tasks/cycles are
@@ -213,6 +232,9 @@ async def _create_plan(tool_input: dict, context: ToolContext) -> str:
     title = (tool_input.get("title") or "").strip()
     if not title:
         return "a plan needs a title."
+    steward_err = _valid_steward(tool_input.get("helper"))
+    if steward_err:
+        return steward_err
     area = tool_input.get("area")
     if isinstance(area, list):
         area = area[0] if area else None
@@ -233,6 +255,9 @@ async def _update_plan(tool_input: dict, context: ToolContext) -> str:
     ident = (tool_input.get("plan") or tool_input.get("project") or "").strip()
     if not ident:
         return "which plan? pass a plan title or id."
+    steward_err = _valid_steward(tool_input.get("helper"))
+    if steward_err:
+        return steward_err
     target, err = _resolve(user_uuid, "plan", ident, "plans")
     if err:
         return err
@@ -659,7 +684,7 @@ UPDATE_TASK = _tool(
 _PLAN_WRITE_PROPS = {
     "status": {"type": "string", "enum": _PLAN_STATUS},
     "helper": {"type": "string",
-               "description": "Steward helper id (chordial/tempo/aria/pep/poet)."},
+               "description": f"Steward helper id ({'/'.join(_STEWARD_IDS)})."},
     "why": {"type": "string", "description": "The user's own motivation, their words."},
     "success_criteria": {"type": "string", "description": "What success looks like."},
     "cadence": {"type": "string", "enum": _CADENCE},

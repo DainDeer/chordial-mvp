@@ -213,11 +213,16 @@ def test_complete_introduction_is_terminal_and_records():
 
 
 def _clear_telegram_usernames(monkeypatch):
-    """hermetic env: a developer's real .env may have TELEGRAM_USERNAME_* set,
-    which would otherwise leak real deep links into these assertions."""
+    """hermetic env: a developer's real .env may have TELEGRAM_USERNAME_* or
+    a stale ENABLED_HELPERS set, which would otherwise leak real deep links
+    (or an old cast) into these assertions. guides are offered from the
+    DEPLOYED set, so the full council is pinned here."""
     from config import Config
 
     monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", None)
+    monkeypatch.setattr(Config, "ENABLED_HELPERS",
+                        ["vel", "pip", "skip", "remy", "mabel", "juniper",
+                         "edwin"])
     for hid in ("VEL", "PIP", "SKIP", "REMY", "MABEL", "JUNIPER", "EDWIN"):
         monkeypatch.delenv(f"TELEGRAM_USERNAME_{hid}", raising=False)
 
@@ -259,7 +264,8 @@ def test_list_available_guides_deep_link_uses_configured_username_not_card_place
     assert "t.me/skip_bot" not in configured  # the card's placeholder, never used
 
 
-def test_list_available_guides_excludes_active_and_declined(db):
+def test_list_available_guides_excludes_active_and_declined(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
     run(
         HelperStateManager().complete_introduction(
@@ -654,3 +660,52 @@ def test_helper_agent_forwards_the_directors_execution_hints(db):
     run(agent.act(briefing))
 
     assert loop.calls[0]["hints"] is briefing.execution
+
+
+# --- sol's P1: partial deployments must not advertise ghosts -----------------
+
+
+def test_list_available_guides_offers_only_deployed_helpers(db, monkeypatch):
+    """every card is authored for the full council, but a partial deployment
+    must not offer residents who can never answer - or hand out their deep
+    links from leftover env vars."""
+    _clear_telegram_usernames(monkeypatch)
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "pip", "mabel"])
+    # a leftover env var for a NON-deployed helper must not leak a dead link
+    monkeypatch.setenv("TELEGRAM_USERNAME_SKIP", "chordial_mvp_v3_skip_bot")
+    user_uuid = run(_make_user())
+
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
+
+    assert " pip the squirrel - " in result
+    assert " mabel the bear - " in result
+    for absent in ("skip", "remy", "juniper", "edwin"):
+        assert absent not in result
+    assert "t.me/" not in result
+
+
+def test_list_available_guides_solo_deployment_offers_nobody(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel"])
+    user_uuid = run(_make_user())
+
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
+    assert "no other guides left" in result
+
+
+def test_solo_deployment_gets_the_solo_awareness_note(monkeypatch):
+    """the persona's authored council paragraph is fiction in a solo
+    deployment; block 2 must say so instead of silently omitting crew
+    guidance (the card itself still names crewmates)."""
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel"])
+
+    text = _block2(_card())
+    assert "you are the only helper here" in text
+    assert "never offer to introduce" in text
+    assert "list_available_guides" not in text  # nothing to fetch
+
+    # and a real crew deployment gets the standard awareness block instead
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "pip"])
+    crew_text = _block2(_card())
+    assert "you are the only helper here" not in crew_text
+    assert "list_available_guides" in crew_text

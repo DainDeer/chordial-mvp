@@ -282,21 +282,18 @@ async def main():
     curator_agent = None
     if agent_service is not None:
         from src.agents import HelperAgent, CuratorAgent
-        from src.personas import load_personas
+        from src.personas import load_personas, validate_enabled
         from src.services.orchestration import build_orchestrator
 
-        # each enabled helper is a HelperAgent driven by its persona card. an
-        # unknown id in ENABLED_HELPERS is a startup crash (same fail-loudly
-        # style as the telegram config checks) - a mistyped helper should be
-        # loud, never a silently-absent persona.
+        # each enabled helper is a HelperAgent driven by its persona card.
+        # validate_enabled crashes at startup on an unknown id or a missing
+        # chair (same fail-loudly style as the telegram config checks) - a
+        # mistyped helper or an unroutable deployment should be loud, never a
+        # silently-absent persona.
+        validate_enabled(Config.ENABLED_HELPERS)
         cards = load_personas()
         agents = {}
         for helper_id in Config.ENABLED_HELPERS:
-            if helper_id not in cards:
-                raise RuntimeError(
-                    f"ENABLED_HELPERS lists unknown persona '{helper_id}' "
-                    f"(known: {', '.join(sorted(cards))})"
-                )
             agents[helper_id] = HelperAgent(cards[helper_id], agent_service, registry)
 
         # one utility provider (haiku; thinking=False - it doesn't support

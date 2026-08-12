@@ -103,7 +103,12 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
 
     lines = []
     offered: list[tuple[str, bool]] = []
-    for helper_id, card in sorted(cards.items()):
+    # only helpers that are actually DEPLOYED (ENABLED_HELPERS) are offered -
+    # every card is authored for the full council, but a solo or partial
+    # deployment must not advertise residents who can never answer (or hand
+    # out their deep links from leftover env vars).
+    for helper_id in sorted(set(Config.ENABLED_HELPERS) & set(cards)):
+        card = cards[helper_id]
         if helper_id == acting:
             continue
         state = await _helper_states.get(user_uuid, helper_id)
