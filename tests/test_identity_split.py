@@ -184,13 +184,17 @@ def test_helper_tool_context_keeps_stream_and_user_separate(env, monkeypatch):
     key (briefing.stream_id) with the user in metadata - assigning the user
     to stream_id would collapse the split right back."""
     from src.agents.helper import HelperAgent
-    from src.personas import PersonaCard
+    from src.personas import PersonaCard, SeedExemplar
 
     card = PersonaCard(
         id="pip", species="squirrel", emoji="🐿️", lane="productivity",
         archetype="test", telegram_handle="", specialty="",
         proactivity=0.5, tools=None, speak_when=["directly_addressed"],
         default_rooms=["daily"], persona_block="test",
+        seed_exemplars=(SeedExemplar(
+            situation="the person says hello",
+            exchange="person: hi\npip: hi!",
+        ),),
         intro_block="test", intro_question="test")
 
     captured = {}

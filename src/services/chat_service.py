@@ -127,7 +127,13 @@ class ChatService:
 
                 kind = "user_message"
                 intro_helper = None
-                if chat_scope == "dm":
+                # the front-door check runs for dms AND for the app's shared
+                # room: the app is many users' FIRST surface, and a brand-new
+                # person's first message there must land as the chair's
+                # introduction, not an ordinary council turn. (telegram
+                # groups keep the old rule - group members were introduced
+                # in their dms.)
+                if chat_scope == "dm" or platform == "app":
                     helper_state = await self.helper_states.get(user_uuid, dm_helper)
                     if dm_helper == CHAIR_ID:
                         is_introducing = _still_introducing(
@@ -151,7 +157,11 @@ class ChatService:
 
                 stream_id = await self._current_stream(user_uuid)
 
-                if chat_scope == "group":
+                # introductions are dm-shaped wherever they run (private
+                # channel with the introducing helper - identity talk stays
+                # out of shared summaries); ordinary shared-room turns take
+                # the group shape
+                if chat_scope == "group" and kind != "introduction":
                     stimulus = Stimulus(
                         kind=kind,
                         stream_id=stream_id,

@@ -43,9 +43,23 @@ _REQUIRED_FIELDS = (
     "speak_when",
     "default_rooms",
     "persona_block",
+    "seed_exemplars",
     "intro_block",
     "intro_question",
 )
+
+
+@dataclass(frozen=True)
+class SeedExemplar:
+    """one hand-authored, cache-stable example of a helper in motion.
+
+    these are reference interactions, not events that happened to the current
+    user. the prompt renderer labels them accordingly so a helper can borrow
+    their judgment and rhythm without treating them as conversation history.
+    """
+
+    situation: str
+    exchange: str
 
 
 @dataclass(frozen=True)
@@ -74,6 +88,7 @@ class PersonaCard:
     # room types this helper is present in by default.
     default_rooms: list[str]
     persona_block: str
+    seed_exemplars: tuple[SeedExemplar, ...]
     intro_block: str
     # the ONE signature question this helper leads its introduction with - the
     # thing it most wants to know about a new person. asked in the helper's own
@@ -136,6 +151,33 @@ def _load_card(path: Path) -> PersonaCard:
     if not isinstance(chair, bool):
         raise ValueError(f"persona card {path.name}: chair must be a boolean")
 
+    seed_exemplars = raw["seed_exemplars"]
+    if not isinstance(seed_exemplars, list) or not seed_exemplars:
+        raise ValueError(
+            f"persona card {path.name}: seed_exemplars must be a non-empty list"
+        )
+    parsed_exemplars = []
+    for index, exemplar in enumerate(seed_exemplars, start=1):
+        if not isinstance(exemplar, dict):
+            raise ValueError(
+                f"persona card {path.name}: seed_exemplars[{index}] must be a mapping"
+            )
+        situation = exemplar.get("situation")
+        exchange = exemplar.get("exchange")
+        if not isinstance(situation, str) or not situation.strip():
+            raise ValueError(
+                f"persona card {path.name}: seed_exemplars[{index}].situation "
+                f"must be a non-empty string"
+            )
+        if not isinstance(exchange, str) or not exchange.strip():
+            raise ValueError(
+                f"persona card {path.name}: seed_exemplars[{index}].exchange "
+                f"must be a non-empty string"
+            )
+        parsed_exemplars.append(
+            SeedExemplar(situation=situation.strip(), exchange=exchange.strip())
+        )
+
     return PersonaCard(
         id=raw["id"],
         species=raw["species"],
@@ -149,6 +191,7 @@ def _load_card(path: Path) -> PersonaCard:
         speak_when=list(raw["speak_when"]),
         default_rooms=list(raw["default_rooms"]),
         persona_block=raw["persona_block"],
+        seed_exemplars=tuple(parsed_exemplars),
         intro_block=raw["intro_block"],
         intro_question=raw["intro_question"],
         chair=chair,

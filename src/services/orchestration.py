@@ -80,20 +80,50 @@ def chordial_visibility(event: DfEvent, viewer: str) -> bool:
 
 
 class ChordialDirector:
-    """casts the script of speakers for one activation. deterministic this
-    phase - phase 3b replaces the group no-mention branch with a cheap
-    utility-model decider. the director must never break the conversation:
-    every conversational path that empties falls back to the chair."""
+    """casts the script of speakers for one activation, through the
+    three-layer spine (ROOMS_DESIGN.md §3): deterministic rules resolve
+    everything they can for free (dms, mentions, introductions, a
+    single-candidate cast); only the genuine gray zone - a shared-room
+    message with no mention and several plausible lanes - reaches the
+    decider, one tiny enum-constrained utility call. the director must
+    never break the conversation: every conversational path that empties,
+    and every decider failure, falls back to the chair.
+
+    `decider` is optional (None = rules-only, the pre-3b behavior);
+    `room_type_of` resolves a stream to its room type for card eligibility;
+    `deliverable_speakers` maps a platform to the set of speaker ids its
+    interfaces can actually send as (None = unrestricted) - the router's
+    method in production. all three injectable for tests."""
 
     def __init__(
         self,
         agent_ids: Iterable[str],
         helper_state_manager: Optional[HelperStateManager] = None,
         fallback: str = CHAIR_ID,
+        decider=None,
+        room_type_of=None,
+        deliverable_speakers=None,
     ):
         self.agent_ids = set(agent_ids)
         self.helper_state_manager = helper_state_manager or HelperStateManager()
         self.fallback = fallback
+        self.decider = decider
+        self._room_type_of = room_type_of or self._room_type_from_store
+        self._deliverable_speakers = deliverable_speakers
+
+    @staticmethod
+    async def _room_type_from_store(stream_id: str) -> str:
+        """the stream's room type ('daily', 'legacy', later 'cycle'/...).
+        unknown streams and lookup failures read as 'daily' - eligibility
+        filtering must never take the conversation down."""
+        try:
+            from src.services.rooms import get_room_store
+
+            room = await asyncio.to_thread(get_room_store().get_by_uuid, stream_id)
+            return room["room_type"] if room else "daily"
+        except Exception:
+            logger.exception("room type lookup failed; treating as daily")
+            return "daily"
 
     async def direct(self, stimulus: Stimulus, events) -> Script:
         kind = stimulus.kind
@@ -128,33 +158,111 @@ class ChordialDirector:
                 # a dm is a private 1:1 - the addressed helper is the lone voice
                 speaker = stimulus.addressed[0] if stimulus.addressed else self.fallback
                 return self._finalize(stimulus, [self._dm_line(stimulus, speaker)])
-            return self._finalize(stimulus, await self._group_lines(stimulus))
+            return self._finalize(stimulus, await self._group_lines(stimulus, events))
         # unknown kind: cast nobody, loudly
         return Script(noop_reason=f"no chordial rule for stimulus kind '{kind}'")
 
-    async def _group_lines(self, stimulus: Stimulus) -> list[ScriptLine]:
-        """the group user_message routing rule. @-mentions win (in order,
-        deduped, active cast only, capped at 2); otherwise the chair fields it."""
+    async def _group_lines(self, stimulus: Stimulus, events) -> list[ScriptLine]:
+        """the shared-room user_message routing rule. @-mentions win (in
+        order, deduped, active cast only, capped at 2); with no mention, the
+        deterministic candidate pass runs (active cast, present in this room
+        type) and the decider is consulted only when several lanes are
+        plausible. a lone candidate or an absent/failed decider costs zero
+        tokens: the chair fields it."""
         group_ec = EventContext(platform=stimulus.platform, scope="group")
-        if not stimulus.addressed:
-            return [ScriptLine(speaker=self.fallback, event_context=group_ec)]
         cast = await self.helper_state_manager.active_helpers(user_of_stimulus(stimulus))
         active_ids = {v.helper_id for v in cast if v.is_active}
-        lines: list[ScriptLine] = []
-        seen: set = set()
-        for helper_id in stimulus.addressed:
-            if (
-                helper_id in seen
-                or helper_id not in active_ids
-                or helper_id not in self.agent_ids
-            ):
+
+        if stimulus.addressed:
+            lines: list[ScriptLine] = []
+            seen: set = set()
+            for helper_id in stimulus.addressed:
+                if (
+                    helper_id in seen
+                    or helper_id not in active_ids
+                    or helper_id not in self.agent_ids
+                ):
+                    continue
+                lines.append(ScriptLine(speaker=helper_id, event_context=group_ec))
+                seen.add(helper_id)
+                if len(lines) >= 2:
+                    break
+            # every mention was inactive/unknown - don't drop the message
+            return lines or [ScriptLine(speaker=self.fallback, event_context=group_ec)]
+
+        speaker = await self._pick_speaker(stimulus, active_ids, events)
+        return [ScriptLine(speaker=speaker, event_context=group_ec)]
+
+    # how much recent context the decider sees. read wider than the decider's
+    # own tail: a tool-heavy previous turn interleaves action events, and the
+    # decider filters to messages BEFORE slicing.
+    _DECIDER_CONTEXT_LIMIT = 10
+
+    async def _pick_speaker(self, stimulus: Stimulus, active_ids, events) -> str:
+        """the no-mention gray zone: deterministic candidates first, decider
+        only on genuine ambiguity, chair on every other path."""
+        candidates = await self._candidates(stimulus, active_ids)
+        if len(candidates) <= 1 or self.decider is None or not stimulus.content:
+            return candidates[0] if candidates else self.fallback
+
+        # the engine hands an EventReader (read/latest), never a list -
+        # materialize the recent window here, fully guarded: a failed read
+        # means deciding with less context, never falling back to the chair
+        recent = []
+        if events is not None:
+            try:
+                recent = await events.read(
+                    EventQuery(message_limit=self._DECIDER_CONTEXT_LIMIT))
+            except Exception:
+                logger.exception(
+                    "decider context read failed; deciding without context")
+
+        chosen = await self.decider.decide(
+            message=stimulus.content,
+            candidate_ids=candidates,
+            chair_id=self.fallback,
+            recent=recent,
+            user_uuid=user_of_stimulus(stimulus),
+            platform=stimulus.platform,
+        )
+        # the decider's contract: a validated candidate or None - but the
+        # director re-checks anyway; nothing may cast an unbuilt agent
+        if chosen in candidates:
+            return chosen
+        return self.fallback
+
+    async def _candidates(self, stimulus: Stimulus, active_ids) -> list[str]:
+        """who could plausibly field this message: the user's active cast,
+        restricted to built agents, to cards present in this room type
+        (card.default_rooms; 'legacy' rooms count as daily), and to speakers
+        the platform can actually deliver as (a single-bot telegram
+        deployment can only send as its one bot - casting anyone else would
+        fail closed at the router). the chair leads the list and is always a
+        candidate."""
+        from src.personas import load_personas
+
+        room_type = await self._room_type_of(stimulus.stream_id)
+        if room_type == "legacy":
+            room_type = "daily"
+        deliverable = None
+        if self._deliverable_speakers is not None and stimulus.platform:
+            try:
+                deliverable = self._deliverable_speakers(stimulus.platform)
+            except Exception:
+                logger.exception("deliverable-speaker lookup failed; "
+                                 "not restricting candidates")
+        cards = load_personas()
+        eligible = []
+        for helper_id in sorted(active_ids & self.agent_ids):
+            if helper_id == self.fallback:
                 continue
-            lines.append(ScriptLine(speaker=helper_id, event_context=group_ec))
-            seen.add(helper_id)
-            if len(lines) >= 2:
-                break
-        # every mention was inactive/unknown - don't drop the message on the floor
-        return lines or [ScriptLine(speaker=self.fallback, event_context=group_ec)]
+            if deliverable is not None and helper_id not in deliverable:
+                continue
+            card = cards.get(helper_id)
+            if card is None or room_type in card.default_rooms:
+                eligible.append(helper_id)
+        return [self.fallback] + eligible if self.fallback in self.agent_ids \
+            else eligible or [self.fallback]
 
     def _dm_line(self, stimulus: Stimulus, speaker: str) -> ScriptLine:
         # the resolved speaker also names the private channel, so the legacy
@@ -490,11 +598,13 @@ def build_orchestrator(
     deliver=None,
     helper_state_manager: Optional[HelperStateManager] = None,
     message_window: Optional[int] = None,
+    decider=None,
 ) -> Orchestrator:
     """wire the dainframe engine with chordial's director, context, hooks,
     store, and deliverer. `router` is the production path (speaker-aware
     delivery + the switch notice); `deliver` is a raw (platform, target, text,
-    speaker) -> bool awaitable for tests that don't want a router."""
+    speaker) -> bool awaitable for tests that don't want a router; `decider`
+    is the optional speaking-policy gray-zone call (None = rules only)."""
     window = message_window or Config.MAX_HISTORY_MESSAGES
     deliver_fn = deliver if deliver is not None else (
         router.deliver_as if router is not None else None
@@ -503,7 +613,11 @@ def build_orchestrator(
         agents=agents,
         store_factory=lambda sid: SqlEventStore(sid, visibility=chordial_visibility),
         director=ChordialDirector(
-            agents.keys(), helper_state_manager=helper_state_manager
+            agents.keys(), helper_state_manager=helper_state_manager,
+            decider=decider,
+            deliverable_speakers=(
+                router.deliverable_speakers if router is not None else None
+            ),
         ),
         context_provider=ChordialContext(user_manager, agenda_service),
         hooks=ChordialHooks(

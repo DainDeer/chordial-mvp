@@ -803,6 +803,56 @@ class RoomSummary(Base):
     content = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+
+class Observation(Base):
+    """a helper's structured noticing (ROOMS_DESIGN.md §2/§3): 'helpers
+    reason more than they speak' - an observation is what the reasoning
+    leaves behind. distinct from a memory on purpose: memories are facts
+    about the person that render into prompts; observations are a helper's
+    own evidence-tied read of how things are going (a pattern, progress, a
+    concern), consumed by reviews and edwin's scorecards - never replayed
+    as conversation.
+    """
+    __tablename__ = 'observations'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    helper_id = Column(String, nullable=False)     # who noticed ('pip', ...)
+    # the room the observation was made in (stream uuid); nullable because
+    # future emitters (device-event pipelines, cycle jobs) observe outside
+    # any conversation
+    room_uuid = Column(String, nullable=True)
+    kind = Column(String, nullable=False)          # pattern|progress|concern|context
+    content = Column(String, nullable=False)
+    # what the noticing is tied to: free-form structured refs (quotes, event
+    # ids, focus-block ids as later phases start passing them)
+    evidence = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_observations_user_helper', 'user_uuid', 'helper_id'),
+        Index('ix_observations_user_created', 'user_uuid', 'created_at'),
+    )
+
+
+class Assessment(Base):
+    """a scored, structured judgment over a bounded subject (a cycle, a
+    week) - edwin's artifact. the table lands with the council layer so the
+    shape is settled early; the scorer that writes rows arrives in phase 6.
+    """
+    __tablename__ = 'assessments'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    helper_id = Column(String, nullable=False)     # the assessor ('edwin')
+    subject_type = Column(String, nullable=False)  # 'cycle' | 'week' | ...
+    subject_id = Column(String, nullable=True)     # id of the subject row
+    summary = Column(String, nullable=False)       # the honest sentence(s)
+    detail = Column(JSON, nullable=True)           # score components etc.
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
     __table_args__ = (
         {'sqlite_autoincrement': True}
     )

@@ -58,6 +58,24 @@ class MessageRouter:
                 seen.append(platform)
         return seen
 
+    def deliverable_speakers(self, platform: str) -> Optional[set]:
+        """which speaker ids `platform` can actually send as - the director's
+        candidate filter (casting a speaker this returns False for would fail
+        closed in _resolve). None means unrestricted: a (platform, None)
+        interface serves ANY speaker (the app attributes in-band via the
+        payload; discord is a single untyped bot). a platform with only
+        helper-keyed interfaces (bot-per-helper telegram, including the
+        single-bot deployment where the one bot IS the chair's) can send only
+        as exactly those helpers."""
+        speakers: set = set()
+        for p, helper_id in self._interfaces:
+            if p != platform:
+                continue
+            if helper_id is None:
+                return None
+            speakers.add(helper_id)
+        return speakers
+
     def _resolve(
         self, platform: str, speaker: Optional[str]
     ) -> Optional[BaseInterface]:

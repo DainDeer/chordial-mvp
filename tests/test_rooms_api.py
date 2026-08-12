@@ -217,10 +217,14 @@ def test_send_message_round_trip(env):
         assert [m["author"] for m in body["messages"]] == ["pip", "mabel"]
         assert body["messages"][0]["content"] == "one block!! just one."
 
-        # the turn saw an app-platform message for the device's user
+        # the turn saw an app-platform message for the device's user,
+        # shaped as the COUNCIL's shared room (phase 3b): group scope with
+        # the user as the fan-out key, so the routing spine picks a speaker
         unified = chat.seen[0]
         assert unified.platform == "app"
         assert unified.platform_user_id == U1
+        assert unified.chat_scope == "group"
+        assert unified.group_chat_id == U1
 
         # the app platform identity got bound to the right user
         with db_mod.SessionLocal() as s:

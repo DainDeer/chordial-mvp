@@ -6,6 +6,7 @@ from config import Config
 from dainframe.tools.registry import Tool, ToolRegistry
 from .intro_tools import COMPLETE_INTRODUCTION, LIST_AVAILABLE_GUIDES
 from .memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
+from .observation_tools import LIST_OBSERVATIONS, RECORD_OBSERVATION
 from .preference_tools import SET_PREFERENCE
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ def build_default_registry() -> ToolRegistry:
     registry.register(SET_PREFERENCE)
     registry.register(COMPLETE_INTRODUCTION)
     registry.register(LIST_AVAILABLE_GUIDES)
+    # the council's structured noticing (phase 3): unconditional like the
+    # intro tools - every helper reasons more than it speaks
+    registry.register(RECORD_OBSERVATION)
+    registry.register(LIST_OBSERVATIONS)
 
     # the native workspace surface: tasks/plans/cycles (core) plus the v3
     # additions (goals/wins/check-ins/notes/occasions). all in-db, always on.
