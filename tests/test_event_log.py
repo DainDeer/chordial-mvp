@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.database.database as db_mod  # noqa: E402
 from src.database.models import Base, User, ConversationEvent  # noqa: E402
-from src.managers.event_log import EventLog, cleanup_old_events  # noqa: E402
+from src.managers.event_log import EventLog  # noqa: E402
 
 
 @pytest.fixture()
@@ -171,10 +171,8 @@ def test_clear_wipes_only_this_user(db):
     assert [e.content for e in _log("u2").recent()] == ["b"]
 
 
-def test_cleanup_trims_to_most_recent(db):
-    log = _log()
-    for i in range(10):
-        log.append_message("user", "user", f"m{i}")
-    cleanup_old_events(max_per_user=4)
-    events = log.recent(message_limit=100)
-    assert [e.content for e in events] == ["m6", "m7", "m8", "m9"]
+def test_the_trim_path_is_retired():
+    """archives are forever (ROOMS_DESIGN §4): the per-user event-log trim
+    was retired in phase 2b - room logs are never silently deleted."""
+    import src.managers.event_log as event_log_mod
+    assert not hasattr(event_log_mod, "cleanup_old_events")

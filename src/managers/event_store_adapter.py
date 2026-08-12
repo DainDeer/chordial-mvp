@@ -49,11 +49,19 @@ def _to_dainframe(row: ConversationEvent) -> Event:
 
 
 class SqlEventStore:
-    """dainframe EventStore over one chordial user's conversation_events."""
+    """dainframe EventStore over one conversation stream (a room, or the
+    grandfathered legacy per-user stream)."""
 
-    def __init__(self, stream_id: str, visibility: Optional[VisibilityPolicy] = None):
+    def __init__(self, stream_id: str, visibility: Optional[VisibilityPolicy] = None,
+                 user_uuid: Optional[str] = None):
         self.stream_id = stream_id
         self._visibility = visibility
+        # rows carry BOTH keys (stream = which conversation, user = whose
+        # reality); resolved once here, not per append
+        if user_uuid is None:
+            from src.services.identity import resolve_stream_user
+            user_uuid = resolve_stream_user(stream_id)
+        self.user_uuid = user_uuid
 
     # --- writes --------------------------------------------------------------
 
@@ -68,7 +76,8 @@ class SqlEventStore:
         meta.update(_scope_meta(event.scope or "group", event.audience))
         with get_db() as db:
             row = ConversationEvent(
-                user_uuid=self.stream_id,
+                user_uuid=self.user_uuid,
+                stream_id=self.stream_id,
                 platform=event.platform,
                 author_type=event.author_type,
                 author=event.author,
@@ -101,10 +110,14 @@ class SqlEventStore:
         filtered = self._filtered(query)
         return filtered[-1] if filtered else None
 
+    def _key_clause(self):
+        """which rows belong to this store: one conversation stream."""
+        return ConversationEvent.stream_id == self.stream_id
+
     def _filtered(self, query: EventQuery) -> List[Event]:
         with get_db() as db:
             rows = db.query(ConversationEvent).filter(
-                ConversationEvent.user_uuid == self.stream_id,
+                self._key_clause(),
             ).order_by(ConversationEvent.id).all()
             events = [_to_dainframe(r) for r in rows]
         # visibility filters BEFORE windowing - a limit means visible things
@@ -118,3 +131,23 @@ class SqlEventStore:
             and (query.authors is None or e.author in query.authors)
             and (query.message_types is None or e.message_type in query.message_types)
         ]
+
+
+class SqlUserEvents(SqlEventStore):
+    """the user-WIDE read view: every room of one user, in id order.
+
+    the pulse reads through this (rhythm keys are users, and recency/gate
+    arithmetic must span rooms - a reply in today's room answers a nudge
+    sent in yesterday's). strictly read-only: appends must name a stream.
+    """
+
+    def __init__(self, user_uuid: str,
+                 visibility: Optional[VisibilityPolicy] = None):
+        super().__init__(user_uuid, visibility, user_uuid=user_uuid)
+
+    def _key_clause(self):
+        return ConversationEvent.user_uuid == self.user_uuid
+
+    async def append(self, event):  # pragma: no cover - guard rail
+        raise NotImplementedError(
+            "SqlUserEvents is a read view - appends go to a room stream")

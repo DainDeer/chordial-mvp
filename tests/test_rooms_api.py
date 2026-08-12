@@ -160,13 +160,27 @@ def test_room_current_descriptor(env):
     _run(_with_service(_service(), flow))
 
 
+def _seed_room_message(user, author_type, author, content):
+    """write into the user's CURRENT room stream, like the engine would."""
+    from src.managers.event_store_adapter import SqlEventStore
+    from src.services.rooms import get_room_store
+    from src.services.workspace.agenda import user_today
+    from dainframe.core.events import NewEvent
+
+    room = get_room_store().current_room(user, user_today(user))
+    store = SqlEventStore(room["room_uuid"])
+    _run(store.append(NewEvent(
+        author_type=author_type, author=author, kind="message",
+        content=content, platform="app")))
+    return room
+
+
 def test_room_messages_read_and_tenancy(env):
-    log1, log2 = EventLog(U1), EventLog(U2)
-    log1.append_message("user", "user", "hello from megan", platform="app")
-    log1.append_message("agent", "pip", "hi!! ready when you are",
-                        platform="app")
-    log1.append_action("pip", "start_focus", {"task": 1}, "started")
-    log2.append_message("user", "user", "someone else's life")
+    # legacy history exists but lives in the archived legacy room, not today
+    EventLog(U1).append_message("user", "user", "old life, old stream")
+    _seed_room_message(U1, "user", "user", "hello from megan")
+    _seed_room_message(U1, "agent", "pip", "hi!! ready when you are")
+    _seed_room_message(U2, "user", "user", "someone else's life")
 
     async def flow(client):
         token = _token(U1)
@@ -179,8 +193,8 @@ def test_room_messages_read_and_tenancy(env):
             ["hello from megan", "hi!! ready when you are"]
         assert rows[1]["author"] == "pip"
         assert rows[1]["author_type"] == "agent"
-        # actions don't render in the app's message list (v0)
-        assert all("start_focus" not in r["content"] for r in rows)
+        # the legacy stream stays out of today's room
+        assert all("old life" not in r["content"] for r in rows)
     _run(_with_service(_service(), flow))
 
 
@@ -383,7 +397,7 @@ def test_concurrent_sends_do_not_cross_contaminate(env):
 
 
 def test_negative_limit_is_clamped(env):
-    EventLog(U1).append_message("user", "user", "only row")
+    _seed_room_message(U1, "user", "user", "only row")
 
     async def flow(client):
         token = _token()
