@@ -41,6 +41,7 @@ from aiohttp import web
 from config import Config
 from src.database.database import get_db
 from src.database.models import User
+from src.personas import CHAIR_ID
 from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
@@ -625,7 +626,7 @@ class WebService:
             # errored turn should get a fresh chance, not a replayed apology.
             await asyncio.to_thread(
                 receipts.release, identity.id, client_message_id)
-            replies = [{"type": "message", "author": "chordial",
+            replies = [{"type": "message", "author": CHAIR_ID,
                         "content": fallback, "ephemeral": True}]
         else:
             await asyncio.to_thread(

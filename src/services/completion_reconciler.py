@@ -29,6 +29,7 @@ from dainframe.providers.base import BaseAIProvider
 from dainframe.providers.types import AIRequest, ChatTurn, SystemBlock, ToolCall, ProviderError
 from dainframe.tools.context import ToolContext
 
+from src.personas import CHAIR_ID
 from src.services.tools import ToolRegistry
 from src.services.usage_recorder import UsageRecorder
 
@@ -178,7 +179,7 @@ class CompletionReconcilerService:
         for ev in recent[-self.recent_context:]:
             speaker = (
                 "user" if getattr(ev, "author_type", "user") == "user"
-                else "chordial"
+                else "helper"
             )
             lines.append(f"[{speaker}] {ev.content}")
         return "\n".join(lines)
@@ -215,15 +216,15 @@ class CompletionReconcilerService:
         user's open tasks. the model proposed; we verify against the real open
         set (a hallucinated or already-closed id is rejected, never written)."""
         open_by_id = {t["id"]: t for t in open_tasks}
-        # the reconciler acts as chordial (the companion's own bookkeeping
-        # pass); actions it records read as chordial's next turn
+        # the reconciler acts as the chair (the house's own bookkeeping
+        # pass); actions it records read as the chair's next turn
         # the conversation key is threaded from the hook (falls back to the
         # user uuid only for legacy callers); the metadata user_id is what
         # tools actually read (identity split, ROOMS_DESIGN.md section 11)
         context = ToolContext(
             stream_id=stream_id or user_uuid,
             activation_id=f"reconcile-{uuid.uuid4().hex[:12]}",
-            actor="chordial",
+            actor=CHAIR_ID,
             metadata={"user_id": user_uuid},
         )
         # dedupe while preserving order

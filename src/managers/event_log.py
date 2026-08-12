@@ -66,7 +66,7 @@ def format_action_line(name: str, tool_input: dict, result_content: str) -> str:
 class Event:
     """a detached, session-safe view of one conversation event."""
     author_type: str                 # 'user' | 'agent' | 'system'
-    author: str                      # 'user' | 'chordial' | 'curator' | future personas
+    author: str                      # 'user' | a helper id ('vel', 'pip', ...) | 'curator'
     kind: str                        # 'message' | 'action' | 'note'
     content: str
     created_at: datetime = field(default_factory=utc_now)

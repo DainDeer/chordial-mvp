@@ -38,7 +38,7 @@ class RecordingDeliver:
     def __init__(self):
         self.sent = []  # (platform, target, text, speaker)
 
-    async def __call__(self, platform, target_id, text, speaker="chordial"):
+    async def __call__(self, platform, target_id, text, speaker="vel"):
         self.sent.append((platform, target_id, text, speaker))
         return True
 
@@ -65,41 +65,41 @@ def _run(coro):
 
 def test_new_user_dm_routes_to_introduction():
     """a brand-new user's first dm becomes an introduction briefing for
-    chordial (not a normal user_message), delivered through the router."""
-    chordial = FakeHelper("chordial")
+    vel (not a normal user_message), delivered through the router."""
+    vel = FakeHelper("vel")
     deliver = RecordingDeliver()
-    chat = ChatService(orchestrator=_orch({"chordial": chordial}, deliver=deliver),
+    chat = ChatService(orchestrator=_orch({"vel": vel}, deliver=deliver),
                        user_manager=UserManager())
 
     msg = UnifiedMessage(content="hello?", platform_user_id="tg-new-1",
                          platform="telegram", platform_message_id="1",
-                         chat_scope="dm", dm_helper="chordial")
+                         chat_scope="dm", dm_helper="vel")
     reply = _run(chat.process_message(msg))
 
     assert reply is None            # router delivered; interface sends nothing
-    assert deliver.sent == [("telegram", "tg-new-1", "chordial says hi", "chordial")]
-    assert chordial.briefings[-1].kind == "introduction"
+    assert deliver.sent == [("telegram", "tg-new-1", "vel says hi", "vel")]
+    assert vel.briefings[-1].kind == "introduction"
 
 
 def test_returning_active_user_dm_is_a_normal_turn():
-    """once chordial is active for a user, their dm is a user_message."""
+    """once vel is active for a user, their dm is a user_message."""
     um = UserManager()
     user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-active-1"))
     _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
-    _run(HelperStateManager().set_status(user_uuid, "chordial", STATUS_ACTIVE))
+    _run(HelperStateManager().set_status(user_uuid, "vel", STATUS_ACTIVE))
 
-    chordial = FakeHelper("chordial")
+    vel = FakeHelper("vel")
     deliver = RecordingDeliver()
-    chat = ChatService(orchestrator=_orch({"chordial": chordial}, deliver=deliver),
+    chat = ChatService(orchestrator=_orch({"vel": vel}, deliver=deliver),
                        user_manager=um)
     msg = UnifiedMessage(content="hey", platform_user_id="tg-active-1",
                          platform="telegram", platform_message_id="2",
-                         chat_scope="dm", dm_helper="chordial")
+                         chat_scope="dm", dm_helper="vel")
     reply = _run(chat.process_message(msg))
 
     assert reply is None
-    assert deliver.sent == [("telegram", "tg-active-1", "chordial says hi", "chordial")]
-    assert chordial.briefings[-1].kind == "user_message"
+    assert deliver.sent == [("telegram", "tg-active-1", "vel says hi", "vel")]
+    assert vel.briefings[-1].kind == "user_message"
 
 
 def test_group_message_delivers_out_of_band_and_returns_none():
@@ -108,19 +108,19 @@ def test_group_message_delivers_out_of_band_and_returns_none():
     um = UserManager()
     user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-grp-1"))
     _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
-    _run(HelperStateManager().set_status(user_uuid, "chordial", STATUS_ACTIVE))
+    _run(HelperStateManager().set_status(user_uuid, "vel", STATUS_ACTIVE))
 
-    chordial = FakeHelper("chordial")
+    vel = FakeHelper("vel")
     deliver = RecordingDeliver()
-    chat = ChatService(orchestrator=_orch({"chordial": chordial}, deliver=deliver),
+    chat = ChatService(orchestrator=_orch({"vel": vel}, deliver=deliver),
                        user_manager=um)
     msg = UnifiedMessage(content="hi crew", platform_user_id="tg-grp-1",
                          platform="telegram", platform_message_id="3",
-                         chat_scope="group", group_chat_id="-100999", via_bot="chordial")
+                         chat_scope="group", group_chat_id="-100999", via_bot="vel")
     reply = _run(chat.process_message(msg))
 
     assert reply is None                       # nothing sent by the receiving interface
-    assert deliver.sent == [("telegram", "-100999", "chordial says hi", "chordial")]
+    assert deliver.sent == [("telegram", "-100999", "vel says hi", "vel")]
 
 
 def test_group_mention_routes_to_the_named_helper():
@@ -130,42 +130,42 @@ def test_group_mention_routes_to_the_named_helper():
     user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-grp-2"))
     _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
     hsm = HelperStateManager()
-    _run(hsm.set_status(user_uuid, "chordial", STATUS_ACTIVE))
-    _run(hsm.set_status(user_uuid, "tempo", STATUS_ACTIVE))
+    _run(hsm.set_status(user_uuid, "vel", STATUS_ACTIVE))
+    _run(hsm.set_status(user_uuid, "skip", STATUS_ACTIVE))
 
-    agents = {"chordial": FakeHelper("chordial"), "tempo": FakeHelper("tempo")}
+    agents = {"vel": FakeHelper("vel"), "skip": FakeHelper("skip")}
     deliver = RecordingDeliver()
     chat = ChatService(orchestrator=_orch(agents, deliver=deliver), user_manager=um)
     msg = UnifiedMessage(content="@tempo_bot got a workout?", platform_user_id="tg-grp-2",
                          platform="telegram", platform_message_id="4",
                          chat_scope="group", group_chat_id="-100999",
-                         via_bot="chordial", mentioned=["tempo"])
+                         via_bot="vel", mentioned=["skip"])
     reply = _run(chat.process_message(msg))
 
     assert reply is None
-    assert deliver.sent == [("telegram", "-100999", "tempo says hi", "tempo")]
+    assert deliver.sent == [("telegram", "-100999", "skip says hi", "skip")]
 
 
 def test_dm_transcript_stays_private_from_siblings():
-    """a message in tempo's dm is scope-tagged so a sibling's briefing window
-    never contains it (the privacy filter), while tempo's does."""
+    """a message in skip's dm is scope-tagged so a sibling's briefing window
+    never contains it (the privacy filter), while skip's does."""
     um = UserManager()
     user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-priv-1"))
     _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
     hsm = HelperStateManager()
-    _run(hsm.set_status(user_uuid, "chordial", STATUS_ACTIVE))
-    _run(hsm.set_status(user_uuid, "tempo", STATUS_ACTIVE))
+    _run(hsm.set_status(user_uuid, "vel", STATUS_ACTIVE))
+    _run(hsm.set_status(user_uuid, "skip", STATUS_ACTIVE))
 
-    tempo = FakeHelper("tempo")
-    chat = ChatService(orchestrator=_orch({"chordial": FakeHelper("chordial"), "tempo": tempo},
+    skip = FakeHelper("skip")
+    chat = ChatService(orchestrator=_orch({"vel": FakeHelper("vel"), "skip": skip},
                                           deliver=RecordingDeliver()), user_manager=um)
-    # a private aside to tempo
+    # a private aside to skip
     _run(chat.process_message(UnifiedMessage(
         content="secret between us", platform_user_id="tg-priv-1", platform="telegram",
-        platform_message_id="5", chat_scope="dm", dm_helper="tempo")))
+        platform_message_id="5", chat_scope="dm", dm_helper="skip")))
 
     log = EventLog(user_uuid)
-    tempo_sees = [e.content for e in log.recent(visible_to="tempo") if e.kind == "message"]
-    chordial_sees = [e.content for e in log.recent(visible_to="chordial") if e.kind == "message"]
+    tempo_sees = [e.content for e in log.recent(visible_to="skip") if e.kind == "message"]
+    chordial_sees = [e.content for e in log.recent(visible_to="vel") if e.kind == "message"]
     assert "secret between us" in tempo_sees
     assert "secret between us" not in chordial_sees

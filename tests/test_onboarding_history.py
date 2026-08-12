@@ -1,7 +1,7 @@
 """ChatService's introduction routing (docs/V3_DESIGN.md section 3).
 
 v1's rigid onboarding state machine is retired; "has this user finished
-onboarding" is no longer chat_service state at all - it's chordial's own
+onboarding" is no longer chat_service state at all - it's vel's own
 HelperState.status, read the same way any other helper's relationship state
 is read. these tests cover the routing decision ChatService.process_message
 makes (introduction vs. ordinary user_message stimulus) and the
@@ -51,7 +51,7 @@ def _result(status="delivered"):
     return ActivationResult(
         activation_id="act-test", stream_id="s", inbound_event_id=None,
         status="completed", status_reason=None,
-        lines=(LineResult(line_id="act-test:0", speaker="chordial",
+        lines=(LineResult(line_id="act-test:0", speaker="vel",
                           status=status),),
     )
 
@@ -99,27 +99,27 @@ def _chat_service(result=None):
 
 def test_new_user_gets_introduction_stimulus(db):
     chat, orchestrator, _ = _chat_service()
-    reply = run(chat.process_message(_msg("hello chordial")))
+    reply = run(chat.process_message(_msg("hello vel")))
 
     assert reply is None    # delivered through the router; nothing to echo
     assert len(orchestrator.calls) == 1
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
     assert stim.scope == "dm"
-    assert stim.audience == "chordial"
-    assert stim.addressed == ("chordial",)
+    assert stim.audience == "vel"
+    assert stim.addressed == ("vel",)
 
 
 def test_new_user_moves_chordial_state_to_introducing(db):
     chat, _, _ = _chat_service()
-    run(chat.process_message(_msg("hello chordial")))
+    run(chat.process_message(_msg("hello vel")))
 
     with db() as s:
         from src.database.models import User
 
         user_uuid = s.query(User).first().uuid
 
-    state = run(HelperStateManager().get(user_uuid, "chordial"))
+    state = run(HelperStateManager().get(user_uuid, "vel"))
     assert state.status == "introducing"
 
 
@@ -141,7 +141,7 @@ def test_returning_active_user_gets_user_message_stimulus(db):
     chat, orchestrator, user_manager = _chat_service()
     user_uuid, _ = run(user_manager.get_or_create_user("discord", "456", "dain"))
     run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "Dain"}))
-    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
 
     reply = run(chat.process_message(_msg("hey again", platform_user_id="456")))
 
@@ -152,12 +152,12 @@ def test_returning_active_user_gets_user_message_stimulus(db):
 
 
 def test_active_user_with_no_saved_name_is_not_re_introduced(db):
-    """regression: an active chordial whose preferred_name never got persisted
+    """regression: an active vel whose preferred_name never got persisted
     must NOT loop back into onboarding. keyed on status, not the name."""
     chat, orchestrator, user_manager = _chat_service()
     user_uuid, _ = run(user_manager.get_or_create_user("discord", "789"))
     # deliberately DO NOT set preferred_name - reproduce the stuck state
-    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
 
     run(chat.process_message(_msg("what's up", platform_user_id="789")))
 
@@ -166,48 +166,48 @@ def test_active_user_with_no_saved_name_is_not_re_introduced(db):
 
 def test_specialist_dm_continues_that_helpers_introduction(db):
     """Once a meet link starts Tempo's ritual, later Tempo DMs must keep
-    receiving introduction briefings even though chordial is already active."""
+    receiving introduction briefings even though vel is already active."""
     chat, orchestrator, user_manager = _chat_service()
-    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "tempo-intro"))
+    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "skip-intro"))
     run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "Dain"}))
-    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
-    run(HelperStateManager().set_status(user_uuid, "tempo", "introducing"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
+    run(HelperStateManager().set_status(user_uuid, "skip", "introducing"))
 
     run(
         chat.process_message(
             _msg(
                 "I think a fox",
                 platform="telegram",
-                platform_user_id="tempo-intro",
-                dm_helper="tempo",
+                platform_user_id="skip-intro",
+                dm_helper="skip",
             )
         )
     )
 
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
-    assert stim.audience == "tempo"
-    assert stim.addressed == ("tempo",)
+    assert stim.audience == "skip"
+    assert stim.addressed == ("skip",)
 
 
 def test_unmet_specialist_dm_does_not_use_chordial_legacy_name_rule(db):
     chat, orchestrator, user_manager = _chat_service()
-    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "tempo-unmet"))
-    run(HelperStateManager().set_status(user_uuid, "chordial", "introducing"))
+    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "skip-unmet"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "introducing"))
 
     run(
         chat.process_message(
             _msg(
                 "hello",
                 platform="telegram",
-                platform_user_id="tempo-unmet",
-                dm_helper="tempo",
+                platform_user_id="skip-unmet",
+                dm_helper="skip",
             )
         )
     )
 
     assert orchestrator.calls[0].kind == "user_message"
-    assert orchestrator.calls[0].audience == "tempo"
+    assert orchestrator.calls[0].audience == "skip"
 
 
 def test_still_introducing_rules():
@@ -225,10 +225,10 @@ def test_group_scope_returns_none(db):
     reply = run(
         chat.process_message(
             _msg(
-                "@tempo how's my training plan",
+                "@skip how's my training plan",
                 chat_scope="group",
                 group_chat_id="-100",
-                dm_helper="chordial",
+                dm_helper="vel",
             )
         )
     )
@@ -242,14 +242,14 @@ def test_refused_and_errored_map_to_in_character_copy(db):
 
     chat, _, user_manager = _chat_service(result=_result("refused"))
     user_uuid, _ = run(user_manager.get_or_create_user("discord", "1", "a"))
-    run(HelperStateManager().set_status(user_uuid, "chordial", "active"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
     run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "a"}))
     reply = run(chat.process_message(_msg("do something bad", platform_user_id="1")))
     assert reply == REFUSAL_REPLY
 
     chat2, _, user_manager2 = _chat_service(result=_result("errored"))
     user_uuid2, _ = run(user_manager2.get_or_create_user("discord", "2", "b"))
-    run(HelperStateManager().set_status(user_uuid2, "chordial", "active"))
+    run(HelperStateManager().set_status(user_uuid2, "vel", "active"))
     run(user_manager2.update_user_preferences(user_uuid2, {"preferred_name": "b"}))
     reply2 = run(chat2.process_message(_msg("hi", platform_user_id="2")))
     assert reply2 == ERROR_REPLY
@@ -268,17 +268,17 @@ def test_begin_introduction_sets_helper_introducing_and_returns_reply(db):
     chat, orchestrator, user_manager = _chat_service()
     user_uuid, _ = run(user_manager.get_or_create_user("telegram", "789", "dain"))
 
-    reply = run(chat.begin_introduction("telegram", "789", "tempo"))
+    reply = run(chat.begin_introduction("telegram", "789", "skip"))
 
-    assert reply is None    # tempo's bot delivered through the router
+    assert reply is None    # skip's bot delivered through the router
     assert len(orchestrator.calls) == 1
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
     assert stim.scope == "dm"
-    assert stim.audience == "tempo"
-    assert stim.addressed == ("tempo",)
+    assert stim.audience == "skip"
+    assert stim.addressed == ("skip",)
 
-    state = run(HelperStateManager().get(user_uuid, "tempo"))
+    state = run(HelperStateManager().get(user_uuid, "skip"))
     assert state.status == "introducing"
 
 
@@ -307,7 +307,7 @@ def test_same_user_activations_are_serialized(db):
         await user_manager.update_user_preferences(
             user_uuid, {"preferred_name": "Dain"}
         )
-        await HelperStateManager().set_status(user_uuid, "chordial", "active")
+        await HelperStateManager().set_status(user_uuid, "vel", "active")
         orchestrator = BlockingOrchestrator()
         chat = ChatService(orchestrator=orchestrator, user_manager=user_manager)
 
@@ -362,7 +362,7 @@ def test_different_users_are_not_serialized(db):
             await user_manager.update_user_preferences(
                 user_uuid, {"preferred_name": platform_id}
             )
-            await hsm.set_status(user_uuid, "chordial", "active")
+            await hsm.set_status(user_uuid, "vel", "active")
         orchestrator = OverlapOrchestrator()
         chat = ChatService(orchestrator=orchestrator, user_manager=user_manager)
 

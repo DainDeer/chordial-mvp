@@ -54,6 +54,7 @@ from config import Config
 from src.managers.event_log import format_action_line
 from src.managers.event_store_adapter import SqlEventStore
 from src.managers.helper_state_manager import HelperStateManager
+from src.personas import CHAIR_ID
 from src.services.identity import user_of_stimulus
 from src.managers.user_manager import UserManager
 
@@ -80,16 +81,15 @@ def chordial_visibility(event: DfEvent, viewer: str) -> bool:
 
 class ChordialDirector:
     """casts the script of speakers for one activation. deterministic this
-    phase - phase 3 of chordial's own roadmap replaces the group no-mention
-    branch with a cheap utility-model call. the director must never break the
-    conversation: every conversational path that empties falls back to
-    chordial."""
+    phase - phase 3b replaces the group no-mention branch with a cheap
+    utility-model decider. the director must never break the conversation:
+    every conversational path that empties falls back to the chair."""
 
     def __init__(
         self,
         agent_ids: Iterable[str],
         helper_state_manager: Optional[HelperStateManager] = None,
-        fallback: str = "chordial",
+        fallback: str = CHAIR_ID,
     ):
         self.agent_ids = set(agent_ids)
         self.helper_state_manager = helper_state_manager or HelperStateManager()
@@ -134,7 +134,7 @@ class ChordialDirector:
 
     async def _group_lines(self, stimulus: Stimulus) -> list[ScriptLine]:
         """the group user_message routing rule. @-mentions win (in order,
-        deduped, active cast only, capped at 2); otherwise chordial fields it."""
+        deduped, active cast only, capped at 2); otherwise the chair fields it."""
         group_ec = EventContext(platform=stimulus.platform, scope="group")
         if not stimulus.addressed:
             return [ScriptLine(speaker=self.fallback, event_context=group_ec)]
@@ -158,7 +158,7 @@ class ChordialDirector:
 
     def _dm_line(self, stimulus: Stimulus, speaker: str) -> ScriptLine:
         # the resolved speaker also names the private channel, so the legacy
-        # single-helper dm stays visible to chordial's own privacy window
+        # single-helper dm stays visible to the chair's own privacy window
         return ScriptLine(
             speaker=speaker,
             event_context=self._dm_context(stimulus, speaker),
@@ -343,7 +343,7 @@ class ChordialHooks:
                 metadata={"note_type": "platform_switch", "to": stimulus.platform},
             ))
             delivered = await self.deliver(
-                old_platform, platform_user_id, notice, speaker="chordial"
+                old_platform, platform_user_id, notice, speaker=CHAIR_ID
             )
             if not delivered:
                 logger.info(
@@ -362,7 +362,7 @@ class ChordialHooks:
         """after a delivered user turn, reconcile any tasks the user mentioned
         finishing in passing (the companion's warmth can crowd out the
         bookkeeping; this narrow pass catches what it missed). Done marks are
-        recorded as chordial's own actions, in the turn's scope, so the replay
+        recorded as the chair's own actions, in the turn's scope, so the replay
         reads coherently next turn."""
         if (
             self.reconciler is None
@@ -394,7 +394,7 @@ class ChordialHooks:
                 if action.is_error:
                     continue
                 await store.append(NewEvent(
-                    author_type="agent", author="chordial", kind="action",
+                    author_type="agent", author=CHAIR_ID, kind="action",
                     content=format_action_line(
                         action.name, dict(action.input), action.result_content
                     ),

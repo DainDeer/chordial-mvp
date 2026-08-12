@@ -49,6 +49,7 @@ from config import Config
 from src.managers.event_log import EventLog
 from src.managers.event_store_adapter import SqlEventStore, SqlUserEvents
 from src.managers.user_manager import UserManager
+from src.personas import CHAIR_ID
 from src.services.orchestration import chordial_visibility
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,7 @@ class ChordialStimulusFactory:
             key=key,
             kind=rhythm.kind,
             due_at=decision.due_at,
-            actor="chordial",
+            actor=CHAIR_ID,
             target=DeliveryTarget(platform=platform, target_id=platform_user_id),
             reason=decision.reason,
             # if the user speaks between this plan and the stream lock, the
@@ -242,7 +243,7 @@ class ChordialStimulusFactory:
             platform=plan.target.platform,
             record_inbound=False,
             scope="dm",
-            audience="chordial",
+            audience=CHAIR_ID,
             target=plan.target,
             reason=plan.reason,
             precondition=plan.precondition,

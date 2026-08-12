@@ -126,16 +126,16 @@ def test_register_requires_a_platform_name():
 
 def test_deliver_as_routes_to_the_speakers_bot():
     router = MessageRouter(FakeUserManager())
-    tempo = FakeInterface("telegram", helper_id="tempo")
-    aria = FakeInterface("telegram", helper_id="aria")
-    router.register(tempo)
-    router.register(aria)
+    skip = FakeInterface("telegram", helper_id="skip")
+    juniper = FakeInterface("telegram", helper_id="juniper")
+    router.register(skip)
+    router.register(juniper)
 
-    ok = run(router.deliver_as("telegram", "-100", "hi from tempo", speaker="tempo"))
+    ok = run(router.deliver_as("telegram", "-100", "hi from skip", speaker="skip"))
 
     assert ok is True
-    assert tempo.sent == [("-100", "hi from tempo")]
-    assert aria.sent == []  # only the addressed speaker's bot sent
+    assert skip.sent == [("-100", "hi from skip")]
+    assert juniper.sent == []  # only the addressed speaker's bot sent
 
 
 def test_deliver_as_falls_back_to_single_bot_platform():
@@ -145,7 +145,7 @@ def test_deliver_as_falls_back_to_single_bot_platform():
     discord = FakeInterface("discord")
     router.register(discord)
 
-    ok = run(router.deliver_as("discord", "42", "hi", speaker="tempo"))
+    ok = run(router.deliver_as("discord", "42", "hi", speaker="skip"))
 
     assert ok is True
     assert discord.sent == [("42", "hi")]
@@ -153,35 +153,35 @@ def test_deliver_as_falls_back_to_single_bot_platform():
 
 def test_deliver_as_fails_closed_when_speakers_bot_is_unavailable():
     # no exact speaker match and no (platform, None) entry: do not impersonate
-    # mochi through tempo's distinct Telegram bot account.
+    # mabel through skip's distinct Telegram bot account.
     router = MessageRouter(FakeUserManager())
-    tempo = FakeInterface("telegram", helper_id="tempo")
-    router.register(tempo)
+    skip = FakeInterface("telegram", helper_id="skip")
+    router.register(skip)
 
-    ok = run(router.deliver_as("telegram", "-100", "hi", speaker="mochi"))
+    ok = run(router.deliver_as("telegram", "-100", "hi", speaker="mabel"))
 
     assert ok is False
-    assert tempo.sent == []
+    assert skip.sent == []
 
 
 def test_deliver_defaults_speaker_to_chordial():
     router = MessageRouter(FakeUserManager())
-    chordial = FakeInterface("telegram", helper_id="chordial")
-    tempo = FakeInterface("telegram", helper_id="tempo")
-    router.register(chordial)
-    router.register(tempo)
+    vel = FakeInterface("telegram", helper_id="vel")
+    skip = FakeInterface("telegram", helper_id="skip")
+    router.register(vel)
+    router.register(skip)
 
     ok = run(router.deliver("telegram", "555", "legacy hook"))
 
     assert ok is True
-    assert chordial.sent == [("555", "legacy hook")]
-    assert tempo.sent == []
+    assert vel.sent == [("555", "legacy hook")]
+    assert skip.sent == []
 
 
 def test_platforms_dedupes_across_per_helper_interfaces():
     router = MessageRouter(FakeUserManager())
-    router.register(FakeInterface("telegram", helper_id="chordial"))
-    router.register(FakeInterface("telegram", helper_id="tempo"))
+    router.register(FakeInterface("telegram", helper_id="vel"))
+    router.register(FakeInterface("telegram", helper_id="skip"))
     router.register(FakeInterface("discord"))
     assert set(router.platforms()) == {"telegram", "discord"}
     assert router.platforms().count("telegram") == 1
@@ -192,11 +192,11 @@ def test_deliver_as_deactivates_link_on_permanent_failure():
     router = MessageRouter(users)
     router.register(
         FakeInterface(
-            "telegram", helper_id="tempo", raise_exc=UndeliverableError("blocked")
+            "telegram", helper_id="skip", raise_exc=UndeliverableError("blocked")
         )
     )
 
-    ok = run(router.deliver_as("telegram", "dead", "hi", speaker="tempo"))
+    ok = run(router.deliver_as("telegram", "dead", "hi", speaker="skip"))
 
     assert ok is False
     assert users.deactivated == [("telegram", "dead")]

@@ -104,7 +104,7 @@ class ConversationEvent(Base):
     platform = Column(String)
 
     author_type = Column(String, nullable=False)   # 'user' | 'agent' | 'system'
-    author = Column(String, nullable=False)        # 'user' | 'chordial' | 'curator' | future personas
+    author = Column(String, nullable=False)        # 'user' | a helper id ('vel', 'pip', ...) | 'curator'
     kind = Column(String, nullable=False)          # 'message' | 'action' | 'note'
 
     # message text, or (for actions) the frozen one-line rendering that gets

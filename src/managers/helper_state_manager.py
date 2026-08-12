@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from src.database.database import get_db
 from src.database.models import HelperState
+from src.personas import CHAIR_ID
 from src.utils.timezone_utils import utc_now
 
 # the lifecycle a (user, helper) pair moves through.
@@ -71,9 +72,9 @@ class HelperStateManager:
 
     async def active_helpers(self, user_uuid: str) -> List[HelperStateView]:
         """every helper this user has active, in id order - the director's cast.
-        chordial is the front door and is treated as active even without a row
-        (a user always has the generalist), so callers can rely on a non-empty
-        cast from the first message."""
+        the chair is the front door and is treated as active even without a row
+        (a user always has the house's voice), so callers can rely on a
+        non-empty cast from the first message."""
         with get_db() as db:
             rows = db.query(HelperState).filter(
                 HelperState.user_uuid == user_uuid,
@@ -86,8 +87,8 @@ class HelperStateManager:
                     introduced_at=r.introduced_at,
                 ) for r in rows
             ]
-        if not any(v.helper_id == "chordial" for v in views):
-            views.insert(0, HelperStateView(helper_id="chordial", status=STATUS_ACTIVE))
+        if not any(v.helper_id == CHAIR_ID for v in views):
+            views.insert(0, HelperStateView(helper_id=CHAIR_ID, status=STATUS_ACTIVE))
         return views
 
     async def set_status(self, user_uuid: str, helper_id: str, status: str) -> None:

@@ -147,7 +147,7 @@ class TestTemporalContextLocalization:
 
 # ---------------------------------------------------------------------------
 # the pulse respects each user's own quiet hours based on their timezone
-# (the QuietHoursGate is library arithmetic; what's chordial's to verify is
+# (the QuietHoursGate is library arithmetic; what's vel's to verify is
 # the wiring - tz_of = UserManager.get_user_timezone, per stream)
 # ---------------------------------------------------------------------------
 
@@ -208,7 +208,7 @@ class TestPulseQuietHoursPerUser:
         def check(user_uuid):
             firing = FiringPlan(
                 key=RhythmKey(stream_id=user_uuid, rhythm_id="checkin"),
-                kind="scheduled_tick", due_at=fixed_utc, actor="chordial",
+                kind="scheduled_tick", due_at=fixed_utc, actor="vel",
             )
             return asyncio.run(gate.check(firing, None, fixed_utc))
 
@@ -270,11 +270,11 @@ class TestContextBuilderSpecialContext:
         now = datetime(2026, 7, 7, 19, 0)  # fixed utc
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
-        ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+        ps = PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
         history = [
             Event(author_type="user", author="user", kind="message",
                   content="earlier", created_at=now - timedelta(hours=2)),
-            Event(author_type="agent", author="chordial", kind="message",
+            Event(author_type="agent", author="vel", kind="message",
                   content="a reply", created_at=now - timedelta(hours=2)),
             Event(author_type="user", author="user", kind="message",
                   content="im back", created_at=now),  # current turn
@@ -306,11 +306,11 @@ class TestContextBuilderSpecialContext:
         now = datetime(2026, 7, 7, 19, 0)
         monkeypatch.setattr(ps_mod, "utc_now", lambda: now)
 
-        ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+        ps = PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
         history = [
             Event(author_type="user", author="user", kind="message",
                   content="hello there", created_at=now - timedelta(minutes=5)),
-            Event(author_type="agent", author="chordial", kind="message",
+            Event(author_type="agent", author="vel", kind="message",
                   content="hi friend", created_at=now - timedelta(minutes=5)),
             Event(author_type="user", author="user", kind="message",
                   content="current", created_at=now),
@@ -339,7 +339,7 @@ class TestContextBuilderSpecialContext:
         tuesday_midday = datetime(2025, 7, 1, 12, 0)  # ordinary time, no vibe
         monkeypatch.setattr(ps_mod, "utc_now", lambda: tuesday_midday)
 
-        card = load_personas()["chordial"]
+        card = load_personas()["vel"]
         ps = PromptService(persona=card, enable_prompt_logging=False)
         history = [Event(author_type="user", author="user", kind="message",
                          content="hi", created_at=tuesday_midday)]

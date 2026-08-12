@@ -42,41 +42,43 @@ async def _complete_introduction(tool_input: dict, context: ToolContext) -> str:
     )
 
     if not accepted:
-        return f"recorded: {helper_id} was declined for this user - no longer part of their active crew."
+        return f"recorded: {helper_id} was declined for this user - no longer part of their active council."
     if persona_name:
-        return f"recorded: {helper_id} is now active for this user, known to them as {persona_name}."
-    return f"recorded: {helper_id} is now active for this user (no character/name chosen)."
+        return f"recorded: {helper_id} is now active for this user, reshaped as {persona_name}."
+    return f"recorded: {helper_id} is now active for this user (authored identity kept)."
 
 
 COMPLETE_INTRODUCTION = Tool(
     definition=ToolDef(
         name="complete_introduction",
         description=(
-            "Call this ONCE the person has settled on how you should appear to "
-            "them (a name/form, no preference, or 'no character at all') - or "
-            "once they've made clear they don't want this helper around. This "
-            "stamps the relationship state the rest of the crew (and the "
-            "director) reads. It does NOT save the identity itself: separately "
-            "call save_memory(is_core=true, visibility='private') with something "
-            "like \"to <user>, you are <name>, a <form>\" (or a note that they "
-            "chose no character) - do both. Use visibility='private': your own "
-            "look/name is between you and this person, so your crewmates don't "
-            "see 'you are a red panda' and mistake it for their OWN identity."
+            "Call this ONCE at the close of an introduction - always. It "
+            "stamps the relationship state the rest of the council (and the "
+            "director) reads. You arrive with an AUTHORED identity (the name "
+            "and species on your card): if the person keeps you as you are, "
+            "pass accepted=true and NOTHING else - the card stays the truth. "
+            "Only if they RESHAPED you (a new name, species, or vibe) pass "
+            "persona_name/persona_form with what they chose, and separately "
+            "save it with save_memory(is_core=true, visibility='private') as "
+            "something like \"to <user>, you are <name>, a <form>\" - do "
+            "both. Use visibility='private': your own look/name is between "
+            "you and this person, so your crewmates don't see 'you are a "
+            "dragon named toast' and mistake it for their OWN identity."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "accepted": {
                     "type": "boolean",
-                    "description": "False if the person doesn't want this helper in their crew at all. True otherwise (including 'no character, please' - they still want the help, just not a persona).",
+                    "description": "False if the person doesn't want this helper in their council at all. True otherwise (including keeping the authored identity untouched).",
                 },
                 "persona_name": {
                     "type": ["string", "null"],
-                    "description": "The chosen name, if any. Null if they declined a character/name, or if accepted is false.",
+                    "description": "ONLY a name the person chose to replace your authored one. Null if they kept you as authored, or if accepted is false.",
                 },
                 "persona_form": {
                     "type": ["string", "null"],
-                    "description": "The chosen form/species/vibe, if any (e.g. 'red panda', 'no character'). Null if not applicable.",
+                    "description": "ONLY a form/species/vibe the person chose to replace your authored one (e.g. 'red panda'). Null if they kept you as authored, or if accepted is false.",
                 },
             },
             "required": ["accepted"],
@@ -113,7 +115,8 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
         # unique). a helper with no telegram bot configured at all has no
         # deep link to offer - still worth listing, just without one.
         username = Config.telegram_username_for(helper_id)
-        bits = f"- {helper_id} ({card.archetype}) - {card.specialty}"
+        bits = (f"- {card.emoji} {helper_id} the {card.species} - "
+                f"{card.specialty}")
         if username:
             bits += f" - meet them: {_deep_link(username)}"
         lines.append(bits)

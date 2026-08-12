@@ -2,6 +2,8 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 
+from src.personas import CHAIR_ID
+
 load_dotenv()
 
 
@@ -125,13 +127,13 @@ class Config:
 
     @classmethod
     def telegram_token_for(cls, helper_id: str) -> Optional[str]:
-        """the bot token a helper polls/sends on. chordial falls back to the
-        bare TELEGRAM_TOKEN so a single-bot v2 deployment keeps working
+        """the bot token a helper polls/sends on. the chair falls back to the
+        bare TELEGRAM_TOKEN so a single-bot deployment keeps working
         untouched; every other helper needs its own TELEGRAM_TOKEN_<HELPER>."""
         specific = os.getenv(f"TELEGRAM_TOKEN_{helper_id.upper()}")
         if specific:
             return specific
-        if helper_id == "chordial":
+        if helper_id == CHAIR_ID:
             return cls.TELEGRAM_TOKEN
         return None
 
@@ -157,7 +159,7 @@ class Config:
         specific = os.getenv(f"TELEGRAM_USERNAME_{helper_id.upper()}")
         if specific:
             return specific.lstrip("@")
-        if helper_id == "chordial":
+        if helper_id == CHAIR_ID:
             return cls.TELEGRAM_BOT_USERNAME
         return None
 
@@ -230,11 +232,14 @@ class Config:
     QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "21"))
     QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
 
-    # v3 personas: every card in src/personas/*.yaml is loaded, but only these
-    # ids become live agents. one enabled helper = exactly v2 behavior.
+    # the council (ROOMS_DESIGN.md §3): every card in src/personas/*.yaml is
+    # loaded, but only these ids become live agents. the default is the full
+    # seven-resident council; a solo deployment is ENABLED_HELPERS=vel.
     ENABLED_HELPERS = [
         h.strip()
-        for h in os.getenv("ENABLED_HELPERS", "chordial").split(",")
+        for h in os.getenv(
+            "ENABLED_HELPERS", "vel,pip,skip,remy,mabel,juniper,edwin"
+        ).split(",")
         if h.strip()
     ]
 

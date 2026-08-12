@@ -84,7 +84,7 @@ def test_helper_identity_memory_is_private_to_that_helper(db):
     mem = MemoriesManager()
     user_uuid = run(_make_user())
 
-    # chordial's private identity + a shared fact about the user
+    # vel's private identity + a shared fact about the user
     run(
         mem.upsert_memory(
             user_uuid,
@@ -92,18 +92,18 @@ def test_helper_identity_memory_is_private_to_that_helper(db):
             MemoryType.FACT,
             MemorySource.AI_INFERRED,
             core=True,
-            created_by="chordial",
+            created_by="vel",
             visibility="private",
         )
     )
     run(
         mem.upsert_memory(
             user_uuid,
-            "dain is a pink deer building chordial",
+            "dain is a pink deer building vel",
             MemoryType.FACT,
             MemorySource.AI_INFERRED,
             core=True,
-            created_by="chordial",
+            created_by="vel",
             visibility="shared",
         )
     )
@@ -126,11 +126,11 @@ def test_helper_identity_memory_is_private_to_that_helper(db):
         )
         return req.system[1].text
 
-    chordial_profile = profile_for("chordial")
-    tempo_profile = profile_for("tempo")
+    chordial_profile = profile_for("vel")
+    tempo_profile = profile_for("skip")
 
     assert "matcha the red panda" in chordial_profile  # its own identity
-    assert "matcha the red panda" not in tempo_profile  # NOT leaked to tempo
+    assert "matcha the red panda" not in tempo_profile  # NOT leaked to skip
     assert (
         "pink deer" in chordial_profile and "pink deer" in tempo_profile
     )  # shared fact everywhere
@@ -149,12 +149,12 @@ def test_complete_introduction_accepted_sets_active_and_identity(db):
                 "persona_name": "Ember",
                 "persona_form": "red panda",
             },
-            _ctx(user_uuid, "chordial"),
+            _ctx(user_uuid, "vel"),
         )
     )
 
     assert "ember" in result.lower()
-    state = run(HelperStateManager().get(user_uuid, "chordial"))
+    state = run(HelperStateManager().get(user_uuid, "vel"))
     assert state.status == "active"
     assert state.persona_name == "Ember"
     assert state.persona_form == "red panda"
@@ -167,12 +167,12 @@ def test_complete_introduction_declined_sets_declined_status(db):
     result = run(
         COMPLETE_INTRODUCTION.handler(
             {"accepted": False, "persona_name": None, "persona_form": None},
-            _ctx(user_uuid, "tempo"),
+            _ctx(user_uuid, "skip"),
         )
     )
 
     assert "declined" in result.lower()
-    state = run(HelperStateManager().get(user_uuid, "tempo"))
+    state = run(HelperStateManager().get(user_uuid, "skip"))
     assert state.status == "declined"
     assert state.persona_name is None
 
@@ -183,10 +183,10 @@ def test_complete_introduction_attributes_the_acting_helper(db):
     recording."""
     user_uuid = run(_make_user())
 
-    run(COMPLETE_INTRODUCTION.handler({"accepted": True}, _ctx(user_uuid, "mochi")))
+    run(COMPLETE_INTRODUCTION.handler({"accepted": True}, _ctx(user_uuid, "mabel")))
 
-    mochi_state = run(HelperStateManager().get(user_uuid, "mochi"))
-    chordial_state = run(HelperStateManager().get(user_uuid, "chordial"))
+    mochi_state = run(HelperStateManager().get(user_uuid, "mabel"))
+    chordial_state = run(HelperStateManager().get(user_uuid, "vel"))
     assert mochi_state.status == "active"
     assert chordial_state.status == "not_met"  # untouched
 
@@ -196,10 +196,10 @@ def test_complete_introduction_blank_strings_normalize_to_none(db):
     run(
         COMPLETE_INTRODUCTION.handler(
             {"accepted": True, "persona_name": "  ", "persona_form": ""},
-            _ctx(user_uuid, "chordial"),
+            _ctx(user_uuid, "vel"),
         )
     )
-    state = run(HelperStateManager().get(user_uuid, "chordial"))
+    state = run(HelperStateManager().get(user_uuid, "vel"))
     assert state.persona_name is None
     assert state.persona_form is None
 
@@ -218,7 +218,7 @@ def _clear_telegram_usernames(monkeypatch):
     from config import Config
 
     monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", None)
-    for hid in ("CHORDIAL", "TEMPO", "ARIA", "PEP", "MOCHI", "POET"):
+    for hid in ("VEL", "PIP", "SKIP", "REMY", "MABEL", "JUNIPER", "EDWIN"):
         monkeypatch.delenv(f"TELEGRAM_USERNAME_{hid}", raising=False)
 
 
@@ -228,14 +228,16 @@ def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(
     _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
-    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
 
-    # each guide is one "- <id> (" list line; chordial never lists itself.
-    # (substring checks would false-positive on bot usernames like
-    # 'chordial_mvp_v3_aria_bot', hence the line-prefix form.)
-    assert "- chordial (" not in result
-    for helper_id in ("tempo", "aria", "pep", "mochi", "poet"):
-        assert f"- {helper_id} (" in result
+    # each guide is one "<id> the <species>" list line; vel never lists
+    # itself. (substring checks on the bare id would false-positive on bot
+    # usernames like 'chordial_mvp_v3_pip_bot', hence the fuller form.)
+    assert " vel the " not in result
+    for helper_id, species in (("skip", "bunny"), ("juniper", "fox"),
+                               ("pip", "squirrel"), ("mabel", "bear"),
+                               ("remy", "raccoon"), ("edwin", "owl")):
+        assert f" {helper_id} the {species} - " in result
 
 
 def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(
@@ -248,29 +250,29 @@ def test_list_available_guides_deep_link_uses_configured_username_not_card_place
     _clear_telegram_usernames(monkeypatch)
     user_uuid = run(_make_user())
 
-    unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
+    unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
     assert "t.me/" not in unconfigured
 
-    monkeypatch.setenv("TELEGRAM_USERNAME_TEMPO", "chordial_mvp_v3_tempo_bot")
-    configured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
-    assert "t.me/chordial_mvp_v3_tempo_bot?start=meet" in configured
-    assert "t.me/tempo_bot" not in configured  # the card's placeholder, never used
+    monkeypatch.setenv("TELEGRAM_USERNAME_SKIP", "chordial_mvp_v3_skip_bot")
+    configured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
+    assert "t.me/chordial_mvp_v3_skip_bot?start=meet" in configured
+    assert "t.me/skip_bot" not in configured  # the card's placeholder, never used
 
 
 def test_list_available_guides_excludes_active_and_declined(db):
     user_uuid = run(_make_user())
     run(
         HelperStateManager().complete_introduction(
-            user_uuid, "tempo", accepted=True, persona_name="Dash", persona_form="fox"
+            user_uuid, "skip", accepted=True, persona_name="Dash", persona_form="fox"
         )
     )
-    run(HelperStateManager().complete_introduction(user_uuid, "mochi", accepted=False))
+    run(HelperStateManager().complete_introduction(user_uuid, "mabel", accepted=False))
 
-    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
 
-    assert "tempo" not in result
-    assert "mochi" not in result
-    assert "aria" in result and "pep" in result and "poet" in result
+    assert "skip" not in result
+    assert "mabel" not in result
+    assert "juniper" in result and "pip" in result and "remy" in result
 
 
 def test_list_available_guides_is_read_only():
@@ -286,16 +288,16 @@ def test_list_available_guides_logs_what_it_handed_back(db, monkeypatch, caplog)
     invisible in the event log, so 'did it even ask?' was unanswerable from
     the DB alone after a helper confabulated a roster (2026-08-05)."""
     _clear_telegram_usernames(monkeypatch)
-    monkeypatch.setenv("TELEGRAM_USERNAME_MOCHI", "chordial_mvp_v3_mochi_bot")
+    monkeypatch.setenv("TELEGRAM_USERNAME_MABEL", "chordial_mvp_v3_mabel_bot")
     user_uuid = run(_make_user())
 
     with caplog.at_level("INFO", logger="src.services.tools.intro_tools"):
-        run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "chordial")))
+        run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
 
     line = next(r.getMessage() for r in caplog.records if "list_available_guides" in r.getMessage())
-    assert "actor=chordial" in line and user_uuid in line
-    assert "mochi (no link)" not in line  # configured: a link went out
-    assert "tempo (no link)" in line  # unconfigured: flagged, still offered
+    assert "actor=vel" in line and user_uuid in line
+    assert "mabel (no link)" not in line  # configured: a link went out
+    assert "skip (no link)" in line  # unconfigured: flagged, still offered
 
 
 def test_list_available_guides_description_covers_mid_conversation_asks():
@@ -329,20 +331,20 @@ def test_conversation_turns_carry_crew_awareness(monkeypatch):
     """the actual 2026-08-05 bug: on an ordinary conversation turn nothing in
     the prompt said a crew existed or that the roster had to be fetched - that
     instruction lived only in the introduction flow. asked about the other
-    helpers, chordial invented four of them, with wrong specialties and dead
+    helpers, vel invented four of them, with wrong specialties and dead
     links, without ever calling the tool."""
-    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo", "mochi"])
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "skip", "mabel"])
 
     text = _block2(_card())
 
     assert "list_available_guides" in text
-    assert "rest of the crew" in text
+    assert "rest of the council" in text
 
 
 def test_crew_awareness_reaches_scheduled_and_introduction_turns(monkeypatch):
     """it lives in the shared system block, so no turn kind is exempt - a
     proactive check-in can be asked about the crew just as easily."""
-    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo"])
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "skip"])
     prompts = PromptService(persona=_card(), enable_prompt_logging=False)
 
     for build in (prompts.build_scheduled_request, prompts.build_introduction_request):
@@ -360,7 +362,7 @@ def test_crew_awareness_reaches_scheduled_and_introduction_turns(monkeypatch):
 def test_no_crew_awareness_in_a_solo_deployment(monkeypatch):
     """one enabled helper has no crew to offer; promising one would be its own
     invented roster (.env.dev runs exactly this shape)."""
-    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial"])
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel"])
 
     assert "list_available_guides" not in _block2(_card())
 
@@ -368,10 +370,10 @@ def test_no_crew_awareness_in_a_solo_deployment(monkeypatch):
 def test_no_crew_awareness_when_the_card_cannot_call_the_tool(monkeypatch):
     """guidance and tool surface stay in sync: a card whose allowlist omits the
     tool is never told to call it."""
-    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["chordial", "tempo"])
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "skip"])
 
-    without = _card(id="tempo", tools=["save_memory"])
-    with_it = _card(id="tempo", tools=["save_memory", "list_available_guides"])
+    without = _card(id="skip", tools=["save_memory"])
+    with_it = _card(id="skip", tools=["save_memory", "list_available_guides"])
 
     assert "list_available_guides" not in _block2(without)
     assert "list_available_guides" in _block2(with_it)
@@ -388,10 +390,11 @@ def test_live_persona_intros_are_sceneless_and_excited(db):
     for card in cards.values():
         lowered = card.intro_block.lower()
         assert "forest" not in lowered
-        assert "greet them" in lowered
+        # authored cast: every helper shows up as itself, no staged reveal
+        assert "arrive as yourself" in lowered
 
     request = run(
-        PromptService(cards["chordial"], enable_prompt_logging=False).build_introduction_request(
+        PromptService(cards["vel"], enable_prompt_logging=False).build_introduction_request(
             conversation_history=[],
             user_name=None,
             user_uuid=None,
@@ -406,15 +409,21 @@ def test_live_persona_intros_are_sceneless_and_excited(db):
 
 def _card(**overrides) -> PersonaCard:
     defaults = dict(
-        id="chordial",
+        id="vel",
+        species="deer",
+        emoji="🦌",
+        lane="presence",
         archetype="friendly generalist",
-        telegram_handle="chordial_bot",
+        telegram_handle="vel_bot",
         specialty="the generalist",
         proactivity=0.9,
         tools=None,
-        persona_block="you are chordial, frozen persona text.",
+        speak_when=["directly_addressed"],
+        default_rooms=["daily"],
+        persona_block="you are vel, frozen persona text.",
         intro_block="you bounce up to greet them and learn their name.",
         intro_question="tell me something about yourself you'd want me to remember!",
+        chair=True,
     )
     defaults.update(overrides)
     return PersonaCard(**defaults)
@@ -433,11 +442,11 @@ def test_introduction_request_first_contact_has_no_current_message(db):
 
     # system blocks are the ordinary frozen persona + profile - unaware this
     # is an introduction (cache-stability requirement).
-    assert request.system[0].text == "you are chordial, frozen persona text."
+    assert request.system[0].text == "you are vel, frozen persona text."
 
     volatile = request.messages[-1].content
     assert "you bounce up to greet them and learn their name." in volatile
-    assert "representation ritual" in volatile  # the guided flow is present
+    assert "make me yours" in volatile  # the guided flow is present
     assert (
         "tell me something about yourself" in volatile
     )  # the signature question rides along
@@ -448,7 +457,7 @@ def test_introduction_request_carries_the_personas_signature_question(db):
     """each helper's own intro_question rides in the volatile turn - the guided
     flow builds around one clear question instead of open-ended prompting."""
     prompts = PromptService(
-        persona=_card(id="tempo", intro_question="what movement do you love?"),
+        persona=_card(id="skip", intro_question="what movement do you love?"),
         enable_prompt_logging=False,
     )
     request = run(
@@ -493,12 +502,12 @@ def test_introduction_request_renders_prior_history_for_a_returning_user(db):
     """a returning user meeting a NEW helper: prior events (e.g. this helper's
     own earlier dm turns) render as ordinary history ahead of the intro
     framing, not folded into the volatile turn."""
-    prompts = PromptService(persona=_card(id="tempo"), enable_prompt_logging=False)
+    prompts = PromptService(persona=_card(id="skip"), enable_prompt_logging=False)
     history = [
-        Event(author_type="user", author="user", kind="message", content="hey tempo"),
+        Event(author_type="user", author="user", kind="message", content="hey skip"),
         Event(
             author_type="agent",
-            author="tempo",
+            author="skip",
             kind="message",
             content="hi! good to meet you",
         ),
@@ -514,7 +523,7 @@ def test_introduction_request_renders_prior_history_for_a_returning_user(db):
     )
 
     rendered = [m.content for m in request.messages[:-1]]
-    assert any("hey tempo" in c for c in rendered)
+    assert any("hey skip" in c for c in rendered)
     assert any(c == "hi! good to meet you" for c in rendered)
 
 
@@ -568,7 +577,7 @@ class _StubLoop:
         )
 
         class _Result:
-            text = "hello, i'm tempo"
+            text = "hello, i'm skip"
             actions = []
             refused = False
 
@@ -576,7 +585,7 @@ class _StubLoop:
 
 
 def test_helper_agent_introduction_branch_uses_intro_prompt_and_acting_helper(db):
-    card = _card(id="tempo", telegram_handle="tempo_bot")
+    card = _card(id="skip", telegram_handle="tempo_bot")
     loop = _StubLoop()
     registry = ToolRegistry()
     registry.register(COMPLETE_INTRODUCTION)
@@ -593,11 +602,11 @@ def test_helper_agent_introduction_branch_uses_intro_prompt_and_acting_helper(db
 
     outcome = run(agent.act(briefing))
 
-    assert outcome.text == "hello, i'm tempo"
+    assert outcome.text == "hello, i'm skip"
     assert len(loop.calls) == 1
     call = loop.calls[0]
     assert call["turn_kind"] == "introduction"
-    assert call["acting_helper"] == "tempo"
+    assert call["acting_helper"] == "skip"
     # the request carries this persona's intro_block in its volatile turn
     assert "you bounce up to greet them" in call["request"].messages[-1].content
 
@@ -606,7 +615,7 @@ def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):
     """not just introductions - every loop.run call from HelperAgent must
     attribute the right helper, so save_memory/complete_introduction always
     work regardless of activation kind."""
-    card = _card(id="aria", telegram_handle="aria_bot")
+    card = _card(id="juniper", telegram_handle="aria_bot")
     loop = _StubLoop()
     registry = ToolRegistry()
 
@@ -621,16 +630,16 @@ def test_helper_agent_threads_acting_helper_on_ordinary_turns_too(db):
     )
     run(agent.act(briefing))
 
-    assert loop.calls[0]["acting_helper"] == "aria"
+    assert loop.calls[0]["acting_helper"] == "juniper"
     assert loop.calls[0]["turn_kind"] == "conversation"
 
 
 def test_helper_agent_forwards_the_directors_execution_hints(db):
     """briefing.execution reaches the loop as `hints` - the §4.8 seam.
-    chordial's director hints nothing today (empty hints = the default
+    vel's director hints nothing today (empty hints = the default
     route, byte-identical), but dynamic model routing is now a
     director-only change."""
-    card = _card(id="aria", telegram_handle="aria_bot")
+    card = _card(id="juniper", telegram_handle="aria_bot")
     loop = _StubLoop()
 
     agent = HelperAgent(card, loop, ToolRegistry())

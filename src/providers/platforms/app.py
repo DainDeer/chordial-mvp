@@ -24,6 +24,7 @@ import logging
 import uuid
 from typing import Any, Dict, Set
 
+from src.personas import CHAIR_ID
 from src.providers.platforms.base import BaseInterface
 from src.utils.timezone_utils import utc_now
 
@@ -87,7 +88,7 @@ class AppInterface(BaseInterface):
             # line on two surfaces (its POST response and its websocket)
             # dedupes by id instead of guessing by content
             "id": str(uuid.uuid4()),
-            "author": kwargs.get("speaker") or "chordial",
+            "author": kwargs.get("speaker") or CHAIR_ID,
             "content": content,
             "at": utc_now().isoformat(),
         }
