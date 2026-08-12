@@ -3,9 +3,9 @@ survival guarantee.
 
 the load-bearing invariant here is GOLDEN-BYTES: the chair's (vel's)
 persona_block must be byte-identical to the frozen literal below, and must
-render as system block 0 verbatim. if it drifts by a single byte, every
-existing user's warm cache prefix is invalidated on deploy. a deliberate
-voice change means updating BOTH and accepting the one-time invalidation
+remain the exact prefix of system block 0 ahead of its seed exemplars. if it
+drifts by a single byte, every existing user's warm cache prefix is invalidated
+on deploy. a deliberate voice change means updating BOTH and accepting the one-time invalidation
 (last done in the 2026-08 council-cast overhaul, which replaced the whole
 six-card crew with the seven-resident council).
 """
@@ -25,7 +25,7 @@ _TMP_DB_FD, _TMP_DB_PATH = tempfile.mkstemp(suffix=".db")
 os.close(_TMP_DB_FD)
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{_TMP_DB_PATH}")
 
-from src.personas import PersonaCard, load_personas  # noqa: E402
+from src.personas import PersonaCard, SeedExemplar, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.tools import Tool, ToolRegistry  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
@@ -73,6 +73,12 @@ def test_all_cards_load_and_validate():
         assert isinstance(card, PersonaCard)
         assert card.id == card_id  # id matches the filename/key
         assert card.persona_block.strip()  # non-empty frozen prompt
+        assert len(card.seed_exemplars) >= 4
+        assert all(isinstance(e, SeedExemplar) for e in card.seed_exemplars)
+        assert all(e.situation.strip() and e.exchange.strip()
+                   for e in card.seed_exemplars)
+        assert all("person:" in e.exchange and f"{card.id}:" in e.exchange
+                   for e in card.seed_exemplars)
         assert card.intro_block.strip()
         assert isinstance(card.proactivity, float)
         assert card.tools is None or all(isinstance(t, str) for t in card.tools)
@@ -113,10 +119,10 @@ def test_vel_persona_block_is_byte_identical_to_golden_constant():
 
 # ---------------------------------------------------------------------------
 # (c) a PromptService built with the vel card renders system block 0 with
-# exactly those bytes.
+# exactly those persona bytes followed by the immutable exemplar reference.
 # ---------------------------------------------------------------------------
 
-def test_prompt_service_renders_vel_persona_as_system_block_zero():
+def test_prompt_service_renders_vel_persona_and_exemplars_as_system_block_zero():
     ps = PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
     history = [Event(author_type="user", author="user", kind="message",
                      content="hi", created_at=datetime(2026, 7, 1, 12, 0))]
@@ -130,7 +136,14 @@ def test_prompt_service_renders_vel_persona_as_system_block_zero():
         )
 
     request = asyncio.run(run())
-    assert request.system[0].text == GOLDEN_VEL_PERSONA
+    block = request.system[0].text
+    assert block.startswith(GOLDEN_VEL_PERSONA + "\n\n")
+    assert "reference interactions for your voice and judgment:" in block
+    assert "these are examples, not conversation history" in block
+    assert "situation:" in block
+    for exemplar in load_personas()["vel"].seed_exemplars:
+        assert exemplar.situation in block
+        assert exemplar.exchange in block
 
 
 # ---------------------------------------------------------------------------

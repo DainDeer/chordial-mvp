@@ -610,6 +610,13 @@ class WebService:
                             platform="app",
                             platform_message_id=client_message_id,
                             metadata={"device": identity.device_uuid},
+                            # the app room is the COUNCIL's room (phase 3b):
+                            # a shared scope, so the routing spine picks the
+                            # speaker instead of hard-wiring the chair. the
+                            # 'group' id is the user - the app fans delivery
+                            # to their own connected surfaces.
+                            chat_scope="group",
+                            group_chat_id=user_uuid,
                         ))
                     replies = self.app_interface.drain(queue)
                 finally:

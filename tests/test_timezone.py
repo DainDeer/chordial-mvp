@@ -353,8 +353,10 @@ class TestContextBuilderSpecialContext:
             )
 
         request = asyncio.run(run())
-        # persona is present, frozen, and identical regardless of the clock
-        assert request.system[0].text == card.persona_block
+        # persona + seed exemplars are present, frozen, and identical
+        # regardless of the clock
+        assert request.system[0].text == ps._persona_reference_block()
+        assert request.system[0].text.startswith(card.persona_block + "\n\n")
         # the current turn still carries a "now" marker even with no special vibe
         assert request.messages[-1].content.startswith("[current time")
 

@@ -337,6 +337,22 @@ async def main():
             )
             logger.info("completion reconciler initialized")
 
+        # the speaking decider (phase 3b): the routing spine's gray-zone
+        # call - a shared-room message with no mention and several plausible
+        # lanes gets ONE tiny utility-model pick. no utility model, no
+        # decider: the director's rules alone route everything to the chair.
+        decider = None
+        if utility_provider is not None:
+            from src.services.speaking_policy import SpeakingDecider
+
+            decider = SpeakingDecider(
+                provider=utility_provider,
+                provider_name=provider_name,
+                usage_recorder=UsageRecorder(),
+            )
+            logger.info("speaking decider initialized (model=%s)",
+                        utility_provider.model)
+
         from src.managers.helper_state_manager import HelperStateManager
 
         orchestrator = build_orchestrator(
@@ -349,6 +365,7 @@ async def main():
             # the chair). the router resolves (platform, speaker) -> interface.
             router=router,
             helper_state_manager=HelperStateManager(),
+            decider=decider,
         )
         logger.info(f"dainframe engine initialized (agents: {', '.join(agents)})")
 

@@ -30,7 +30,7 @@ from src.managers.user_manager import UserManager  # noqa: E402
 from src.agents import Briefing  # noqa: E402
 from src.agents.helper import HelperAgent  # noqa: E402
 from src.managers.event_log import Event  # noqa: E402
-from src.personas import PersonaCard, load_personas  # noqa: E402
+from src.personas import PersonaCard, SeedExemplar, load_personas  # noqa: E402
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.tools import ToolRegistry  # noqa: E402
 from dainframe.tools.context import ToolContext  # noqa: E402
@@ -427,6 +427,10 @@ def _card(**overrides) -> PersonaCard:
         speak_when=["directly_addressed"],
         default_rooms=["daily"],
         persona_block="you are vel, frozen persona text.",
+        seed_exemplars=(SeedExemplar(
+            situation="the person says hello",
+            exchange="person: hi\nvel: oh, hello!",
+        ),),
         intro_block="you bounce up to greet them and learn their name.",
         intro_question="tell me something about yourself you'd want me to remember!",
         chair=True,
@@ -446,9 +450,12 @@ def test_introduction_request_first_contact_has_no_current_message(db):
         )
     )
 
-    # system blocks are the ordinary frozen persona + profile - unaware this
-    # is an introduction (cache-stability requirement).
-    assert request.system[0].text == "you are vel, frozen persona text."
+    # system blocks are the ordinary frozen persona/reference + profile -
+    # unaware this is an introduction (cache-stability requirement).
+    assert request.system[0].text.startswith(
+        "you are vel, frozen persona text.\n\n"
+    )
+    assert "these are examples, not conversation history" in request.system[0].text
 
     volatile = request.messages[-1].content
     assert "you bounce up to greet them and learn their name." in volatile
