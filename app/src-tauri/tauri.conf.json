@@ -23,8 +23,8 @@
         "label": "deer",
         "title": "deer",
         "url": "deer.html",
-        "width": 240,
-        "height": 320,
+        "width": 270,
+        "height": 500,
         "resizable": false,
         "alwaysOnTop": true,
         "decorations": false

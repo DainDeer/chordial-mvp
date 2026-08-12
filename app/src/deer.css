@@ -72,9 +72,9 @@
 }
 
 .deer-self {
-  font-size: 64px;
+  font-size: 46px;
   line-height: 1;
-  margin-top: 14px;
+  margin-top: 6px;
   transition: transform 0.4s ease;
 }
 
@@ -151,47 +151,206 @@
   transition: width 1s linear;
 }
 
-.deer-stop {
+.deer-clock .deer-extra {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sage);
+}
+
+.deer-clock.over {
+  color: #57975f;
+}
+
+.deer-controls {
+  display: flex;
+  gap: 7px;
+}
+
+.deer-pause,
+.deer-cancel {
   font-size: 12px;
   font-weight: 700;
   color: var(--ink-dim);
-  padding: 5px 12px;
+  padding: 6px 13px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--bg-raised);
 }
 
-.deer-stop:hover {
-  color: var(--rose-alert);
-  border-color: rgba(233, 143, 187, 0.5);
+.deer-pause:hover,
+.deer-cancel:hover {
+  color: var(--ink);
+  background: var(--bg-hover);
 }
 
-.deer-start {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.deer-start input {
-  font-size: 12.5px;
-  padding: 7px 10px;
-  text-align: center;
-}
-
-.deer-start button {
-  padding: 8px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  box-shadow: 0 4px 10px -4px rgba(233, 143, 187, 0.8);
-  color: #fff;
+.deer-finish {
+  font-size: 12px;
   font-weight: 700;
-  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #b6ecc0, #97dca6 55%, #7fce90);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 10px -4px rgba(127, 206, 144, 0.8);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(40, 80, 50, 0.5);
+}
+
+.deer-finish.confirm {
+  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
+  box-shadow: 0 4px 10px -4px rgba(233, 143, 187, 0.8);
   text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
 }
 
-.deer-start button:disabled {
+.deer-pause:disabled,
+.deer-finish:disabled {
   opacity: 0.5;
+}
+
+/* --- the day's tasks -------------------------------------------------- */
+
+.deer-tasks {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.deer-tasks ul {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.deer-task {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  box-shadow: 0 2px 8px -5px var(--shadow);
+}
+
+button.deer-task:hover:not(:disabled) {
+  border-color: rgba(233, 143, 187, 0.5);
+}
+
+.deer-task.active {
+  border-color: #e98fbb;
+  background: var(--blush-soft);
+}
+
+.deer-task-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-task-bar {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(201, 179, 236, 0.28);
+  overflow: hidden;
+}
+
+.deer-task-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  transition: width 1s linear;
+}
+
+.deer-task-fill.done {
+  background: linear-gradient(90deg, #b6ecc0, #7fce90);
+}
+
+.deer-task.done {
+  position: relative;
+  opacity: 0.55;
+  padding-left: 28px;
+}
+
+.deer-task.done .deer-task-title {
+  text-decoration: line-through;
+  text-decoration-color: rgba(58, 42, 64, 0.4);
+}
+
+.deer-task-check {
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #57975f;
+}
+
+.deer-empty {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-faint);
+  text-align: center;
+  padding: 10px 4px;
+}
+
+.deer-add {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.deer-add input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  padding: 7px 10px;
+}
+
+.deer-add button {
+  width: 34px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 16px;
+  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+}
+
+.deer-add button:disabled {
+  opacity: 0.45;
+}
+
+.deer-unlinked {
+  margin: auto 0;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-dim);
+  text-align: center;
+}
+
+.confetti {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  width: 100%;
+  height: 100%;
 }

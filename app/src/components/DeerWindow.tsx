@@ -1,34 +1,50 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SERVER_URL } from "../api/client";
+import {
+  createTask,
+  fetchToday,
+  SERVER_URL,
+  setTaskStatus,
+} from "../api/client";
 import {
   fetchSidecarState,
+  finishFocus,
   handshake,
+  pauseFocus,
   SidecarSocket,
-  startBlock,
-  stopBlock,
-  type SessionState,
+  startFocus,
+  type FocusState,
 } from "../api/sidecar";
+import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
 import { storedToken } from "../lib/session";
+import Confetti from "./Confetti";
 import InlineContent from "./InlineContent";
 
 const LINE_LINGER_MS = 12000;
-const DEFAULT_MINUTES = 25;
 
 function mmss(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
+  const s = Math.max(0, Math.round(totalSeconds % 60));
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-/** the deer's little window: presence without demand. a loaf, a clock that
- * fills up, and the occasional authored line in a bubble. */
+/** the deer's window: the day's tasks with their banked-time bars, one
+ * running clock, and a small creature keeping you company. tasks are
+ * canonical on the server; the clock and the banked minutes live in the
+ * sidecar; this window is where they meet. */
 export default function DeerWindow() {
-  const [session, setSession] = useState<SessionState>({ active: false });
+  const token = storedToken();
+  const [focus, setFocus] = useState<FocusState>({
+    running: false,
+    banked: {},
+  });
+  const [today, setToday] = useState<TodayPayload | null>(null);
   const [line, setLine] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [label, setLabel] = useState("");
+  const [newTitle, setNewTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmingFinish, setConfirmingFinish] = useState(false);
+  const [celebrating, setCelebrating] = useState(false);
   const lineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showLine = useCallback((text: string) => {
@@ -37,10 +53,16 @@ export default function DeerWindow() {
     lineTimer.current = setTimeout(() => setLine(null), LINE_LINGER_MS);
   }, []);
 
+  const refreshToday = useCallback(() => {
+    if (!token) return;
+    fetchToday(token)
+      .then(setToday)
+      .catch(() => {});
+  }, [token]);
+
   // hand the sidecar its credential once - the deer window shares the
   // shell's origin, so the stored device token is right here
   useEffect(() => {
-    const token = storedToken();
     if (token) {
       handshake(token, SERVER_URL).catch(() => {
         // sidecar not up yet; the socket's reconnect will find it and the
@@ -49,16 +71,17 @@ export default function DeerWindow() {
     }
     fetchSidecarState()
       .then((state) => {
-        setSession(state.session);
+        setFocus(state.focus);
         if (state.line) setLine(state.line);
       })
       .catch(() => {});
-  }, []);
+    refreshToday();
+  }, [token, refreshToday]);
 
   useEffect(() => {
     const socket = new SidecarSocket({
       onPush: (payload) => {
-        if (payload.type === "state") setSession(payload.session);
+        if (payload.type === "state") setFocus(payload.focus);
         if (payload.type === "line") showLine(payload.text);
       },
       onStatus: setConnected,
@@ -67,55 +90,121 @@ export default function DeerWindow() {
     return () => socket.stop();
   }, [showLine]);
 
-  // the countdown renders locally off ends_at - one second-hand, no polling
+  // one local second-hand while a clock runs
   useEffect(() => {
-    if (!session.active) return;
+    if (!focus.running) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [session.active]);
+  }, [focus.running]);
 
-  async function onStart(e: React.FormEvent) {
+  const pomMinutes = today?.pom_minutes ?? 25;
+  const runSeconds =
+    focus.running && focus.started_at
+      ? Math.max(0, (now - Date.parse(focus.started_at)) / 1000)
+      : 0;
+  const targetSeconds = (focus.target_minutes ?? pomMinutes) * 60;
+  const overtime = focus.running && runSeconds >= targetSeconds;
+
+  const openTasks: TaskRow[] = today
+    ? [
+        ...today.buckets.in_progress,
+        ...today.buckets.today,
+        ...today.buckets.overdue,
+      ]
+    : [];
+  const doneTasks: DoneTaskRow[] = today?.buckets.done ?? [];
+
+  /** today's minutes on a task, live: banked runs + the running clock */
+  function taskSeconds(taskId: number): number {
+    const banked = focus.banked[String(taskId)] ?? 0;
+    return focus.running && focus.task_id === taskId
+      ? banked + runSeconds
+      : banked;
+  }
+
+  function taskFill(task: TaskRow | DoneTaskRow): number {
+    const target = Math.max(task.pom_estimate ?? 1, 0.5) * pomMinutes * 60;
+    return Math.min(1, taskSeconds(task.id) / target);
+  }
+
+  async function onPickTask(task: TaskRow) {
+    if (busy || (focus.running && focus.task_id === task.id)) return;
+    setBusy(true);
+    setConfirmingFinish(false);
+    try {
+      const result = await startFocus(task.id, task.title, pomMinutes);
+      setFocus(result.focus);
+      showLine(result.line);
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onPause() {
+    if (busy) return;
+    setBusy(true);
+    setConfirmingFinish(false);
+    try {
+      const result = await pauseFocus();
+      setFocus(result.focus);
+      showLine(result.line);
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onFinish() {
+    if (busy) return;
+    // landing before the block is up deserves one gentle "you sure?"
+    if (runSeconds < targetSeconds && !confirmingFinish) {
+      setConfirmingFinish(true);
+      return;
+    }
+    setBusy(true);
+    setConfirmingFinish(false);
+    const taskId = focus.task_id;
+    try {
+      const result = await finishFocus();
+      setFocus(result.focus);
+      showLine(result.line);
+      setCelebrating(true);
+      if (token && typeof taskId === "number") {
+        await setTaskStatus(token, taskId, "done").catch(() => {});
+      }
+      refreshToday();
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onAddTask(e: React.FormEvent) {
+    // adding never touches the running clock - jot it, keep working,
+    // switch when YOU choose
     e.preventDefault();
-    if (busy) return;
+    const title = newTitle.trim();
+    if (!title || !token || busy) return;
     setBusy(true);
     try {
-      const result = await startBlock(label.trim(), DEFAULT_MINUTES);
-      setSession(result.session);
-      showLine(result.line);
-      setLabel("");
+      await createTask(token, title);
+      setNewTitle("");
+      refreshToday();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "couldn’t add that");
     } finally {
       setBusy(false);
     }
   }
-
-  async function onStop() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const result = await stopBlock();
-      setSession(result.session);
-      showLine(result.line);
-    } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  let remaining = 0;
-  let filled = 0;
-  if (session.active && session.ends_at && session.started_at) {
-    const ends = Date.parse(session.ends_at);
-    const started = Date.parse(session.started_at);
-    remaining = Math.max(0, Math.round((ends - now) / 1000));
-    filled = Math.min(1, Math.max(0, (now - started) / (ends - started)));
-  }
-  const perked = session.active && remaining <= 60;
 
   return (
     <div className="deer-window">
+      {celebrating && <Confetti onDone={() => setCelebrating(false)} />}
+
       <div className="deer-drag" data-tauri-drag-region="true">
         <span
           className={`deer-link-dot${connected ? " on" : ""}`}
@@ -130,47 +219,135 @@ export default function DeerWindow() {
       )}
 
       <div
-        className={`deer-self${session.active ? " watching" : " loafing"}${
-          perked ? " perked" : ""
+        className={`deer-self${focus.running ? " watching" : " loafing"}${
+          overtime ? " perked" : ""
         }`}
         aria-hidden="true"
       >
         🦌
       </div>
       <p className="deer-caption">
-        {session.active
-          ? perked
-            ? "ears perked — almost there"
+        {focus.running
+          ? overtime
+            ? "still here — every extra minute counts"
             : "on watch beside you"
           : "loafing nearby"}
       </p>
 
-      {session.active ? (
+      {focus.running && (
         <div className="deer-session">
-          {session.label && <p className="deer-label">{session.label}</p>}
-          <p className="deer-clock">{mmss(remaining)}</p>
+          {focus.label && <p className="deer-label">{focus.label}</p>}
+          <p className={`deer-clock${overtime ? " over" : ""}`}>
+            {mmss(runSeconds)}
+            {overtime && (
+              <span className="deer-extra">
+                +{mmss(runSeconds - targetSeconds)} extra
+              </span>
+            )}
+          </p>
           <div className="deer-fill">
             <div
               className="deer-fill-bar"
-              style={{ width: `${filled * 100}%` }}
+              style={{
+                width: `${Math.min(1, runSeconds / targetSeconds) * 100}%`,
+              }}
             />
           </div>
-          <button className="deer-stop" onClick={onStop} disabled={busy}>
-            stop early
-          </button>
+          <div className="deer-controls">
+            <button className="deer-pause" onClick={onPause} disabled={busy}>
+              pause
+            </button>
+            {confirmingFinish ? (
+              <>
+                <button
+                  className="deer-finish confirm"
+                  onClick={onFinish}
+                  disabled={busy}
+                >
+                  finish early?
+                </button>
+                <button
+                  className="deer-cancel"
+                  onClick={() => setConfirmingFinish(false)}
+                >
+                  keep going
+                </button>
+              </>
+            ) : (
+              <button
+                className="deer-finish"
+                onClick={onFinish}
+                disabled={busy}
+              >
+                finished ✓
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {token ? (
+        <div className="deer-tasks">
+          <ul>
+            {openTasks.map((task) => {
+              const active = focus.running && focus.task_id === task.id;
+              return (
+                <li key={task.id}>
+                  <button
+                    className={`deer-task${active ? " active" : ""}`}
+                    onClick={() => onPickTask(task)}
+                    disabled={busy || active}
+                    title={active ? "this clock is running" : "start / switch"}
+                  >
+                    <span className="deer-task-title">{task.title}</span>
+                    <span className="deer-task-bar">
+                      <span
+                        className="deer-task-fill"
+                        style={{ width: `${taskFill(task) * 100}%` }}
+                      />
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+            {doneTasks.map((task) => (
+              <li key={`done-${task.id}`}>
+                <div className="deer-task done">
+                  <span className="deer-task-check" aria-hidden="true">
+                    ✓
+                  </span>
+                  <span className="deer-task-title">{task.title}</span>
+                  <span className="deer-task-bar">
+                    <span
+                      className="deer-task-fill done"
+                      style={{ width: "100%" }}
+                    />
+                  </span>
+                </div>
+              </li>
+            ))}
+            {openTasks.length === 0 && doneTasks.length === 0 && (
+              <li className="deer-empty">
+                nothing on the list yet — jot one below.
+              </li>
+            )}
+          </ul>
+          <form className="deer-add" onSubmit={onAddTask}>
+            <input
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.currentTarget.value)}
+              placeholder="add a task…"
+              maxLength={300}
+            />
+            <button type="submit" disabled={busy || !newTitle.trim()}>
+              +
+            </button>
+          </form>
         </div>
       ) : (
-        <form className="deer-start" onSubmit={onStart}>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.currentTarget.value)}
-            placeholder="what are we doing?"
-            maxLength={200}
-          />
-          <button type="submit" disabled={busy}>
-            one block · {DEFAULT_MINUTES} min
-          </button>
-        </form>
+        <p className="deer-unlinked">
+          link chordial in the main window first — then i can see your day.
+        </p>
       )}
     </div>
   );

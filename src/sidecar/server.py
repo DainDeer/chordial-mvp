@@ -7,17 +7,23 @@ main server's /api/v1); the tauri shell and the vite dev origin are the
 only welcome callers.
 
 surface (all JSON):
-    POST /v1/handshake        {token, server_url} - the shell hands the
-                              sidecar its device credential once; a NEW
-                              device uuid rebases the outbox (fresh server
-                              cursor) and un-parks the sync pump
-    GET  /v1/state            {session, line}
-    POST /v1/session/start    {label?, minutes?} -> state + an authored line
-    POST /v1/session/stop     -> state + outcome + line
-    WS   /v1/ws               pushes {type: "state"|"line", ...} as they happen
+    POST /v1/handshake      {token, server_url} - the shell hands the
+                            sidecar its device credential once; a NEW
+                            device uuid rebases the outbox (fresh server
+                            cursor) and un-parks the sync pump
+    GET  /v1/state          {focus, line, linked, sync_error}
+    POST /v1/focus/start    {task_id?, label?, target_minutes?} - start or
+                            SWITCH (a running clock on another task pauses
+                            and banks first)
+    POST /v1/focus/pause    stop the clock, bank the run
+    POST /v1/focus/finish   the task is DONE - the celebration moment; the
+                            window marks the task done on the chordial
+                            server itself (tasks are canonical there)
+    WS   /v1/ws             pushes {type: "state"|"line", ...} as they happen
 
-the 1-second ticker settles expired blocks (the ding), so completion lines
-arrive over the websocket the moment the clock runs out - no client polling.
+the 1-second ticker announces a run crossing its block target ONCE - a
+gentle ding that ends nothing; the clock keeps counting overtime until the
+person lands it.
 """
 from __future__ import annotations
 
@@ -28,8 +34,8 @@ from typing import Optional, Set
 
 from aiohttp import web
 
+from src.sidecar.focus import FocusEngine, FocusError
 from src.sidecar.lines import pick_line
-from src.sidecar.sessions import SessionEngine, SessionError
 from src.sidecar.store import SidecarStore
 from src.sidecar.sync import OutboxPump
 
@@ -46,10 +52,10 @@ ALLOWED_ORIGINS = [
 
 class SidecarService:
     def __init__(self, store: SidecarStore,
-                 engine: Optional[SessionEngine] = None,
+                 engine: Optional[FocusEngine] = None,
                  pump: Optional[OutboxPump] = None):
         self.store = store
-        self.engine = engine or SessionEngine(store)
+        self.engine = engine or FocusEngine(store)
         self.pump = pump or OutboxPump(store)
         self._sockets: Set[web.WebSocketResponse] = set()
         self._last_line: Optional[str] = None
@@ -61,8 +67,9 @@ class SidecarService:
         app = web.Application(middlewares=[self._cors])
         app.router.add_post("/v1/handshake", self._handshake)
         app.router.add_get("/v1/state", self._state)
-        app.router.add_post("/v1/session/start", self._session_start)
-        app.router.add_post("/v1/session/stop", self._session_stop)
+        app.router.add_post("/v1/focus/start", self._focus_start)
+        app.router.add_post("/v1/focus/pause", self._focus_pause)
+        app.router.add_post("/v1/focus/finish", self._focus_finish)
         app.router.add_get("/v1/ws", self._ws)
         app.on_startup.append(self._start_background)
         app.on_cleanup.append(self._stop_background)
@@ -129,18 +136,18 @@ class SidecarService:
         await self._broadcast({"type": "line", "moment": moment,
                                "text": line})
         await self._broadcast({"type": "state",
-                               "session": self.engine.state()})
+                               "focus": self.engine.state()})
         return line
 
     # --- the ticker -----------------------------------------------------------
 
     async def _ticker(self) -> None:
-        """settle expired blocks every second - the ding."""
+        """the gentle ding: announce a run crossing its target, once."""
         while True:
             await asyncio.sleep(1)
             try:
-                if self.engine.tick() == "completed":
-                    await self._announce("session_complete")
+                if self.engine.crossed_target():
+                    await self._announce("block_target")
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -171,32 +178,50 @@ class SidecarService:
 
     async def _state(self, _request: web.Request) -> web.Response:
         return web.json_response({
-            "session": self.engine.state(),
+            "focus": self.engine.state(),
             "line": self._last_line,
             "linked": bool(self.store.get("device_token")),
             "sync_error": self.store.get("sync_error") or None,
         })
 
-    async def _session_start(self, request: web.Request) -> web.Response:
+    async def _focus_start(self, request: web.Request) -> web.Response:
         body = await _json_body(request) or {}
+        task_id = body.get("task_id") if isinstance(body, dict) else None
         label = body.get("label") if isinstance(body, dict) else None
-        minutes = body.get("minutes", 25) if isinstance(body, dict) else 25
+        target = body.get("target_minutes", 25) if isinstance(body, dict) \
+            else 25
+        switching = self.engine.state().get("running", False)
         try:
             state = self.engine.start(
-                label if isinstance(label, str) else None, minutes)
-        except SessionError as e:
+                task_id if isinstance(task_id, int) else None,
+                label if isinstance(label, str) else None,
+                target)
+        except FocusError as e:
             return _error(str(e))
-        line = await self._announce("session_start")
-        return web.json_response({"session": state, "line": line})
+        line = await self._announce(
+            "focus_switch" if switching else "focus_start")
+        return web.json_response({"focus": state, "line": line})
 
-    async def _session_stop(self, _request: web.Request) -> web.Response:
-        outcome = self.engine.stop()
-        if outcome is None:
-            return _error("no block is running", status=409)
-        line = await self._announce(f"session_{outcome}")
+    async def _focus_pause(self, _request: web.Request) -> web.Response:
+        run = self.engine.pause()
+        if run is None:
+            return _error("no clock is running", status=409)
+        line = await self._announce("focus_pause")
         return web.json_response({
-            "session": self.engine.state(),
-            "outcome": outcome,
+            "focus": self.engine.state(),
+            "run": run,
+            "line": line,
+        })
+
+    async def _focus_finish(self, _request: web.Request) -> web.Response:
+        try:
+            run = self.engine.finish()
+        except FocusError as e:
+            return _error(str(e), status=409)
+        line = await self._announce("task_finished")
+        return web.json_response({
+            "focus": self.engine.state(),
+            "run": run,
             "line": line,
         })
 
@@ -206,7 +231,7 @@ class SidecarService:
         self._sockets.add(ws)
         try:
             await ws.send_json({"type": "state",
-                                "session": self.engine.state()})
+                                "focus": self.engine.state()})
             async for _ in ws:
                 pass          # loopback push channel; client frames ignored
         finally:

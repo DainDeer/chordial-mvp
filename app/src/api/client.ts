@@ -7,6 +7,7 @@ import type {
   RoomCurrent,
   HistoryRow,
   SendResult,
+  TaskRow,
   TodayPayload,
 } from "./types";
 
@@ -76,6 +77,30 @@ export function fetchRoomMessages(
 
 export function fetchToday(token: string): Promise<TodayPayload> {
   return request("/api/v1/today", { token });
+}
+
+/** quick-add from the deer window: title only, lands scheduled-today */
+export function createTask(
+  token: string,
+  title: string,
+): Promise<{ ok: boolean; task: TaskRow }> {
+  return request("/api/v1/tasks", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function setTaskStatus(
+  token: string,
+  taskId: number,
+  status: string,
+): Promise<{ ok: boolean; task: TaskRow }> {
+  return request(`/api/v1/tasks/${taskId}/status`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ status }),
+  });
 }
 
 // a turn can be slow (the model is thinking) and a duplicate POST for the

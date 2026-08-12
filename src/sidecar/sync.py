@@ -46,6 +46,40 @@ class OutboxPump:
             await self._session.close()
             self._session = None
 
+    async def _align_cursor(self, client: aiohttp.ClientSession,
+                            server: str, token: str) -> bool:
+        """before this store's first push under a device: lift our seq
+        numbering above the server's durable cursor. a fresh sidecar db
+        under an existing device restarts at seq 1, and everything at or
+        below the cursor would be swallowed as a duplicate - acked,
+        trimmed, and silently lost. once per (store, device); the kv stamp
+        makes it idempotent."""
+        device = self.store.get("device_uuid") or token.partition(".")[0]
+        if self.store.get("cursor_aligned") == device:
+            return True
+        try:
+            resp = await client.get(
+                f"{server}/api/v1/sync/cursor",
+                headers={"Authorization": f"Bearer {token}"})
+            body = await resp.json(content_type=None)
+        except Exception as e:
+            logger.warning("cursor fetch failed (will retry): %s", e)
+            return False
+        if resp.status == 401:
+            # revoked device: same park as a rejected push
+            self.store.put("sync_error", "device token rejected (401)")
+            logger.warning("outbox parked: device token rejected")
+            return False
+        if resp.status != 200 or not isinstance(body.get("acked_seq"), int):
+            logger.warning("cursor fetch got %s: %s", resp.status, body)
+            return False
+        moved = self.store.align_seq(body["acked_seq"])
+        if moved:
+            logger.info("outbox renumbered above server cursor %d "
+                        "(%d pending)", body["acked_seq"], moved)
+        self.store.put("cursor_aligned", device)
+        return True
+
     async def push_once(self) -> Optional[dict]:
         """one push attempt. returns the server's sync result dict, or None
         when there was nothing to send / no credentials / a failure (which
@@ -59,6 +93,9 @@ class OutboxPump:
             return None            # not handshaken yet; events keep queuing
 
         client = await self._client()
+        if not await self._align_cursor(client, server, token):
+            return None
+        events = self.store.pending(_BATCH)   # alignment may have renumbered
         try:
             resp = await client.post(
                 f"{server}/api/v1/sync/events",

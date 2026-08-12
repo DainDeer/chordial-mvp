@@ -415,6 +415,70 @@ def test_negative_limit_is_clamped(env):
     _run(_with_service(_service(), flow))
 
 
+# --- tasks over the device api (the deer window's canonical seam) --------------
+
+
+def test_task_create_finish_and_done_bucket(env):
+    async def flow(client):
+        token = _token(U1)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = await client.post("/api/v1/tasks",
+                                 json={"title": "bounce stems"},
+                                 headers=headers)
+        assert resp.status == 201
+        task = (await resp.json())["task"]
+        assert task["title"] == "bounce stems"
+
+        today = await client.get("/api/v1/today", headers=headers)
+        buckets = (await today.json())["buckets"]
+        assert [t["title"] for t in buckets["today"]] == ["bounce stems"]
+        assert buckets["done"] == []
+
+        resp = await client.post(f"/api/v1/tasks/{task['id']}/status",
+                                 json={"status": "done"}, headers=headers)
+        assert resp.status == 200
+        assert (await resp.json())["task"]["status"] == "done"
+
+        today = await client.get("/api/v1/today", headers=headers)
+        buckets = (await today.json())["buckets"]
+        assert buckets["today"] == []
+        assert [t["title"] for t in buckets["done"]] == ["bounce stems"]
+        assert buckets["done"][0]["closed_at"]
+    _run(_with_service(_service(), flow))
+
+
+def test_task_endpoints_validate_and_scope(env):
+    async def flow(client):
+        token = _token(U1)
+        headers = {"Authorization": f"Bearer {token}"}
+        for bad in ({}, {"title": ""}, {"title": "   "},
+                    {"title": "x" * 301}):
+            resp = await client.post("/api/v1/tasks", json=bad,
+                                     headers=headers)
+            assert resp.status == 400, bad
+
+        resp = await client.post("/api/v1/tasks", json={"title": "mine"},
+                                 headers=headers)
+        task = (await resp.json())["task"]
+
+        # another tenant can't touch it
+        other = {"Authorization": f"Bearer {_token(U2)}"}
+        resp = await client.post(f"/api/v1/tasks/{task['id']}/status",
+                                 json={"status": "done"}, headers=other)
+        assert resp.status == 404
+
+        resp = await client.post(f"/api/v1/tasks/{task['id']}/status",
+                                 json={"status": "not-a-status"},
+                                 headers=headers)
+        assert resp.status == 400
+
+        resp = await client.post("/api/v1/tasks/abc/status",
+                                 json={"status": "done"}, headers=headers)
+        assert resp.status == 400
+    _run(_with_service(_service(), flow))
+
+
 # --- the council roster (the presence strip's data source) ---------------------
 
 

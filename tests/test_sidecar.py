@@ -1,6 +1,6 @@
-"""the sidecar: local store, focus blocks, authored lines, and the outbox
-pump's round trip into the real sync contract (phase 4b of the rooms
-overhaul - the deer's machinery).
+"""the sidecar: local store, the task-clock focus model, authored lines, and
+the outbox pump's round trip into the real sync contract (phase 4b of the
+rooms overhaul - the deer's machinery).
 
 the clock is injected everywhere: tests move time, they don't sleep
 through it.
@@ -21,8 +21,8 @@ from sqlalchemy.orm import sessionmaker
 
 import src.database.database as db_mod
 from src.database.models import Base, DeviceEvent, User
+from src.sidecar.focus import FocusEngine, FocusError
 from src.sidecar.lines import LINE_POOLS, pick_line
-from src.sidecar.sessions import SessionEngine, SessionError
 from src.sidecar.server import SidecarService
 from src.sidecar.store import SidecarStore
 from src.sidecar.sync import OutboxPump
@@ -47,7 +47,7 @@ class Clock:
     """a hand-cranked clock."""
 
     def __init__(self):
-        self.now = datetime(2026, 8, 12, 9, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 8, 12, 15, 0, tzinfo=timezone.utc)
 
     def __call__(self):
         return self.now
@@ -60,18 +60,18 @@ class Clock:
 
 
 def test_outbox_seq_is_monotonic_across_trims(store):
-    store.enqueue("focus_block.started", {"n": 1})
+    store.enqueue("session.started", {"n": 1})
     store.enqueue("focus_block.completed", {"n": 2})
     store.trim(2)
     assert store.pending() == []
-    seq = store.enqueue("focus_block.started", {"n": 3})
+    seq = store.enqueue("session.started", {"n": 3})
     # AUTOINCREMENT never reuses a seq - the server's (device, seq)
     # uniqueness depends on it
     assert seq == 3
 
 
 def test_outbox_rebase_renumbers_from_one(store):
-    store.enqueue("focus_block.started", {"n": 1})
+    store.enqueue("session.started", {"n": 1})
     store.enqueue("focus_block.completed", {"n": 2})
     store.trim(1)                       # first event acked under old device
     moved = store.rebase_outbox()
@@ -80,87 +80,152 @@ def test_outbox_rebase_renumbers_from_one(store):
     assert [e["seq"] for e in pending] == [1]
     assert pending[0]["payload"] == {"n": 2}
     # and the sequence really restarts - the next event is seq 2, not 4
-    assert store.enqueue("focus_block.started", {"n": 3}) == 2
+    assert store.enqueue("session.started", {"n": 3}) == 2
 
 
-def test_kv_roundtrip(store):
-    assert store.get("device_token") is None
-    store.put("device_token", "abc.def")
-    store.put("device_token", "abc.xyz")
-    assert store.get("device_token") == "abc.xyz"
+def test_banked_since_groups_by_task(store):
+    store.insert_run(7, "novel", 25, "2026-08-12T14:00:00+00:00")
+    store.close_run(1, "2026-08-12T14:10:00+00:00", 600, "paused")
+    store.insert_run(7, "novel", 25, "2026-08-12T15:00:00+00:00")
+    store.close_run(2, "2026-08-12T15:05:00+00:00", 300, "switched")
+    store.insert_run(9, "stems", 25, "2026-08-12T15:05:00+00:00")
+    store.close_run(3, "2026-08-12T15:25:00+00:00", 1200, "finished")
+    store.insert_run(3, "old", 25, "2026-08-11T09:00:00+00:00")   # yesterday
+    store.close_run(4, "2026-08-11T09:30:00+00:00", 1800, "paused")
+
+    banked = store.banked_since("2026-08-12T00:00:00+00:00")
+    assert banked == {7: 900, 9: 1200}
 
 
-# --- the session engine ---------------------------------------------------
+def test_align_seq_lifts_numbering_above_the_cursor(store):
+    store.enqueue("session.started", {"n": 1})
+    store.enqueue("session.ended", {"n": 2})
+    moved = store.align_seq(6)
+    assert moved == 2
+    assert [e["seq"] for e in store.pending()] == [7, 8]
+    assert store.enqueue("focus_block.completed", {"n": 3}) == 9
 
 
-def test_block_lifecycle_completed_by_tick(store):
+def test_align_seq_is_a_noop_when_already_above(store):
+    store.enqueue("session.started", {"n": 1})
+    store.trim(1)
+    store.enqueue("session.started", {"n": 2})     # seq 2
+    assert store.align_seq(1) == 0                  # pending already above
+    assert [e["seq"] for e in store.pending()] == [2]
+
+
+# --- the focus engine (the task-clock model) ---------------------------------
+
+
+def test_switch_banks_the_previous_run(store):
     clock = Clock()
-    engine = SessionEngine(store, clock=clock)
-    state = engine.start("write the novel", minutes=25)
-    assert state["active"] is True
-    assert state["remaining_seconds"] == 25 * 60
-
-    assert engine.tick() is None               # mid-block: nothing settles
-    clock.advance(minutes=25)
-    assert engine.tick() == "completed"
-    assert engine.state() == {"active": False}
-
-    events = store.pending()
-    assert [e["type"] for e in events] == \
-        ["focus_block.started", "focus_block.completed"]
-    done = events[1]
-    assert done["payload"]["label"] == "write the novel"
-    assert done["payload"]["elapsed_seconds"] == 25 * 60
-    # the completion is stamped at the clock's end, not whenever tick ran
-    assert done["occurred_at"] == state["ends_at"]
-
-
-def test_stop_early_is_abandoned_stop_late_is_completed(store):
-    clock = Clock()
-    engine = SessionEngine(store, clock=clock)
-    engine.start(minutes=25)
+    engine = FocusEngine(store, clock=clock)
+    engine.start(task_id=7, label="novel", target_minutes=25)
     clock.advance(minutes=10)
-    assert engine.stop() == "abandoned"
-    abandoned = store.pending()[-1]
-    assert abandoned["type"] == "focus_block.abandoned"
-    assert abandoned["payload"]["elapsed_seconds"] == 10 * 60
+    state = engine.start(task_id=9, label="stems", target_minutes=25)
 
-    engine.start(minutes=25)
-    clock.advance(minutes=26)                 # the ding went unacknowledged
-    assert engine.stop() == "completed"
-    assert engine.stop() is None              # nothing left running
+    assert state["running"] is True
+    assert state["task_id"] == 9
+    assert state["banked"][7] == 600           # ten minutes, kept
+    types = [e["type"] for e in store.pending()]
+    assert types == ["session.started", "session.ended", "session.started"]
+    ended = store.pending()[1]
+    assert ended["payload"]["reason"] == "switched"
+    assert ended["payload"]["seconds"] == 600
+
+
+def test_no_auto_finish_the_clock_counts_overtime(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    engine.start(task_id=7, label="novel", target_minutes=25)
+
+    assert engine.crossed_target() is False
+    clock.advance(minutes=26)
+    # the run is STILL going - crossing the target ends nothing
+    state = engine.state()
+    assert state["running"] is True
+    assert state["over_target"] is True
+    assert state["run_seconds"] == 26 * 60
+    # the ding fires exactly once
+    assert engine.crossed_target() is True
+    assert engine.crossed_target() is False
+
+
+def test_pause_banks_and_is_never_a_verdict(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    assert engine.pause() is None              # idle: nothing to pause
+    engine.start(task_id=7, label="novel")
+    clock.advance(minutes=10)
+    run = engine.pause()
+    assert run["reason"] == "paused"
+    assert run["seconds"] == 600
+    assert engine.state()["running"] is False
+    assert engine.state()["banked"][7] == 600
+    # resume: same task, new run, bank keeps growing
+    engine.start(task_id=7, label="novel")
+    clock.advance(minutes=5)
+    engine.pause()
+    assert engine.state()["banked"][7] == 900
+
+
+def test_finish_emits_the_celebration_event_with_the_days_bank(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    engine.start(task_id=7, label="novel")
+    clock.advance(minutes=10)
+    engine.pause()
+    engine.start(task_id=7, label="novel")
+    clock.advance(minutes=15)
+    summary = engine.finish()
+    assert summary["reason"] == "finished"
+
+    done = store.pending()[-1]
+    assert done["type"] == "focus_block.completed"
+    assert done["payload"]["task_id"] == 7
+    assert done["payload"]["run_seconds"] == 15 * 60
+    assert done["payload"]["banked_seconds_today"] == 25 * 60
+
+    with pytest.raises(FocusError):
+        engine.finish()                        # landing needs a running clock
 
 
 def test_start_guards(store):
-    engine = SessionEngine(store, clock=Clock())
-    engine.start(minutes=25)
-    with pytest.raises(SessionError):
-        engine.start(minutes=25)              # one block at a time
-    for bad in (0, -5, 500, "25", True):
-        with pytest.raises(SessionError):
-            SessionEngine(store, clock=Clock()).start(minutes=bad)
-
-
-def test_block_survives_a_sidecar_restart(store):
     clock = Clock()
-    SessionEngine(store, clock=clock).start("resumable", minutes=25)
-    clock.advance(minutes=5)
-    # a fresh engine over the same store IS the restarted sidecar
-    engine = SessionEngine(store, clock=clock)
-    assert engine.state()["remaining_seconds"] == 20 * 60
-    clock.advance(minutes=21)                 # expired while "down"
-    assert engine.tick() == "completed"
+    engine = FocusEngine(store, clock=clock)
+    for bad in (0, -5, 500, "25", True):
+        with pytest.raises(FocusError):
+            engine.start(target_minutes=bad)
+    with pytest.raises(FocusError):
+        engine.start(task_id=0)
+    engine.start(task_id=7, label="novel")
+    with pytest.raises(FocusError):
+        engine.start(task_id=7)                # that clock is already running
+
+
+def test_run_survives_a_sidecar_restart(store):
+    clock = Clock()
+    FocusEngine(store, clock=clock).start(task_id=7, label="resumable")
+    clock.advance(minutes=30)
+    # a fresh engine over the same store IS the restarted sidecar: the run
+    # is still going, deep in overtime, and the ding can still fire
+    engine = FocusEngine(store, clock=clock)
+    state = engine.state()
+    assert state["running"] is True
+    assert state["run_seconds"] == 30 * 60
+    assert state["over_target"] is True
+    assert engine.crossed_target() is True
 
 
 # --- lines -------------------------------------------------------------------
 
 
 def test_lines_never_repeat_and_unknown_moments_are_silent():
-    last = pick_line("session_start")
+    last = pick_line("task_finished")
     for _ in range(50):
-        line = pick_line("session_start", last=last)
+        line = pick_line("task_finished", last=last)
         assert line != last
-        assert line in LINE_POOLS["session_start"]
+        assert line in LINE_POOLS["task_finished"]
         last = line
     assert pick_line("no_such_moment") == ""
 
@@ -195,8 +260,9 @@ def test_pump_round_trip_acks_and_trims(server_env, store):
             store.put("server_url", str(client.make_url("")).rstrip("/"))
 
             store.enqueue("focus_block.completed",
-                          {"label": "novel", "minutes": 25,
-                           "elapsed_seconds": 1500})
+                          {"task_id": 7, "label": "novel",
+                           "run_seconds": 1500,
+                           "banked_seconds_today": 1500})
             store.enqueue("not.a.real.type", {})   # tombstones, never pins
 
             pump = OutboxPump(store)
@@ -215,6 +281,60 @@ def test_pump_round_trip_acks_and_trims(server_env, store):
                 assert [r.rejected for r in rows] == [False, True]
                 assert rows[0].event_type == "focus_block.completed"
                 assert rows[0].payload["label"] == "novel"
+        finally:
+            await client.close()
+    _run(flow())
+
+
+def test_fresh_store_under_an_existing_device_loses_nothing(server_env, store,
+                                                            tmp_path):
+    """the wiped-sidecar hazard, reproduced then prevented: the device's
+    server cursor is ahead, a fresh store restarts numbering at seq 1, and
+    without cursor alignment every event would dedupe as already-applied -
+    acked, trimmed, silently lost."""
+    async def flow():
+        web_service = WebService(user_resolver=lambda: U1)
+        client = TestClient(TestServer(web_service.build_app()))
+        await client.start_server()
+        try:
+            code = device_auth.mint_device_link_code(U1)
+            _uuid, token = device_auth.link_device(code, "wiped-later")
+            server_url = str(client.make_url("")).rstrip("/")
+
+            # first life: two events land, cursor moves to 2
+            store.put("device_token", token)
+            store.put("server_url", server_url)
+            store.enqueue("session.started", {"life": 1})
+            store.enqueue("session.ended", {"life": 1, "seconds": 60})
+            pump = OutboxPump(store)
+            first = await pump.push_once()
+            await pump.close()
+            assert first["acked_seq"] == 2
+
+            # second life: the sidecar db was wiped; numbering restarts at 1
+            fresh = SidecarStore(tmp_path / "sidecar-reborn.db")
+            try:
+                fresh.put("device_token", token)
+                fresh.put("server_url", server_url)
+                fresh.enqueue("focus_block.completed",
+                              {"task_id": 7, "life": 2})
+                pump = OutboxPump(fresh)
+                result = await pump.push_once()
+                await pump.close()
+
+                # aligned above the cursor: APPLIED, not swallowed
+                assert result["applied"] == 1
+                assert result["duplicates"] == 0
+                assert result["acked_seq"] == 3
+                assert fresh.pending() == []
+                with db_mod.SessionLocal() as s:
+                    newest = s.query(DeviceEvent).order_by(
+                        DeviceEvent.seq.desc()).first()
+                    assert newest.event_type == "focus_block.completed"
+                    assert newest.payload["life"] == 2
+                    assert newest.rejected is False
+            finally:
+                fresh.close()
         finally:
             await client.close()
     _run(flow())
@@ -251,7 +371,7 @@ def test_pump_parks_on_revoked_device(server_env, store):
 def _sidecar_client_flow(store, clock, fn):
     async def flow():
         service = SidecarService(store,
-                                 engine=SessionEngine(store, clock=clock))
+                                 engine=FocusEngine(store, clock=clock))
         client = TestClient(TestServer(service.build_app()))
         await client.start_server()
         try:
@@ -261,37 +381,51 @@ def _sidecar_client_flow(store, clock, fn):
     _run(flow())
 
 
-def test_sidecar_session_flow_and_ws_push(store):
+def test_sidecar_focus_flow_and_ws_push(store):
     clock = Clock()
 
     async def flow(client, _service):
         ws = await client.ws_connect("/v1/ws")
         hello = await ws.receive_json()
-        assert hello == {"type": "state", "session": {"active": False}}
+        assert hello["type"] == "state"
+        assert hello["focus"]["running"] is False
 
-        resp = await client.post("/v1/session/start",
-                                 json={"label": "novel", "minutes": 25})
+        resp = await client.post("/v1/focus/start",
+                                 json={"task_id": 7, "label": "novel"})
         assert resp.status == 200
         body = await resp.json()
-        assert body["session"]["active"] is True
-        assert body["line"] in LINE_POOLS["session_start"]
+        assert body["focus"]["task_id"] == 7
+        assert body["line"] in LINE_POOLS["focus_start"]
 
         line = await asyncio.wait_for(ws.receive_json(), timeout=5)
-        assert line["type"] == "line" and line["moment"] == "session_start"
+        assert line["type"] == "line" and line["moment"] == "focus_start"
         state = await asyncio.wait_for(ws.receive_json(), timeout=5)
-        assert state["session"]["active"] is True
+        assert state["focus"]["running"] is True
 
-        dup = await client.post("/v1/session/start", json={})
-        assert dup.status == 400                   # one block at a time
-
-        clock.advance(minutes=5)
-        resp = await client.post("/v1/session/stop")
+        # clicking another task IS the switch - and its line says so
+        clock.advance(minutes=10)
+        resp = await client.post("/v1/focus/start",
+                                 json={"task_id": 9, "label": "stems"})
         body = await resp.json()
-        assert body["outcome"] == "abandoned"
-        assert body["line"] in LINE_POOLS["session_abandoned"]
+        assert body["focus"]["task_id"] == 9
+        assert body["focus"]["banked"]["7"] == 600
+        assert body["line"] in LINE_POOLS["focus_switch"]
 
-        idle = await client.post("/v1/session/stop")
-        assert idle.status == 409
+        resp = await client.post("/v1/focus/pause")
+        body = await resp.json()
+        assert body["run"]["reason"] == "paused"
+        assert body["line"] in LINE_POOLS["focus_pause"]
+        assert (await client.post("/v1/focus/pause")).status == 409
+
+        assert (await client.post("/v1/focus/finish")).status == 409
+        await client.post("/v1/focus/start",
+                          json={"task_id": 9, "label": "stems"})
+        clock.advance(minutes=25)
+        resp = await client.post("/v1/focus/finish")
+        body = await resp.json()
+        assert body["run"]["reason"] == "finished"
+        assert body["line"] in LINE_POOLS["task_finished"]
+        assert store.pending()[-1]["type"] == "focus_block.completed"
         await ws.close()
     _sidecar_client_flow(store, clock, flow)
 

@@ -6,24 +6,29 @@
 export const SIDECAR_URL: string =
   import.meta.env.VITE_CHORDIAL_SIDECAR ?? "http://localhost:8485";
 
-export interface SessionState {
-  active: boolean;
+/** the task-clock model: one task's clock runs at a time, time BANKS.
+ * `banked` is today's closed-run seconds per task id (json keys are
+ * strings); the running clock's seconds are NOT in it until it pauses. */
+export interface FocusState {
+  running: boolean;
+  task_id?: number | null;
   label?: string | null;
-  minutes?: number;
+  target_minutes?: number;
   started_at?: string;
-  ends_at?: string;
-  remaining_seconds?: number;
+  run_seconds?: number;
+  over_target?: boolean;
+  banked: Record<string, number>;
 }
 
 export interface SidecarState {
-  session: SessionState;
+  focus: FocusState;
   line: string | null;
   linked: boolean;
   sync_error: string | null;
 }
 
 export type SidecarPush =
-  | { type: "state"; session: SessionState }
+  | { type: "state"; focus: FocusState }
   | { type: "line"; moment: string; text: string };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -50,15 +55,31 @@ export const handshake = (token: string, serverUrl: string) =>
     body: JSON.stringify({ token, server_url: serverUrl }),
   });
 
-export const startBlock = (label: string, minutes: number) =>
-  request<{ session: SessionState; line: string }>("/v1/session/start", {
+/** start the clock on a task - if another task's clock is running, this IS
+ * the switch (the old run banks first) */
+export const startFocus = (
+  taskId: number | null,
+  label: string,
+  targetMinutes: number,
+) =>
+  request<{ focus: FocusState; line: string }>("/v1/focus/start", {
     method: "POST",
-    body: JSON.stringify({ label: label || null, minutes }),
+    body: JSON.stringify({
+      task_id: taskId,
+      label: label || null,
+      target_minutes: targetMinutes,
+    }),
   });
 
-export const stopBlock = () =>
-  request<{ session: SessionState; outcome: string; line: string }>(
-    "/v1/session/stop",
+export const pauseFocus = () =>
+  request<{ focus: FocusState; run: unknown; line: string }>(
+    "/v1/focus/pause",
+    { method: "POST" },
+  );
+
+export const finishFocus = () =>
+  request<{ focus: FocusState; run: unknown; line: string }>(
+    "/v1/focus/finish",
     { method: "POST" },
   );
 

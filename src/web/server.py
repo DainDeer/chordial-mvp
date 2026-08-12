@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid as uuid_mod
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 from weakref import WeakValueDictionary
@@ -150,8 +151,14 @@ class WebService:
         app.router.add_get("/api/v1/devices", self._api_devices_list)
         app.router.add_post("/api/v1/devices/revoke", self._api_device_revoke)
         app.router.add_post("/api/v1/sync/events", self._api_sync_events)
+        app.router.add_get("/api/v1/sync/cursor", self._api_sync_cursor)
         app.router.add_get("/api/v1/today", self._api_v1_today)
         app.router.add_get("/api/v1/council", self._api_council)
+        # tasks are canonical HERE - the deer window lists/adds/finishes
+        # them through these; the sidecar only ever owns the clock
+        app.router.add_post("/api/v1/tasks", self._api_v1_task_create)
+        app.router.add_post("/api/v1/tasks/{task_id}/status",
+                            self._api_v1_task_status)
         # rooms v0: the legacy per-user stream presented as today's room.
         # phase 2 makes rooms first-class; these routes keep their shape.
         app.router.add_get("/api/v1/rooms/current", self._api_room_current)
@@ -344,13 +351,14 @@ class WebService:
         today = user_today(user_uuid)
         today_iso = today.isoformat()
         with get_db() as db:
-            name = db.query(User.preferred_name).filter(
-                User.uuid == user_uuid).scalar()
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            name = user.preferred_name if user else None
+            user_tz = (user.timezone if user and user.timezone else "UTC")
 
         # same bucketing as the agenda payload (today / overdue / started-but-
         # undated), but rows keep their numeric ids for the focus api
         tasks = self.store.list_tasks(user_uuid)   # open only, scheduled order
-        buckets = {"overdue": [], "today": [], "in_progress": []}
+        buckets = {"overdue": [], "today": [], "in_progress": [], "done": []}
         for t in tasks:
             sched = t["scheduled"]
             if sched == today_iso:
@@ -359,6 +367,31 @@ class WebService:
                 buckets["overdue"].append(_task_row(t))
             elif t["status"] == "in_progress":
                 buckets["in_progress"].append(_task_row(t))
+
+        # finished-today rides along so the deer window can show the day's
+        # wins darkened-with-a-checkmark. closed_at is naive utc; "today" is
+        # the user's local day, so convert before comparing.
+        from src.database.models import Task
+        from src.utils.timezone_utils import to_user_timezone
+        with get_db() as db:
+            recent_done = db.query(Task).filter(
+                Task.user_uuid == user_uuid,
+                Task.status == "done",
+                Task.closed_at.isnot(None),
+                Task.closed_at >= utc_now() - timedelta(days=2),
+            ).order_by(Task.closed_at).all()
+            for row in recent_done:
+                closed_utc = row.closed_at.replace(tzinfo=None)
+                if to_user_timezone(closed_utc, user_tz).date() == today:
+                    buckets["done"].append({
+                        "id": row.id, "title": row.title,
+                        "status": row.status,
+                        "pom_estimate": row.pom_estimate,
+                        "plan_title": None, "priority": row.priority,
+                        "scheduled": (row.scheduled.isoformat()
+                                      if row.scheduled else None),
+                        "closed_at": row.closed_at.isoformat(),
+                    })
 
         snap = self.focus.snapshot(user_uuid)
         return web.json_response({
@@ -494,9 +527,66 @@ class WebService:
             return _error(str(e))
         return web.json_response(result.as_dict())
 
+    async def _api_sync_cursor(self, request: web.Request) -> web.Response:
+        """the device's durable ACK cursor. a fresh sidecar state (wiped db,
+        reinstall) restarts its outbox at seq 1 while this cursor may be far
+        ahead - every event below it would be swallowed as a duplicate. the
+        outbox pump reads this before its first push and renumbers above it."""
+        identity = await self._device(request)
+
+        def read() -> int:
+            from src.database.models import Device
+            with get_db() as db:
+                return db.query(Device.acked_seq).filter(
+                    Device.id == identity.id).scalar() or 0
+        return web.json_response(
+            {"acked_seq": await asyncio.to_thread(read)})
+
     async def _api_v1_today(self, request: web.Request) -> web.Response:
         identity = await self._device(request)
         return await asyncio.to_thread(self._today_payload, identity.user_uuid)
+
+    async def _api_v1_task_create(self, request: web.Request) -> web.Response:
+        """a quick-add from the deer window: title only, scheduled today.
+        richer shaping (plans, priorities, estimates) stays with the
+        council's tools - this is the 'jot it down and start' path."""
+        identity = await self._device(request)
+        body = await _json_body(request)
+        title = body.get("title") if isinstance(body, dict) else None
+        if not isinstance(title, str) or not title.strip():
+            return _error("title (non-empty string) required")
+        if len(title.strip()) > 300:
+            return _error("title too long (max 300 characters)")
+
+        def create() -> dict:
+            return self.store.create_task(
+                identity.user_uuid, title.strip(),
+                scheduled=user_today(identity.user_uuid).isoformat())
+        task = await asyncio.to_thread(create)
+        return web.json_response({"ok": True, "task": _task_row(task)},
+                                 status=201)
+
+    async def _api_v1_task_status(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        body = await _json_body(request)
+        status = body.get("status") if isinstance(body, dict) else None
+        if not isinstance(status, str):
+            return _error("status (string) required")
+        try:
+            task_id = int(request.match_info["task_id"])
+        except ValueError:
+            return _error("task id must be an integer")
+
+        def update() -> web.Response:
+            try:
+                canonical = vocab.canonical_status("task", status)
+                task = self.store.update_task(identity.user_uuid, task_id,
+                                              status=canonical)
+            except ValueError as e:
+                return _error(str(e),
+                              status=404 if "not found" in str(e) else 400)
+            return web.json_response({"ok": True, "task": _task_row(task)})
+        return await asyncio.to_thread(update)
 
     async def _api_council(self, request: web.Request) -> web.Response:
         """the presence strip's data source: who lives in this deployment,

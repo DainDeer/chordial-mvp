@@ -41,14 +41,15 @@ CREATE TABLE IF NOT EXISTS outbox (
     payload TEXT NOT NULL,
     occurred_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER,
     label TEXT,
-    minutes REAL NOT NULL,
+    target_minutes REAL NOT NULL,
     started_at TEXT NOT NULL,
-    ends_at TEXT NOT NULL,
-    outcome TEXT,
-    ended_at TEXT
+    ended_at TEXT,
+    seconds INTEGER,
+    end_reason TEXT
 );
 """
 
@@ -116,14 +117,39 @@ class SidecarStore:
         its cursor is 0, and a first event at seq 47 would hold it forever).
         event uuids are kept - if the OLD device somehow already landed one,
         the server's uuid unique-constraint dedupes it."""
+        return self._renumber_above(0)
+
+    def align_seq(self, acked_seq: int) -> int:
+        """make every seq - pending rows AND the autoincrement high-water -
+        sit ABOVE the server's durable cursor. the inverse hazard of rebase:
+        a fresh sidecar db under an EXISTING device restarts numbering at 1
+        while the server cursor is far ahead, and everything at or below it
+        would be swallowed as a duplicate (acked, trimmed, silently lost)."""
+        low = self._conn.execute(
+            "SELECT MIN(seq) AS lo FROM outbox").fetchone()["lo"]
+        high_water = self._conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'outbox'"
+        ).fetchone()
+        current_top = int(high_water["seq"]) if high_water else 0
+        if (low is None or low > acked_seq) and current_top >= acked_seq:
+            return 0
+        return self._renumber_above(acked_seq)
+
+    def _renumber_above(self, floor: int) -> int:
+        """rewrite the outbox so pending events occupy floor+1..floor+n and
+        the next enqueue lands after them. uuids are kept - identity for the
+        server's dedup is the uuid, seq is only the ordering contract."""
         rows = self._conn.execute(
             "SELECT event_uuid, event_type, payload, occurred_at "
             "FROM outbox ORDER BY seq").fetchall()
         self._conn.execute("DELETE FROM outbox")
-        # AUTOINCREMENT tracks the high-water mark separately; reset it so
-        # the renumbered rows really do start from 1
         self._conn.execute(
             "DELETE FROM sqlite_sequence WHERE name = 'outbox'")
+        if floor > 0:
+            # seed the high-water mark so AUTOINCREMENT continues above it
+            self._conn.execute(
+                "INSERT INTO sqlite_sequence (name, seq) "
+                "VALUES ('outbox', ?)", (floor,))
         for r in rows:
             self._conn.execute(
                 "INSERT INTO outbox (event_uuid, event_type, payload, "
@@ -133,25 +159,37 @@ class SidecarStore:
         self._conn.commit()
         return len(rows)
 
-    # --- sessions ------------------------------------------------------------
+    # --- focus runs -----------------------------------------------------------
 
-    def insert_session(self, label: Optional[str], minutes: float,
-                       started_at: str, ends_at: str) -> int:
+    def insert_run(self, task_id: Optional[int], label: Optional[str],
+                   target_minutes: float, started_at: str) -> int:
         cursor = self._conn.execute(
-            "INSERT INTO sessions (label, minutes, started_at, ends_at) "
-            "VALUES (?, ?, ?, ?)", (label, minutes, started_at, ends_at))
+            "INSERT INTO runs (task_id, label, target_minutes, started_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, label, target_minutes, started_at))
         self._conn.commit()
         return int(cursor.lastrowid)
 
-    def active_session(self) -> Optional[dict]:
+    def active_run(self) -> Optional[dict]:
         row = self._conn.execute(
-            "SELECT * FROM sessions WHERE outcome IS NULL "
+            "SELECT * FROM runs WHERE ended_at IS NULL "
             "ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
 
-    def close_session(self, session_id: int, outcome: str,
-                      ended_at: str) -> None:
+    def close_run(self, run_id: int, ended_at: str, seconds: int,
+                  end_reason: str) -> None:
         self._conn.execute(
-            "UPDATE sessions SET outcome = ?, ended_at = ? WHERE id = ?",
-            (outcome, ended_at, session_id))
+            "UPDATE runs SET ended_at = ?, seconds = ?, end_reason = ? "
+            "WHERE id = ?", (ended_at, seconds, end_reason, run_id))
         self._conn.commit()
+
+    def banked_since(self, since_iso: str) -> dict[int, int]:
+        """closed-run seconds per task since `since` (the local day start) -
+        the task list's little fill bars. keyed by task_id; untasked runs
+        land under 0."""
+        rows = self._conn.execute(
+            "SELECT COALESCE(task_id, 0) AS task_id, "
+            "COALESCE(SUM(seconds), 0) AS total FROM runs "
+            "WHERE ended_at IS NOT NULL AND started_at >= ? "
+            "GROUP BY COALESCE(task_id, 0)", (since_iso,)).fetchall()
+        return {int(r["task_id"]): int(r["total"]) for r in rows}

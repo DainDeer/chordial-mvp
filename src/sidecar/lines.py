@@ -4,13 +4,13 @@ the sidecar makes no model calls (no keys ever live on the device), so
 every word the deer says here was authored - the velvet antler principle:
 authored lines first, generated language later as a server-batched pool.
 lines are deliberately small; the deer is presence, not commentary, and
-during a block she must never become another task.
+during a run she must never become another task.
 
 voice notes (docs/COUNCIL_VOICE_REFERENCE.md, vel-adjacent but quieter):
-lowercase, companionable, zero coach pressure. a block completed is 25
-minutes of effort, not a promise kept - completions celebrate showing up;
-abandons carry NO disappointment, stopping early is information, not
-failure.
+lowercase, companionable, zero coach pressure. pausing carries NO
+disappointment - stopping is information the bank keeps. the block target
+crossing is a gentle ding, never an ending. finishing a TASK is the big
+moment: full emergency unloaf, confetti-sized joy.
 """
 from __future__ import annotations
 
@@ -18,28 +18,46 @@ import random
 from typing import Optional
 
 LINE_POOLS: dict[str, list[str]] = {
-    "session_start": [
+    "focus_start": [
         "okay. i'm right here. 🦌 *settles into a loaf*",
         "clock's running. you work, i'll loaf.",
         "*loafs companionably* go on then. i've got the watch.",
-        "starting now. one block, nothing more heroic than that.",
-        "here we go. i'll be pleasantly irrelevant until the ding.",
+        "on it. one clock, one task, one deer.",
+        "here we go. i'll be pleasantly irrelevant until further notice.",
         "*tucks legs in* i'm set. your move.",
     ],
-    "session_complete": [
-        "*ding* 🦌 that's the block. you showed up for the whole thing.",
-        "done!! *ears perk* stretch something before the next one?",
-        "block complete. logged and witnessed. ✨",
-        "that's time! *approving ear flick* water, then whatever's next.",
-        "*lifts head* and THAT is a finished block. felt long? it counts double.",
-        "ding. 🦌 you did the sitting-down-and-doing-it part, which is the whole trick.",
+    "focus_switch": [
+        "*ears swivel* new heading. old minutes are banked, not lost.",
+        "switching. the other clock keeps everything you gave it.",
+        "okay - this one now. i'll watch this lane instead.",
+        "noted. previous task tucked in safe, new clock running.",
     ],
-    "session_abandoned": [
-        "stopped early - that's information, not a verdict. 🦌",
-        "okay. clock's off. the minutes you did still happened.",
-        "*unhurried* we stop when stopping's right. i'm still here.",
-        "block closed early. no notes. want to tell me or just breathe?",
-        "noted and released. early stops are allowed here.",
+    "focus_pause": [
+        "paused. the minutes are banked. stretch something?",
+        "clock's off. everything you did still counts.",
+        "*unhurried* we pause when pausing's right. i'm still here.",
+        "resting the clock. no notes, no verdict.",
+        "paused and held. come back whenever.",
+    ],
+    "block_target": [
+        "*soft ding* 🦌 that's a whole block. land it, or keep rolling - "
+        "i'm counting either way.",
+        "*lifts head* block's full. everything past here is bonus minutes.",
+        "that's the block! no need to stop - the clock just counts extra now.",
+        "*approving ear flick* target reached. overtime is yours if you "
+        "want it.",
+    ],
+    "task_finished": [
+        "*FULL EMERGENCY UNLOAF* DONE!! you FINISHED it!! 🦌🎉 look at "
+        "that - an actual completed thing, witnessed by an actual deer!!",
+        "IT'S DONE!!! *prances in a small circle* 🎉🦌 that task is "
+        "FINISHED and nobody can untask it!!",
+        "*ears shoot ALL the way up* FINISHED!! 🎉 that one's off the "
+        "list forever. i'm so proud of you!!",
+        "DONE DONE DONE!! 🦌✨🎉 *celebratory hoof stomp* you took a "
+        "whole task out of the world's inbox!!",
+        "*unloafs at maximum velocity* COMPLETE!! 🎉 write it in the "
+        "ledger, tell edwin, tell EVERYONE!!",
     ],
 }
 
