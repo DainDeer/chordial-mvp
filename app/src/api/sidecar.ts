@@ -20,15 +20,24 @@ export interface FocusState {
   banked: Record<string, number>;
 }
 
+/** derived activity flags only - the sidecar never surfaces bundle ids */
+export interface ActivityFlags {
+  fresh: boolean;
+  idle_seconds: number;
+  blocked: boolean;
+  drifting: boolean;
+}
+
 export interface SidecarState {
   focus: FocusState;
+  activity?: ActivityFlags;
   line: string | null;
   linked: boolean;
   sync_error: string | null;
 }
 
 export type SidecarPush =
-  | { type: "state"; focus: FocusState }
+  | { type: "state"; focus: FocusState; activity?: ActivityFlags }
   | { type: "line"; moment: string; text: string };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

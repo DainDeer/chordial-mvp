@@ -90,6 +90,11 @@
   transform: translateY(-3px) scale(1.04);
 }
 
+.deer-self.hushed {
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .deer-self {
     transition: none;

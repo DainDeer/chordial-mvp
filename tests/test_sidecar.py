@@ -217,6 +217,108 @@ def test_run_survives_a_sidecar_restart(store):
     assert engine.crossed_target() is True
 
 
+# --- the gate stack ------------------------------------------------------------
+
+
+def test_budget_caps_unprompted_lines_per_rolling_hour():
+    from src.sidecar.gates import SpeechGates
+    clock = Clock()
+    gates = SpeechGates(clock=clock, lines_per_hour=2)
+    assert gates.allow(blocked=False); gates.spend()
+    assert gates.allow(blocked=False); gates.spend()
+    assert gates.allow(blocked=False) is False        # budget spent
+    clock.advance(minutes=61)
+    assert gates.allow(blocked=False) is True         # window rolled
+
+
+def test_blocked_hushes_everything():
+    from src.sidecar.gates import SpeechGates
+    gates = SpeechGates(clock=Clock(), lines_per_hour=10)
+    assert gates.allow(blocked=True) is False
+
+
+def test_quiet_hours_parse_and_wrap():
+    from src.sidecar.gates import in_quiet_hours, parse_quiet_hours
+    assert parse_quiet_hours("") is None
+    assert parse_quiet_hours("nope") is None
+    assert parse_quiet_hours("25-3") is None
+    assert parse_quiet_hours("9-9") is None            # all-day = malformed
+    hours = parse_quiet_hours("22-8")                  # wraps midnight
+    assert in_quiet_hours(hours, 23) is True
+    assert in_quiet_hours(hours, 3) is True
+    assert in_quiet_hours(hours, 12) is False
+    daytime = parse_quiet_hours("13-15")
+    assert in_quiet_hours(daytime, 13) is True
+    assert in_quiet_hours(daytime, 15) is False
+    assert in_quiet_hours(None, 3) is False
+
+
+# --- activity & drift ------------------------------------------------------------
+
+
+def _drift_rig(store, clock, threshold_minutes=5):
+    from src.sidecar.drift import ActivityState, DriftWatch
+    activity = ActivityState(clock=clock)
+    watch = DriftWatch(store, activity, clock=clock,
+                       threshold_minutes=threshold_minutes)
+    return activity, watch
+
+
+def test_drift_episode_speaks_once_then_trusts(store):
+    clock = Clock()
+    activity, watch = _drift_rig(store, clock)
+
+    activity.observe("com.apple.dt.Xcode", 0)
+    assert watch.tick(run_active=True) is None
+
+    # the person goes quiet; the collector keeps heartbeating with a
+    # growing idle (a fresh sample every ~10s is the production shape)
+    clock.advance(seconds=290)
+    activity.observe("com.apple.dt.Xcode", 290)
+    assert watch.tick(run_active=True) is None         # not quite yet
+    clock.advance(seconds=11)
+    activity.observe("com.apple.dt.Xcode", 301)
+    assert watch.tick(run_active=True) == "drift_checkin"
+    assert watch.drifting is True
+    # ...and holds its tongue for the rest of the episode
+    clock.advance(minutes=10)
+    activity.observe("com.apple.dt.Xcode", 900)
+    assert watch.tick(run_active=True) is None
+
+    # the person returns
+    activity.observe("com.apple.dt.Xcode", 1)
+    assert watch.tick(run_active=True) == "drift_return"
+    assert watch.drifting is False
+    assert watch.tick(run_active=True) is None
+
+    events = [e["type"] for e in store.pending()]
+    assert events == ["drift.detected", "return.detected"]
+    returned = store.pending()[-1]
+    assert returned["payload"]["away_seconds"] >= 15 * 60
+
+
+def test_drift_disarms_without_a_run_and_with_stale_signals(store):
+    clock = Clock()
+    activity, watch = _drift_rig(store, clock)
+    activity.observe(None, 600)
+    assert watch.tick(run_active=False) is None        # no block, no watch
+    # a dead collector must not fake a drift: staleness disarms
+    clock.advance(minutes=5)
+    assert activity.fresh is False
+    assert watch.tick(run_active=True) is None
+    assert store.pending() == []
+
+
+def test_blocklisted_app_reads_blocked_only_while_fresh(store):
+    clock = Clock()
+    activity, _ = _drift_rig(store, clock)
+    activity.observe("us.zoom.xos", 0)
+    assert activity.blocked is True
+    assert "bundle" not in str(activity.snapshot())    # ids never surface
+    clock.advance(minutes=2)
+    assert activity.blocked is False                   # stale = not trusted
+
+
 # --- lines -------------------------------------------------------------------
 
 
@@ -451,6 +553,37 @@ def test_sidecar_handshake_rebases_on_new_device(store):
         assert resp.status == 200
         assert store.pending()[0]["seq"] == 1          # new device: rebased
         assert not store.get("sync_error")             # pump un-parked
+    _sidecar_client_flow(store, clock, flow)
+
+
+def test_activity_endpoint_validates_and_feeds_state(store):
+    clock = Clock()
+
+    async def flow(client, service):
+        resp = await client.post("/v1/activity", json={
+            "bundle_id": "com.apple.dt.Xcode", "idle_seconds": 3.5})
+        assert resp.status == 200
+        state = await (await client.get("/v1/state")).json()
+        assert state["activity"]["fresh"] is True
+        assert state["activity"]["blocked"] is False
+        assert "bundle" not in str(state)              # ids never surface
+
+        # a meeting app hushes; malformed bundle ids are treated as absent
+        await client.post("/v1/activity", json={
+            "bundle_id": "us.zoom.xos", "idle_seconds": 0})
+        state = await (await client.get("/v1/state")).json()
+        assert state["activity"]["blocked"] is True
+
+        weird = await client.post("/v1/activity", json={
+            "bundle_id": "<script>alert(1)</script>", "idle_seconds": 0})
+        assert weird.status == 200
+        state = await (await client.get("/v1/state")).json()
+        assert state["activity"]["blocked"] is False   # junk id = no id
+
+        for bad in ({}, {"idle_seconds": -1}, {"idle_seconds": "3"},
+                    {"idle_seconds": True}):
+            resp = await client.post("/v1/activity", json=bad)
+            assert resp.status == 400, bad
     _sidecar_client_flow(store, clock, flow)
 
 
