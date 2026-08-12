@@ -151,6 +151,7 @@ class WebService:
         app.router.add_post("/api/v1/devices/revoke", self._api_device_revoke)
         app.router.add_post("/api/v1/sync/events", self._api_sync_events)
         app.router.add_get("/api/v1/today", self._api_v1_today)
+        app.router.add_get("/api/v1/council", self._api_council)
         # rooms v0: the legacy per-user stream presented as today's room.
         # phase 2 makes rooms first-class; these routes keep their shape.
         app.router.add_get("/api/v1/rooms/current", self._api_room_current)
@@ -496,6 +497,42 @@ class WebService:
     async def _api_v1_today(self, request: web.Request) -> web.Response:
         identity = await self._device(request)
         return await asyncio.to_thread(self._today_payload, identity.user_uuid)
+
+    async def _api_council(self, request: web.Request) -> web.Response:
+        """the presence strip's data source: who lives in this deployment,
+        as THIS user knows them. roster = enabled ∩ authored cards (the same
+        filter as list_available_guides - a partial deployment must not
+        advertise residents who can never speak); identity = the card's
+        authored default unless the user reshaped it (helper_states
+        overrides). the chair never reads as unmet - vel is the front door
+        and greets before any introduction has been recorded."""
+        identity = await self._device(request)
+        from src.managers.helper_state_manager import (
+            STATUS_ACTIVE, STATUS_NOT_MET, HelperStateManager)
+        from src.personas import load_personas
+
+        cards = load_personas()
+        states = HelperStateManager()
+        members = []
+        for helper_id in sorted(set(Config.ENABLED_HELPERS) & set(cards)):
+            card = cards[helper_id]
+            state = await states.get(identity.user_uuid, helper_id)
+            status = state.status
+            if card.chair and status == STATUS_NOT_MET:
+                status = STATUS_ACTIVE
+            members.append({
+                "id": helper_id,
+                "chair": card.chair,
+                "emoji": card.emoji,
+                "lane": card.lane,
+                "specialty": card.specialty,
+                "name": state.persona_name or helper_id,
+                "species": state.persona_form or card.species,
+                "status": status,
+            })
+        # the chair leads the strip, the rest keep id order
+        members.sort(key=lambda m: (not m["chair"], m["id"]))
+        return web.json_response({"council": members})
 
     # --- /api/v1: rooms (v0 - the legacy stream as today's room) --------------
 

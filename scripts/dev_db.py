@@ -14,6 +14,11 @@ tool optimizes for flow.
         the real WorkspaceStore. --telegram-id links YOUR telegram account to
         the dev user so you can chat immediately.
 
+    poetry run python scripts/dev_db.py link-code
+        mint a one-time device-link code for the desktop app (app/) - the
+        no-telegram path. on a fresh db this also creates a bare dev user,
+        so the app's first message gets the real introduction flow.
+
     poetry run python scripts/dev_db.py snapshot NAME
     poetry run python scripts/dev_db.py restore NAME
     poetry run python scripts/dev_db.py list
@@ -62,8 +67,8 @@ def cmd_seed(args) -> None:
 
     today = date.today()
     with get_db() as db:
-        db.add(User(uuid="dev-user", preferred_name="dain", timezone="America/Chicago"))
-        for helper in ("chordial", "aria", "pep", "poet"):
+        db.add(User(uuid="dev-user", preferred_name="megan", timezone="America/Chicago"))
+        for helper in ("vel", "pip", "skip", "remy", "mabel", "juniper", "edwin"):
             db.add(HelperState(user_uuid="dev-user", helper_id=helper, status="active"))
         if args.telegram_id:
             db.add(PlatformIdentity(user_uuid="dev-user", platform="telegram",
@@ -72,10 +77,10 @@ def cmd_seed(args) -> None:
     s = get_store()
     u = "dev-user"
 
-    album = s.create_plan(u, "finish the album", "aria", status="active",
+    album = s.create_plan(u, "finish the album", "juniper", status="active",
                           cadence="weekly", why="because the songs deserve to exist")
-    book = s.create_plan(u, "write the novel", "poet", status="active", cadence="loose")
-    s.create_plan(u, "spring cleaning", "chordial", status="complete")
+    book = s.create_plan(u, "write the novel", "juniper", status="active", cadence="loose")
+    s.create_plan(u, "spring cleaning", "pip", status="complete")
 
     mix = s.create_goal(u, album["id"], "mix track one",
                         target=(today + timedelta(days=14)).isoformat(),
@@ -98,20 +103,20 @@ def cmd_seed(args) -> None:
                    focus="music first, words second, rest on sundays")
 
     s.log_win(u, "backed up every session", (today - timedelta(days=1)).isoformat(),
-              "aria", plan_id=album["id"], weight="solid",
+              "juniper", plan_id=album["id"], weight="solid",
               evidence="finally! the external drive is alive")
     s.log_win(u, "wrote 400 words before breakfast",
-              (today - timedelta(days=2)).isoformat(), "poet",
+              (today - timedelta(days=2)).isoformat(), "juniper",
               plan_id=book["id"], weight="spark")
 
-    s.log_checkin(u, (today - timedelta(days=1)).isoformat(), "evening", "chordial",
+    s.log_checkin(u, (today - timedelta(days=1)).isoformat(), "evening", "vel",
                   energy="good", notes="steady day, mixed for an hour",
                   plan_ids=[album["id"]])
 
     s.jot(u, "bridge idea: modulate up a third and strip to just piano",
-          plan_id=album["id"], tags=["music"], helper="aria")
+          plan_id=album["id"], tags=["music"], helper="juniper")
     s.jot(u, "the storm should mirror the argument in chapter one",
-          plan_id=book["id"], tags=["writing"], helper="poet")
+          plan_id=book["id"], tags=["writing"], helper="juniper")
     s.jot(u, "video idea: studio tour but every cut is on the beat", tags=["video"])
 
     s.create_occasion(u, "moms birthday", date(today.year, 9, 3).isoformat(),
@@ -122,6 +127,27 @@ def cmd_seed(args) -> None:
     linked = f", telegram id {args.telegram_id} linked" if args.telegram_id else ""
     print(f"seeded sample state for 'dev-user'{linked}")
     print(f"run:  DATABASE_URL=sqlite:///{DB_PATH.name} poetry run python main.py")
+
+
+def cmd_link_code(_args) -> None:
+    """mint a one-time device-link code for the dev user, so the desktop app
+    can link without telegram in the loop. creates the dev user bare if the
+    db is fresh - no name, no helper states - which is exactly the app-first
+    experience: vel runs the front-door introduction on the first message."""
+    if not DB_PATH.exists():
+        sys.exit(f"no {DB_PATH.name} yet - run: dev_db.py fresh (or seed)")
+    from src.database.database import get_db
+    from src.database.models import User
+    from src.web.device_auth import mint_device_link_code
+
+    with get_db() as db:
+        if db.query(User).filter(User.uuid == "dev-user").first() is None:
+            db.add(User(uuid="dev-user", timezone="America/Chicago"))
+            print("created bare 'dev-user' (fresh db - the app gets the "
+                  "introduction flow)")
+    code = mint_device_link_code("dev-user")
+    print(f"device link code for 'dev-user':  {code}")
+    print("paste it into the app's link screen (codes are one-time and expire)")
 
 
 def cmd_snapshot(args) -> None:
@@ -167,9 +193,12 @@ def main() -> None:
     rest = sub.add_parser("restore", help="load a named state")
     rest.add_argument("name")
     sub.add_parser("list", help="list saved states")
+    sub.add_parser("link-code",
+                   help="mint a device-link code for the desktop app")
     args = parser.parse_args()
     {"fresh": cmd_fresh, "seed": cmd_seed, "snapshot": cmd_snapshot,
-     "restore": cmd_restore, "list": cmd_list}[args.command](args)
+     "restore": cmd_restore, "list": cmd_list,
+     "link-code": cmd_link_code}[args.command](args)
 
 
 if __name__ == "__main__":

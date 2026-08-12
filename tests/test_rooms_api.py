@@ -415,6 +415,76 @@ def test_negative_limit_is_clamped(env):
     _run(_with_service(_service(), flow))
 
 
+# --- the council roster (the presence strip's data source) ---------------------
+
+
+def test_council_roster_authored_defaults(env, monkeypatch):
+    from config import Config
+    monkeypatch.setattr(
+        Config, "ENABLED_HELPERS",
+        ["vel", "pip", "skip", "remy", "mabel", "juniper", "edwin"])
+
+    async def flow(client):
+        token = _token()
+        resp = await client.get(
+            "/api/v1/council", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status == 200
+        members = (await resp.json())["council"]
+        assert [m["id"] for m in members] == \
+            ["vel", "edwin", "juniper", "mabel", "pip", "remy", "skip"]
+
+        vel = members[0]
+        # the chair leads the strip and never reads as unmet - she is the
+        # front door and greets before any introduction is recorded
+        assert vel["chair"] is True
+        assert vel["status"] == "active"
+        assert vel["emoji"] == "🦌"
+        assert vel["species"] == "deer"
+        assert vel["name"] == "vel"
+
+        for member in members[1:]:
+            assert member["chair"] is False
+            assert member["status"] == "not_met"
+            assert member["name"] == member["id"]
+    _run(_with_service(_service(), flow))
+
+
+def test_council_roster_overrides_and_partial_deployment(env, monkeypatch):
+    from config import Config
+    from src.database.models import HelperState
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "pip"])
+    with db_mod.SessionLocal() as s:
+        # megan reshaped pip; a different tenant's reshape must not leak
+        s.add(HelperState(user_uuid=U1, helper_id="pip", status="active",
+                          persona_name="sprocket", persona_form="tiny robot"))
+        s.add(HelperState(user_uuid=U2, helper_id="pip", status="active",
+                          persona_name="intruder"))
+        s.commit()
+
+    async def flow(client):
+        token = _token(U1)
+        resp = await client.get(
+            "/api/v1/council", headers={"Authorization": f"Bearer {token}"})
+        members = (await resp.json())["council"]
+        # only the deployed residents - no ghost councilors from other cards
+        assert [m["id"] for m in members] == ["vel", "pip"]
+        pip = members[1]
+        assert pip["name"] == "sprocket"
+        assert pip["species"] == "tiny robot"
+        assert pip["status"] == "active"
+        # authored facts still ride along for the ui
+        assert pip["emoji"] == "🐿️"
+        assert pip["lane"] == "productivity"
+    _run(_with_service(_service(), flow))
+
+
+def test_council_requires_device_auth(env):
+    async def flow(client):
+        resp = await client.get("/api/v1/council")
+        assert resp.status == 401
+    _run(_with_service(_service(), flow))
+
+
 # --- websocket revocation -----------------------------------------------------
 
 

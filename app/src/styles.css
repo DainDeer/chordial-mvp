@@ -1,0 +1,625 @@
+/* chordial's shell: the lamplight den.
+ *
+ * one committed atmosphere for the dev-mode shell - a warm dark room, brown-
+ * biased neutrals, candle-amber accent - tokenized so a daylight theme can
+ * land later as a token swap, not a rewrite. type rides the platform's
+ * rounded face (ui-rounded is SF Pro Rounded on the mac this ships to first).
+ */
+
+:root {
+  --bg-deep: #171310; /* the woods outside */
+  --bg-room: #1f1a15; /* the room itself */
+  --bg-raised: #292219; /* furniture: cards, bubbles, the rail */
+  --bg-hover: #322a1f;
+  --ink: #efe6d4;
+  --ink-dim: #a99c85;
+  --ink-faint: #6f6555;
+  --ember: #e8a64d; /* candlelight */
+  --ember-soft: rgba(232, 166, 77, 0.13);
+  --moss: #9dbb82; /* alive, connected, in motion */
+  --rose: #d98ba3;
+  --line: rgba(239, 230, 212, 0.09);
+  --radius: 14px;
+  --radius-small: 9px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-deep);
+  color: var(--ink);
+  font-family:
+    ui-rounded,
+    "SF Pro Rounded",
+    -apple-system,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  padding: 9px 12px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-faint);
+}
+
+/* --- the shell frame -------------------------------------------------- */
+
+.shell {
+  display: flex;
+  height: 100%;
+}
+
+.stage {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-room);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* --- the rail ---------------------------------------------------------- */
+
+.rail {
+  width: 218px;
+  flex-shrink: 0;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 14px;
+  overflow-y: auto;
+}
+
+.rail-mark {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-align: left;
+  padding: 4px 8px;
+}
+
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-link {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--radius-small);
+  color: var(--ink-dim);
+}
+
+.rail-link:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.rail-link.active {
+  background: var(--ember-soft);
+  color: var(--ember);
+  font-weight: 600;
+}
+
+.rail-council {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.rail-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 10px;
+}
+
+.rail-council ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-radius: var(--radius-small);
+}
+
+.member-avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  background: var(--bg-raised);
+  border: 1.5px solid transparent;
+  border-radius: 50%;
+}
+
+.member-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.member-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.member-lane {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.member.unmet {
+  opacity: 0.55;
+}
+
+.member.unmet .member-avatar {
+  filter: grayscale(1);
+}
+
+/* --- the front porch ---------------------------------------------------- */
+
+.link-screen {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(
+      ellipse 70% 55% at 50% 38%,
+      rgba(232, 166, 77, 0.07),
+      transparent
+    ),
+    var(--bg-deep);
+}
+
+.link-card {
+  width: min(360px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg-room);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 30px 28px 26px;
+  text-align: center;
+}
+
+.link-mark {
+  font-size: 42px;
+  line-height: 1;
+}
+
+.link-card h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+}
+
+.link-lede {
+  margin: 0 0 6px;
+  color: var(--ink-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+}
+
+.field span {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.link-card button[type="submit"] {
+  margin-top: 6px;
+  padding: 10px;
+  border-radius: var(--radius-small);
+  background: var(--ember);
+  color: #221a0e;
+  font-weight: 700;
+}
+
+.link-card button[type="submit"]:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.link-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--rose);
+}
+
+/* --- home ---------------------------------------------------------------- */
+
+.home {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 44px 48px;
+  max-width: 620px;
+}
+
+.home-head h1 {
+  margin: 0;
+  font-size: 26px;
+  text-wrap: balance;
+}
+
+.home-date {
+  margin: 4px 0 0;
+  color: var(--ink-dim);
+}
+
+.home-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.task-group h3 {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.task-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  padding: 9px 13px;
+}
+
+.task-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.task-dot.high {
+  background: var(--rose);
+}
+
+.task-dot.medium {
+  background: var(--ember);
+}
+
+.task-dot.low {
+  background: var(--moss);
+}
+
+.task-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-plan {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.home-empty {
+  margin: 0;
+  color: var(--ink-dim);
+  font-style: italic;
+}
+
+.enter-room {
+  align-self: flex-start;
+  padding: 11px 20px;
+  border-radius: var(--radius);
+  background: var(--ember-soft);
+  border: 1px solid rgba(232, 166, 77, 0.35);
+  color: var(--ember);
+  font-weight: 600;
+}
+
+.enter-room:hover {
+  background: rgba(232, 166, 77, 0.2);
+}
+
+/* --- the room ------------------------------------------------------------ */
+
+.room {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.room-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 26px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.room-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.room-date {
+  margin: 1px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
+.ws-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.ws-dot.live {
+  background: var(--moss);
+  box-shadow: 0 0 6px rgba(157, 187, 130, 0.6);
+}
+
+.ws-dot.waking {
+  background: var(--ember);
+}
+
+.room-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 26px;
+}
+
+.room-empty {
+  margin: auto;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 72%;
+}
+
+.line.theirs {
+  align-self: flex-start;
+}
+
+.line.mine {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.line-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.line-avatar {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  background: var(--bg-raised);
+  border-radius: 50%;
+}
+
+.line-name {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.bubble {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  border-top-left-radius: 5px;
+  padding: 9px 13px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  user-select: text;
+  cursor: text;
+}
+
+.line.mine .bubble {
+  background: var(--ember-soft);
+  border-color: rgba(232, 166, 77, 0.25);
+  border-radius: var(--radius);
+  border-top-right-radius: 5px;
+}
+
+.line.mine.pending .bubble {
+  opacity: 0.6;
+}
+
+.line.ephemeral .bubble {
+  font-style: italic;
+  color: var(--ink-dim);
+  border-style: dashed;
+}
+
+.stirring {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0 0;
+  color: var(--ink-faint);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.stir-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ember);
+  animation: stir 1.2s ease-in-out infinite;
+}
+
+.stir-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.stir-dot:nth-child(3) {
+  animation-delay: 0.3s;
+  margin-right: 4px;
+}
+
+@keyframes stir {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stir-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/* --- the composer ---------------------------------------------------------- */
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 14px 26px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 40px;
+  max-height: 140px;
+  user-select: text;
+  cursor: text;
+}
+
+.composer textarea:disabled {
+  opacity: 0.55;
+}
+
+.composer button {
+  padding: 9px 18px;
+  border-radius: var(--radius-small);
+  background: var(--ember);
+  color: #221a0e;
+  font-weight: 700;
+}
+
+.composer button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- shared ----------------------------------------------------------------- */
+
+.soft-error {
+  margin: 0;
+  padding: 6px 26px;
+  font-size: 13px;
+  color: var(--rose);
+}
