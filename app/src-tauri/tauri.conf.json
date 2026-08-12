@@ -12,15 +12,26 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "chordial",
         "width": 1100,
         "height": 720,
         "minWidth": 760,
         "minHeight": 520
+      },
+      {
+        "label": "deer",
+        "title": "deer",
+        "url": "deer.html",
+        "width": 240,
+        "height": 320,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "decorations": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:8484 ws://localhost:8484"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://localhost:8484 ws://localhost:8484 http://localhost:8485 ws://localhost:8485"
     }
   },
   "bundle": {

@@ -1,0 +1,197 @@
+/* the deer's window: a small soft card that sits on top of the day.
+ * rides the clearing's tokens from styles.css. */
+
+.deer-window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 16px;
+  background: linear-gradient(165deg, #f4ecfa 0%, #fdf6fb 55%, #fbeaf3 100%);
+  border: 1px solid #c9b3ec;
+  border-radius: 16px;
+  overflow: hidden;
+  position: relative;
+}
+
+.deer-drag {
+  width: 100%;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.deer-drag:active {
+  cursor: grabbing;
+}
+
+.deer-link-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  pointer-events: none;
+}
+
+.deer-link-dot.on {
+  background: #4cd964;
+  box-shadow: 0 0 5px rgba(76, 217, 100, 0.8);
+}
+
+.deer-bubble {
+  position: absolute;
+  top: 34px;
+  left: 14px;
+  right: 14px;
+  z-index: 2;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 6px 18px -8px var(--shadow);
+  animation: bubble-in 0.3s ease;
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.deer-self {
+  font-size: 64px;
+  line-height: 1;
+  margin-top: 14px;
+  transition: transform 0.4s ease;
+}
+
+.deer-self.loafing {
+  transform: translateY(4px) scale(0.96);
+}
+
+.deer-self.watching {
+  transform: none;
+}
+
+.deer-self.perked {
+  transform: translateY(-3px) scale(1.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deer-self {
+    transition: none;
+  }
+
+  .deer-bubble {
+    animation: none;
+  }
+}
+
+.deer-caption {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+
+.deer-session {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.deer-label {
+  margin: 0;
+  max-width: 100%;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-clock {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.deer-fill {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(201, 179, 236, 0.3);
+  overflow: hidden;
+}
+
+.deer-fill-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  transition: width 1s linear;
+}
+
+.deer-stop {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-dim);
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.deer-stop:hover {
+  color: var(--rose-alert);
+  border-color: rgba(233, 143, 187, 0.5);
+}
+
+.deer-start {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.deer-start input {
+  font-size: 12.5px;
+  padding: 7px 10px;
+  text-align: center;
+}
+
+.deer-start button {
+  padding: 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 10px -4px rgba(233, 143, 187, 0.8);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+}
+
+.deer-start button:disabled {
+  opacity: 0.5;
+}

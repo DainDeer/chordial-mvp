@@ -15,8 +15,8 @@ import {
   type ChatMessage,
 } from "../lib/messages";
 import { memberHue } from "../lib/council";
-import { chunkInline } from "../lib/markup";
 import { pickStirring } from "../lib/stirrings";
+import InlineContent from "./InlineContent";
 
 interface Props {
   token: string;
@@ -33,22 +33,6 @@ const STATUS_DOT: Record<SocketStatus, string> = {
 };
 
 const STIRRING_ROTATE_MS = 2400;
-
-/** helper prose with the council's action beats honored: *em* and
- * **strong** only, everything else literal (chunks are data - react
- * escapes the text, so nothing in a message can inject markup) */
-function InlineContent({ content }: { content: string }) {
-  return (
-    <>
-      {chunkInline(content).map((chunk, i) => {
-        if (chunk.style === "em") return <em key={i}>{chunk.text}</em>;
-        if (chunk.style === "strong")
-          return <strong key={i}>{chunk.text}</strong>;
-        return <span key={i}>{chunk.text}</span>;
-      })}
-    </>
-  );
-}
 
 /** the waiting line: a small creature doing small things, a new one every
  * couple of seconds so the wait feels inhabited rather than stuck */
