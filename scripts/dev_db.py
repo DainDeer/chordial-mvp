@@ -97,10 +97,25 @@ def cmd_seed(args) -> None:
     done = s.create_task(u, "back up session files", plan_id=album["id"])
     s.update_task(u, done["id"], status="done")
 
-    s.create_cycle(u, "cycle 12", status="active",
-                   start_date=(today - timedelta(days=6)).isoformat(),
-                   end_date=(today + timedelta(days=7)).isoformat(),
-                   focus="music first, words second, rest on sundays")
+    cyc = s.create_cycle(u, "cycle 12", status="active",
+                         start_date=(today - timedelta(days=6)).isoformat(),
+                         end_date=(today + timedelta(days=7)).isoformat(),
+                         focus="music first, words second, rest on sundays",
+                         theme="finish what's half-done",
+                         capacity_blocks=24)
+
+    # the cycle spine (phase 5): commitments with a frozen baseline, so the
+    # cycle view has real shared state to show on first boot
+    from src.services.cycles import CycleStore
+    cs = CycleStore()
+    cs.create_commitment(u, cyc["id"], "mix track one", priority="high",
+                         blocks_planned=6, plan_id=album["id"],
+                         next_action="bounce stems (1 block)")
+    cs.create_commitment(u, cyc["id"], "chapter three drafted",
+                         priority="medium", blocks_planned=4,
+                         plan_id=book["id"], task_id=t["id"],
+                         next_action="outline the storm scene")
+    cs.freeze_baseline(u, cyc["id"])
 
     s.log_win(u, "backed up every session", (today - timedelta(days=1)).isoformat(),
               "juniper", plan_id=album["id"], weight="solid",

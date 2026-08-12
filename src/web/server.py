@@ -46,7 +46,8 @@ from src.personas import CHAIR_ID
 from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
-from src.services import device_sync
+from src.services import device_sync, focus_flow
+from src.services.cycles import CycleStore
 from src.utils.timezone_utils import utc_now
 from src.web import auth, device_auth, receipts
 
@@ -110,6 +111,7 @@ class WebService:
                  app_interface=None):
         self.store = store or get_store()
         self.focus = focus or FocusStore()
+        self.cycles = CycleStore()
         self._resolve_user = user_resolver
         # the app-facing chat seam: process_message runs a turn, the app
         # interface's queues carry the delivered lines back. both None on
@@ -153,6 +155,7 @@ class WebService:
         app.router.add_post("/api/v1/sync/events", self._api_sync_events)
         app.router.add_get("/api/v1/sync/cursor", self._api_sync_cursor)
         app.router.add_get("/api/v1/today", self._api_v1_today)
+        app.router.add_get("/api/v1/cycle", self._api_v1_cycle)
         app.router.add_get("/api/v1/council", self._api_council)
         # tasks are canonical HERE - the deer window lists/adds/finishes
         # them through these; the sidecar only ever owns the clock
@@ -525,6 +528,14 @@ class WebService:
             return _error(str(e), status=429)
         except ValueError as e:
             return _error(str(e))
+        # landed events become consequences (pip's observations) - a separate
+        # crash-safe pass keyed on processed_at, so a failure here never
+        # costs the device its ACK
+        try:
+            await asyncio.to_thread(focus_flow.process_pending,
+                                    identity.user_uuid)
+        except Exception:
+            logger.exception("focus_flow pass failed; events remain queued")
         return web.json_response(result.as_dict())
 
     async def _api_sync_cursor(self, request: web.Request) -> web.Response:
@@ -545,6 +556,16 @@ class WebService:
     async def _api_v1_today(self, request: web.Request) -> web.Response:
         identity = await self._device(request)
         return await asyncio.to_thread(self._today_payload, identity.user_uuid)
+
+    async def _api_v1_cycle(self, request: web.Request) -> web.Response:
+        """the cycle view read model (ROOMS_DESIGN section 6): the active
+        cycle's projection - baseline + scope changes + progress from
+        applied device events. {"cycle": null} when no cycle is active."""
+        identity = await self._device(request)
+        view = await asyncio.to_thread(
+            self.cycles.projection, identity.user_uuid)
+        return web.json_response(view if view is not None
+                                 else {"cycle": None})
 
     async def _api_v1_task_create(self, request: web.Request) -> web.Response:
         """a quick-add from the deer window: title only, scheduled today.

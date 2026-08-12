@@ -165,6 +165,7 @@ class WorkspaceStore:
             "title": row.title, "status": row.status,
             "start_date": _iso(row.start_date), "end_date": _iso(row.end_date),
             "goal": row.goal, "focus": row.focus,
+            "theme": row.theme, "capacity_blocks": row.capacity_blocks,
             "created_at": _iso(row.created_at), "closed_at": _iso(row.closed_at),
         }
 
@@ -458,20 +459,25 @@ class WorkspaceStore:
     def create_cycle(self, user_uuid: str, title: str, *,
                      status: str = "upcoming", start_date=None, end_date=None,
                      goal: Optional[str] = None, focus: Optional[str] = None,
+                     theme: Optional[str] = None,
+                     capacity_blocks: Optional[int] = None,
                      notion_page_id: Optional[str] = None) -> dict:
         status = vocab.canonical_status("cycle", status)
         with get_db() as db:
             row = Cycle(user_uuid=user_uuid, title=title,
                         start_date=_coerce_date(start_date),
                         end_date=_coerce_date(end_date),
-                        goal=goal, focus=focus, notion_page_id=notion_page_id)
+                        goal=goal, focus=focus, theme=theme,
+                        capacity_blocks=capacity_blocks,
+                        notion_page_id=notion_page_id)
             self._apply_status(row, "cycle", status)
             db.add(row)
             db.flush()
             return self._cycle_dict(row)
 
     def update_cycle(self, user_uuid: str, cycle_id: int, **changes) -> dict:
-        allowed = {"title", "status", "start_date", "end_date", "goal", "focus"}
+        allowed = {"title", "status", "start_date", "end_date", "goal",
+                   "focus", "theme", "capacity_blocks"}
         self._check_keys(changes, allowed, "cycle")
         with get_db() as db:
             row = self._get_owned(db, Cycle, user_uuid, cycle_id, "cycle")

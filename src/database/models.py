@@ -397,7 +397,10 @@ class Goal(Base):
 
 class Cycle(Base):
     """the bi-weekly balancing lever across plans. `focus` is pep's negotiated
-    balance statement for the cycle."""
+    balance statement for the cycle. `theme` + `capacity_blocks` are the
+    ROOMS_DESIGN section-6 planning fields: a cycle carries a theme and an
+    honest capacity estimate in focus blocks (25 min each), against which
+    commitments allocate."""
     __tablename__ = 'cycles'
 
     id = Column(Integer, primary_key=True)
@@ -409,6 +412,8 @@ class Cycle(Base):
     end_date = Column(Date, nullable=True)
     goal = Column(String, nullable=True)    # the cycle goal, as today
     focus = Column(String, nullable=True)   # v3: negotiated balance statement
+    theme = Column(String, nullable=True)          # "build rhythm without overload"
+    capacity_blocks = Column(Integer, nullable=True)  # honest estimate, focus blocks
 
     notion_page_id = Column(String, nullable=True)  # reserved: the row<->page mapping for the future one-way notion mirror
 
@@ -418,6 +423,93 @@ class Cycle(Base):
 
     __table_args__ = (
         {'sqlite_autoincrement': True}
+    )
+
+
+class Commitment(Base):
+    """a cycle's explicit promise (ROOMS_DESIGN section 6): "room runtime v1
+    · chordial · 5 blocks · high". first-class rows with STABLE uuids -
+    focus attribution and baseline snapshots reference the uuid, never a
+    title - so progress survives renames. optionally anchored to a plan
+    and/or a task; `next_action` is the activation-energy field (exactly one
+    clear next step per active commitment).
+
+    lifecycle per section 2.0: never hard-deleted, closed_at stamped.
+    completing is progress and stays an ordinary update; RELEASING after the
+    cycle's baseline froze moves planned capacity, so it must arrive as a
+    scope change (CycleStore enforces this).
+    """
+    __tablename__ = 'commitments'
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True,
+                  default=lambda: str(uuid.uuid4()))
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    cycle_id = Column(Integer, ForeignKey('cycles.id'), nullable=False)
+
+    title = Column(String, nullable=False)
+    status = Column(String, default='active')   # active | completed/released
+    priority = Column(String, nullable=True)    # high/medium/low
+    blocks_planned = Column(Integer, nullable=True)  # capacity ask, in blocks
+    next_action = Column(String, nullable=True)
+
+    plan_id = Column(Integer, ForeignKey('plans.id'), nullable=True)
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ix_commitments_user_cycle', 'user_uuid', 'cycle_id'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class CycleBaseline(Base):
+    """the frozen plan (ROOMS_DESIGN section 6): an append-only snapshot of
+    the accepted commitments and allocations at freeze time. exactly one per
+    cycle (unique constraint); the live commitment rows may evolve, the
+    snapshot never does. edwin's planning-accuracy signal is the diff between
+    this and the projection - reliable because both sides are append-only.
+    immutable history: no updated_at, no lifecycle."""
+    __tablename__ = 'cycle_baselines'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    cycle_id = Column(Integer, ForeignKey('cycles.id'), nullable=False)
+    snapshot = Column(JSON, nullable=False)   # commitments + allocations at freeze
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('cycle_id', name='uq_cycle_baselines_cycle'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ScopeChange(Base):
+    """the only sanctioned way planned capacity moves after freeze
+    (ROOMS_DESIGN section 6): an append-only (reason, deltas) record.
+    honest data for edwin, guilt-free changes of mind for the user -
+    changing the plan is welcome, silently rewriting history is not.
+    immutable: no updated_at, no lifecycle."""
+    __tablename__ = 'scope_changes'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    cycle_id = Column(Integer, ForeignKey('cycles.id'), nullable=False)
+    # which commitment moved; null for cycle-level changes (capacity itself)
+    commitment_uuid = Column(String, nullable=True)
+    reason = Column(String, nullable=False)   # the user's words, required
+    deltas = Column(JSON, nullable=False)     # {"action": ..., "from": ..., "to": ...}
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_scope_changes_user_cycle', 'user_uuid', 'cycle_id'),
+        {'sqlite_autoincrement': True},
     )
 
 
@@ -711,8 +803,15 @@ class DeviceEvent(Base):
                       server_default=text('0'))
     error = Column(String, nullable=True)
 
+    # stamped by the focus-flow processor (src/services/focus_flow.py) once
+    # a row's consequences (pip's observations, ...) are committed - in the
+    # SAME transaction, so apply-then-process is crash-safe: an unstamped row
+    # is simply picked up by the next pass. null = not yet processed.
+    processed_at = Column(DateTime, nullable=True)
+
     __table_args__ = (
         UniqueConstraint('device_id', 'seq', name='uq_device_events_device_seq'),
+        Index('ix_device_events_unprocessed', 'user_uuid', 'processed_at'),
         {'sqlite_autoincrement': True},
     )
 
