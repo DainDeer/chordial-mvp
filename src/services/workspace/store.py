@@ -31,7 +31,8 @@ from typing import Any, Optional
 from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
-from src.database.models import Plan, Goal, Task, Cycle, Win, Checkin, Note, Occasion
+from src.database.models import (Plan, Goal, Task, Cycle, CycleBaseline,
+                                 Win, Checkin, Note, Occasion)
 from src.services.workspace import vocab
 from src.utils.timezone_utils import utc_now
 
@@ -481,6 +482,15 @@ class WorkspaceStore:
         self._check_keys(changes, allowed, "cycle")
         with get_db() as db:
             row = self._get_owned(db, Cycle, user_uuid, cycle_id, "cycle")
+            if "capacity_blocks" in changes and db.query(
+                    CycleBaseline.id).filter(
+                    CycleBaseline.cycle_id == row.id).first() is not None:
+                # the section-6 invariant guards EVERY door, not just
+                # CycleStore's: after the freeze, planned capacity moves
+                # only through the scope-change ledger
+                raise ValueError(
+                    "this cycle's baseline is frozen - capacity moves only "
+                    "through a scope change (change_scope with a reason)")
             if "status" in changes:
                 self._apply_status(row, "cycle", vocab.canonical_status("cycle", changes.pop("status")))
             for key in ("start_date", "end_date"):

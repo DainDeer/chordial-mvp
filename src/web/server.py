@@ -171,7 +171,39 @@ class WebService:
                             self._api_room_send)
         app.router.add_get("/api/v1/ws", self._api_ws)
         app.router.add_static("/static", STATIC_DIR)
+        app.on_startup.append(self._start_flow_sweep)
+        app.on_cleanup.append(self._stop_flow_sweep)
         return app
+
+    # --- the focus-flow sweep --------------------------------------------------
+    # the durable half of apply-then-process: the per-sync drain handles the
+    # common case instantly, and this sweep retries anything a failed pass
+    # left behind - a device that trims its outbox after the ACK and then
+    # goes quiet must never strand its consequences.
+
+    _FLOW_SWEEP_SECONDS = 60
+
+    async def _start_flow_sweep(self, _app) -> None:
+        self._flow_sweep = asyncio.create_task(self._flow_sweep_loop())
+
+    async def _stop_flow_sweep(self, _app) -> None:
+        task = getattr(self, "_flow_sweep", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _flow_sweep_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._FLOW_SWEEP_SECONDS)
+            try:
+                await asyncio.to_thread(focus_flow.drain)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("focus-flow sweep failed; retrying next tick")
 
     async def start(self):
         self._stop_event = asyncio.Event()
@@ -530,12 +562,14 @@ class WebService:
             return _error(str(e))
         # landed events become consequences (pip's observations) - a separate
         # crash-safe pass keyed on processed_at, so a failure here never
-        # costs the device its ACK
+        # costs the device its ACK. drain (not one pass): the batch may be
+        # bigger than a pass's limit. anything that still fails is retried
+        # by the background sweep - the device trimming its outbox after
+        # this ACK must never strand consequences.
         try:
-            await asyncio.to_thread(focus_flow.process_pending,
-                                    identity.user_uuid)
+            await asyncio.to_thread(focus_flow.drain, identity.user_uuid)
         except Exception:
-            logger.exception("focus_flow pass failed; events remain queued")
+            logger.exception("focus_flow drain failed; the sweep will retry")
         return web.json_response(result.as_dict())
 
     async def _api_sync_cursor(self, request: web.Request) -> web.Response:

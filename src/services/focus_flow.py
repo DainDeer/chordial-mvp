@@ -14,13 +14,24 @@ v1 consequences (ROOMS_DESIGN sections 5 + 12, the vertical slice):
   and drift facts feed the cycle projection and future reviews straight
   from the event rows themselves - cycle progress needs no processor.
 
-called after every sync apply (cheap: the unprocessed set is indexed and
-almost always tiny) and safe to call from anywhere else.
+safety, three layers deep:
+- each row is CLAIMED atomically (an UPDATE conditioned on processed_at
+  still being null) before its consequence is written, in the same
+  transaction - concurrent passes race for the claim, exactly one wins
+- the observation carries the event uuid under a UNIQUE index
+  (source_event_uuid) - the hard floor: one fact never becomes two
+  noticings even if the claim discipline ever breaks
+- `drain()` loops until the queue is empty and also runs on a background
+  sweep in the web server - a pass that failed (or a batch bigger than one
+  pass's limit) is retried on the next sync AND on the sweep, so a
+  device that trims its outbox after the ACK never strands consequences.
 """
 from __future__ import annotations
 
 import logging
 from typing import Optional
+
+from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
 from src.database.models import DeviceEvent, Observation
@@ -34,11 +45,23 @@ PIP_ID = "pip"
 _BATCH_LIMIT = 200
 
 
+def drain(user_uuid: Optional[str] = None, limit: int = _BATCH_LIMIT) -> int:
+    """process passes until the pending queue is empty (a pass that sees
+    fewer rows than its limit has drained it). returns rows seen in total."""
+    total = 0
+    while True:
+        seen = process_pending(user_uuid, limit)
+        total += seen
+        if seen < limit:
+            return total
+
+
 def process_pending(user_uuid: Optional[str] = None,
                     limit: int = _BATCH_LIMIT) -> int:
-    """process up to `limit` unprocessed applied events (optionally one
-    user's), committing consequences and processed_at stamps atomically.
-    returns how many rows were stamped."""
+    """one pass: up to `limit` unprocessed applied events (optionally one
+    user's), consequences and claim-stamps committed atomically. returns
+    how many pending rows the pass SAW (drain loops while that hits the
+    limit); rows another concurrent pass claimed first are skipped."""
     now = utc_now()
     with get_db() as db:
         q = db.query(DeviceEvent).filter(
@@ -49,15 +72,29 @@ def process_pending(user_uuid: Optional[str] = None,
             q = q.filter(DeviceEvent.user_uuid == user_uuid)
         rows = q.order_by(DeviceEvent.id).limit(limit).all()
         for row in rows:
+            # the atomic claim: only the pass whose UPDATE finds
+            # processed_at still null owns this row's consequence
+            claimed = db.query(DeviceEvent).filter(
+                DeviceEvent.id == row.id,
+                DeviceEvent.processed_at.is_(None),
+            ).update({DeviceEvent.processed_at: now},
+                     synchronize_session=False)
+            if not claimed:
+                continue
             try:
                 if row.event_type == "focus_block.completed":
-                    db.add(_pip_noticing(row))
+                    with db.begin_nested():
+                        db.add(_pip_noticing(row))
+            except IntegrityError:
+                # the unique source_event_uuid floor: the consequence
+                # already exists (a racing pass got there) - the savepoint
+                # rolled back only the insert, the claim stamp stands
+                pass
             except Exception:
                 # a malformed payload must not wedge the pipeline: log it,
-                # stamp it, move on - the event row itself keeps the truth
+                # leave it stamped, move on - the event row keeps the truth
                 logger.exception("focus_flow: event %s consequence failed",
                                  row.event_uuid)
-            row.processed_at = now
         db.commit()
         return len(rows)
 
@@ -78,6 +115,7 @@ def _pip_noticing(row: DeviceEvent) -> Observation:
         helper_id=PIP_ID,
         kind="progress",
         content=content,
+        source_event_uuid=row.event_uuid,
         evidence={
             "event_uuid": row.event_uuid,
             "task_id": payload.get("task_id"),

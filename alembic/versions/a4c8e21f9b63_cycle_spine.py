@@ -90,8 +90,17 @@ def upgrade() -> None:
     op.create_index('ix_device_events_unprocessed', 'device_events',
                     ['user_uuid', 'processed_at'])
 
+    # event-derived observations carry their source event uuid under a
+    # unique index: one fact can never become two noticings, whatever races
+    op.add_column('observations',
+                  sa.Column('source_event_uuid', sa.String(), nullable=True))
+    op.create_index('uq_observations_source_event', 'observations',
+                    ['source_event_uuid'], unique=True)
+
 
 def downgrade() -> None:
+    op.drop_index('uq_observations_source_event', table_name='observations')
+    op.drop_column('observations', 'source_event_uuid')
     op.drop_index('ix_device_events_unprocessed', table_name='device_events')
     op.drop_column('device_events', 'processed_at')
     op.drop_index('ix_scope_changes_user_cycle', table_name='scope_changes')

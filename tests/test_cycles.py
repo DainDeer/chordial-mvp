@@ -247,6 +247,28 @@ def test_adding_to_a_frozen_cycle_is_a_scope_change(env):
     assert added["baseline_blocks"] is None
 
 
+def test_every_door_respects_the_frozen_capacity(env):
+    """the workspace store's general update path is a door too: after the
+    freeze, capacity_blocks must bounce to change_scope; theme and title
+    stay freely editable (words, not capacity)."""
+    cs = CycleStore()
+    ws = get_store()
+    cyc = _cycle()
+    cs.create_commitment(U1, cyc["id"], "a", blocks_planned=5)
+    cs.freeze_baseline(U1, cyc["id"])
+
+    with pytest.raises(ValueError, match="scope change"):
+        ws.update_cycle(U1, cyc["id"], capacity_blocks=99)
+    row = ws.update_cycle(U1, cyc["id"], theme="renamed theme")
+    assert row["theme"] == "renamed theme"
+    assert row["capacity_blocks"] == 24
+
+    # pre-freeze the same edit is ordinary
+    cyc2 = get_store().create_cycle(U1, "next cycle", capacity_blocks=10)
+    assert ws.update_cycle(U1, cyc2["id"],
+                           capacity_blocks=12)["capacity_blocks"] == 12
+
+
 def test_cycle_capacity_scope_change(env):
     cs = CycleStore()
     cyc = _cycle()
@@ -301,6 +323,27 @@ def test_ambiguous_plan_match_never_double_counts(env):
     task = ws.create_task(U1, "shared task", plan_id=plan["id"])
     cs.create_commitment(U1, cyc["id"], "one", plan_id=plan["id"])
     cs.create_commitment(U1, cyc["id"], "two", plan_id=plan["id"])
+
+    pk, _ = _device_pk(env)
+    _bank_event(env, U1, pk, 1, task_id=task["id"], seconds=1500)
+
+    view = cs.projection(U1, cyc["id"])
+    assert all(c["seconds_done"] == 0 for c in view["commitments"])
+    assert view["totals"]["unattributed_seconds"] == 1500
+
+
+def test_duplicate_task_links_are_ambiguous_not_arbitrary(env):
+    """two commitments anchoring the same task: the minutes go to
+    unattributed, never to whichever row a dict happened to keep last -
+    and an ambiguous task match never launders through the plan fallback."""
+    cs = CycleStore()
+    ws = get_store()
+    cyc = _cycle()
+    plan = ws.create_plan(U1, "the plan", "pip", status="active")
+    task = ws.create_task(U1, "contested task", plan_id=plan["id"])
+    cs.create_commitment(U1, cyc["id"], "claimant one", task_id=task["id"])
+    cs.create_commitment(U1, cyc["id"], "claimant two", task_id=task["id"],
+                         plan_id=plan["id"])
 
     pk, _ = _device_pk(env)
     _bank_event(env, U1, pk, 1, task_id=task["id"], seconds=1500)
@@ -395,6 +438,44 @@ def test_processor_survives_a_malformed_payload(env):
         s.commit()
     assert focus_flow.process_pending(U1) == 1
     with env() as s:
+        assert s.query(DeviceEvent).one().processed_at is not None
+
+
+def test_drain_processes_past_one_batch_limit(env):
+    """a batch bigger than one pass's limit must not strand its tail -
+    drain loops until the queue is empty."""
+    ws = get_store()
+    task = ws.create_task(U1, "many blocks")
+    pk, _ = _device_pk(env)
+    for seq in range(1, 4):
+        _bank_event(env, U1, pk, seq, task_id=task["id"], seconds=1500,
+                    event_type="focus_block.completed", label="many blocks")
+    assert focus_flow.drain(U1, limit=1) == 3
+    with env() as s:
+        assert s.query(Observation).count() == 3
+        assert all(e.processed_at is not None
+                   for e in s.query(DeviceEvent).all())
+
+
+def test_one_fact_never_becomes_two_noticings(env):
+    """the unique source_event_uuid floor: even if the processed_at claim
+    is ever lost or reset (the concurrency window sol reproduced), a
+    second pass cannot insert a second observation for the same event."""
+    ws = get_store()
+    task = ws.create_task(U1, "raced block")
+    pk, _ = _device_pk(env)
+    _bank_event(env, U1, pk, 1, task_id=task["id"], seconds=1500,
+                event_type="focus_block.completed", label="raced block")
+    assert focus_flow.process_pending(U1) == 1
+
+    # simulate the lost claim: the stamp vanishes, the observation stays
+    with env() as s:
+        s.query(DeviceEvent).update({DeviceEvent.processed_at: None})
+        s.commit()
+
+    assert focus_flow.process_pending(U1) == 1   # row seen again
+    with env() as s:
+        assert s.query(Observation).count() == 1     # but only one noticing
         assert s.query(DeviceEvent).one().processed_at is not None
 
 

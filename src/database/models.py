@@ -927,11 +927,18 @@ class Observation(Base):
     # what the noticing is tied to: free-form structured refs (quotes, event
     # ids, focus-block ids as later phases start passing them)
     evidence = Column(JSON, nullable=True)
+    # when a pipeline (focus_flow) derives the observation from a device
+    # event, the event's uuid lands here under a UNIQUE index - the hard
+    # guarantee that one fact never becomes two noticings, whatever races.
+    # null for conversational observations (multiple nulls are fine).
+    source_event_uuid = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         Index('ix_observations_user_helper', 'user_uuid', 'helper_id'),
         Index('ix_observations_user_created', 'user_uuid', 'created_at'),
+        Index('uq_observations_source_event', 'source_event_uuid',
+              unique=True),
     )
 
 

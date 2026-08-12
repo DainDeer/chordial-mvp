@@ -18,7 +18,11 @@ tools:
   - list_available_guides
   - record_observation
   - list_observations
-  # the cycle spine is pip's lane (ROOMS_DESIGN section 6)
+  # the cycle spine is pip's lane (ROOMS_DESIGN section 6) - including
+  # the cycle rows themselves, or she couldn't start one
+  - list_cycles
+  - create_cycle
+  - update_cycle
   - view_cycle
   - create_commitment
   - update_commitment

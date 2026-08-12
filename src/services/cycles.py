@@ -401,10 +401,16 @@ class CycleStore:
             seconds_by_task[task_id] = (seconds_by_task.get(task_id, 0)
                                         + int(secs))
 
-        by_task = {c.task_id: c for c in commitments
-                   if c.task_id is not None}
+        # both link maps keep EVERY claimant: a match attributes only when
+        # it is unambiguous. two commitments anchoring the same task (or
+        # sharing a plan) must not have the minutes assigned arbitrarily -
+        # ambiguity lands in unattributed, visibly, and an ambiguous task
+        # match never launders through the plan fallback
+        by_task: dict[int, list[Commitment]] = {}
         by_plan: dict[int, list[Commitment]] = {}
         for c in commitments:
+            if c.task_id is not None:
+                by_task.setdefault(c.task_id, []).append(c)
             if c.plan_id is not None:
                 by_plan.setdefault(c.plan_id, []).append(c)
 
@@ -418,12 +424,15 @@ class CycleStore:
         seconds_by_uuid: dict[str, int] = {}
         unattributed = 0
         for task_id, secs in seconds_by_task.items():
-            target = by_task.get(task_id) if task_id is not None else None
-            if target is None and task_id is not None:
-                # plan match only when it is unambiguous - two commitments
-                # sharing a plan must not both claim the same minutes
-                candidates = by_plan.get(task_plan.get(task_id), [])
-                target = candidates[0] if len(candidates) == 1 else None
+            target = None
+            if task_id is not None:
+                claimants = by_task.get(task_id)
+                if claimants is not None:
+                    target = claimants[0] if len(claimants) == 1 else None
+                else:
+                    candidates = by_plan.get(task_plan.get(task_id), [])
+                    target = (candidates[0] if len(candidates) == 1
+                              else None)
             if target is not None:
                 seconds_by_uuid[target.uuid] = (
                     seconds_by_uuid.get(target.uuid, 0) + secs)
