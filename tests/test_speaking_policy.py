@@ -229,3 +229,132 @@ def test_legacy_rooms_count_as_daily():
                   decider=decider, room_type="legacy")
     script = run(d.direct(_room_message("feeling like a walk"), None))
     assert _speaker(script) == "skip"
+
+
+# --- sol's review: the production shapes -------------------------------------
+
+
+class FakeReader:
+    """the engine's ReadOnlyEventReader shape: read/latest, NOT iterable -
+    the exact production object that silently disabled the decider once."""
+
+    def __init__(self, events=(), error=None):
+        self.events = list(events)
+        self.error = error
+        self.queries = []
+
+    async def read(self, query):
+        self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return list(self.events)
+
+
+def _msg(author_type, author, content, scope=None):
+    return SimpleNamespace(kind="message", author_type=author_type,
+                           author=author, content=content, scope=scope)
+
+
+def _action(author, content="[did tool things]"):
+    return SimpleNamespace(kind="action", author_type="agent",
+                           author=author, content=content, scope=None)
+
+
+def test_decider_runs_against_the_engines_reader_shape():
+    """the P1: direct() receives an EventReader, not a list. the director
+    must materialize the window itself - if the reader shape ever reaches
+    list() again, this test fails the way production silently did."""
+    decider = StubDecider("remy")
+    d = _director(["vel", "skip", "remy"], active=("vel", "skip", "remy"),
+                  decider=decider)
+    reader = FakeReader([_msg("user", "user", "thinking about dinner")])
+    script = run(d.direct(_room_message("what should i cook?"), reader))
+    assert _speaker(script) == "remy"
+    assert reader.queries, "the director must read the recent window"
+    assert decider.calls[0]["recent"][0].content == "thinking about dinner"
+
+
+def test_reader_failure_still_decides_without_context():
+    decider = StubDecider("remy")
+    d = _director(["vel", "skip", "remy"], active=("vel", "skip", "remy"),
+                  decider=decider)
+    reader = FakeReader(error=RuntimeError("db hiccup"))
+    script = run(d.direct(_room_message("what should i cook?"), reader))
+    assert _speaker(script) == "remy"          # decided, not defaulted
+    assert decider.calls[0]["recent"] == []    # just with less context
+
+
+def test_tail_filters_before_slicing_and_drops_the_inbound_echo():
+    """the P2: a tool-heavy previous turn must not evict the user message a
+    follow-up needs, dm lines never reach the routing prompt, and the
+    just-recorded inbound isn't repeated as context."""
+    provider = FakeProvider("skip")
+    inbound = "okay do that again"
+    recent = [
+        _msg("user", "user", "can someone plan me a tiny workout?"),
+        _action("skip"), _action("skip"), _action("skip"), _action("skip"),
+        _msg("agent", "skip", "one-song warmup, then a lap!"),
+        _msg("agent", "mabel", "a secret dm aside", scope="dm"),
+        _msg("user", "user", inbound),   # the engine already recorded it
+    ]
+    assert _decide(provider, message=inbound, recent=recent) == "skip"
+    prompt = provider.requests[0].messages[0].content
+    assert "[user] can someone plan me a tiny workout?" in prompt
+    assert "[skip] one-song warmup, then a lap!" in prompt
+    assert "secret dm aside" not in prompt
+    assert prompt.count(inbound) == 1          # the message itself, once
+
+
+def test_candidates_respect_platform_deliverability():
+    """the P2: a single-bot telegram deployment can only send as the chair -
+    a specialist without an interface must never be cast (the router would
+    fail closed and the user would get silence)."""
+    decider = StubDecider("skip")
+
+    def only_vel(platform):
+        assert platform == "telegram"
+        return {"vel"}
+
+    d = ChordialDirector(
+        ["vel", "skip", "remy"],
+        helper_state_manager=FakeHSM(("vel", "skip", "remy")),
+        decider=decider,
+        room_type_of=_daily,
+        deliverable_speakers=only_vel,
+    )
+    s = Stimulus(kind="user_message", stream_id="room-1", scope="group",
+                 content="feeling like a walk", platform="telegram")
+    script = run(d.direct(s, None))
+    assert _speaker(script) == "vel"
+    assert decider.calls == []   # one deliverable candidate = zero tokens
+
+
+def test_unrestricted_platforms_keep_the_full_candidate_list():
+    decider = StubDecider("skip")
+    d = ChordialDirector(
+        ["vel", "skip"],
+        helper_state_manager=FakeHSM(("vel", "skip")),
+        decider=decider,
+        room_type_of=_daily,
+        deliverable_speakers=lambda platform: None,   # app-style: any speaker
+    )
+    s = Stimulus(kind="user_message", stream_id="room-1", scope="group",
+                 content="feeling like a walk", platform="app")
+    assert _speaker(run(d.direct(s, None))) == "skip"
+
+
+def test_router_deliverable_speakers_shapes():
+    from src.services.message_router import MessageRouter
+
+    class Iface:
+        def __init__(self, platform, helper_id=None):
+            self.platform = platform
+            if helper_id is not None:
+                self.helper_id = helper_id
+
+    router = MessageRouter(user_manager=None)
+    router.register(Iface("telegram", "vel"))          # single-bot deployment
+    router.register(Iface("app"))                      # in-band attribution
+    assert router.deliverable_speakers("telegram") == {"vel"}
+    assert router.deliverable_speakers("app") is None  # unrestricted
+    assert router.deliverable_speakers("discord") == set()  # nothing there

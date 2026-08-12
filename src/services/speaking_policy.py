@@ -72,7 +72,9 @@ class SpeakingDecider:
         platform: Optional[str] = None,
     ) -> Optional[str]:
         """the chosen candidate id, or None for 'let the caller fall back'.
-        never raises."""
+        never raises. `recent` is a materialized list of events - the caller
+        reads it from the engine's EventReader (which is not iterable);
+        passing the reader itself here would quietly disable the decider."""
         try:
             request = self._build_request(message, candidate_ids, chair_id,
                                           recent or [])
@@ -101,10 +103,23 @@ class SpeakingDecider:
             lines.append(f"- {cid}{marker}: {desc}")
         parts = ["candidates:\n" + "\n".join(lines)]
 
+        # filter FIRST, slice second: a tool-heavy previous turn interleaves
+        # action events, and slicing before filtering would evict exactly the
+        # user message a follow-up ("do that again") needs for routing. only
+        # shared-channel messages qualify - a dm with one helper is not
+        # routing context for the room. the just-recorded inbound (it already
+        # rides below as the message itself) is dropped from the tail.
+        messages = [
+            ev for ev in recent
+            if getattr(ev, "kind", "message") == "message"
+            and getattr(ev, "scope", None) != "dm"
+        ]
+        if (messages
+                and getattr(messages[-1], "author_type", None) == "user"
+                and messages[-1].content == message):
+            messages = messages[:-1]
         tail = []
-        for ev in list(recent)[-_RECENT_TURNS:]:
-            if getattr(ev, "kind", "message") != "message":
-                continue
+        for ev in messages[-_RECENT_TURNS:]:
             who = ("user" if getattr(ev, "author_type", "user") == "user"
                    else getattr(ev, "author", "helper"))
             tail.append(f"[{who}] {_clip(ev.content, _RECENT_CLIP)}")
