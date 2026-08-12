@@ -19,6 +19,7 @@ UTC (dainframe as_utc), and this wiring hands the pulse an AWARE utc clock.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -31,6 +32,7 @@ from dainframe.core import (
 )
 from dainframe.pulse import (
     BackoffGate,
+    as_utc,
     FiringPlan,
     GateDecision,
     InMemoryPulseStore,
@@ -45,7 +47,7 @@ from dainframe.pulse import (
 
 from config import Config
 from src.managers.event_log import EventLog
-from src.managers.event_store_adapter import SqlEventStore
+from src.managers.event_store_adapter import SqlEventStore, SqlUserEvents
 from src.managers.user_manager import UserManager
 from src.services.orchestration import chordial_visibility
 
@@ -61,6 +63,24 @@ ANY_MESSAGE = EventQuery(kinds=frozenset({"message"}))
 USER_MESSAGES = EventQuery(
     kinds=frozenset({"message"}), author_types=frozenset({"user"})
 )
+
+
+class UserQuietSince:
+    """ActivationPrecondition: holds while the user hasn't spoken ANYWHERE
+    since the plan was made. replaces stream-scoped NoNewerEvent staleness -
+    rooms made per-stream checks too narrow (the engine hands us the
+    stimulus stream's reader, which we deliberately ignore)."""
+
+    def __init__(self, user_uuid: str, than):
+        self.user_uuid = user_uuid
+        self.than = than
+
+    async def holds(self, events) -> bool:
+        last = await asyncio.to_thread(
+            lambda: EventLog(self.user_uuid).last_user_message())
+        if last is None or last.created_at is None:
+            return True
+        return as_utc(last.created_at) <= as_utc(self.than)
 
 
 def aware_utc_now() -> datetime:
@@ -186,24 +206,39 @@ class ChordialStimulusFactory:
             target=DeliveryTarget(platform=platform, target_id=platform_user_id),
             reason=decision.reason,
             # if the user speaks between this plan and the stream lock, the
-            # check-in is stale: cancel before generation
-            precondition=NoNewerEvent(USER_MESSAGES, than=self._now()),
+            # check-in is stale: cancel before generation. USER-level on
+            # purpose (not the stimulus stream): with rooms, a message in
+            # today's room must cancel a check-in planned against any stream
+            precondition=UserQuietSince(stream_id, than=self._now()),
         )
 
     async def build(self, plan: FiringPlan) -> Stimulus:
-        # pulse rhythms are per-USER; the stream they fire into happens to be
-        # the legacy user-keyed stream today and becomes the daily room in
-        # phase 2b - the explicit user_id extra is what stays true throughout
+        # pulse rhythms are per-USER (the rhythm key stays the user uuid);
+        # what changed in phase 2b is WHERE a check-in lands: today's daily
+        # room, lazily resolved at fire time - so an overnight tick opens
+        # (and thereby closes yesterday's) room exactly like a user message
+        # would. curation is not a conversation and keeps the user key.
+        user_uuid = plan.key.stream_id
         if plan.kind == "curation_due":
             return Stimulus(
                 kind="curation_due",
-                stream_id=plan.key.stream_id,
+                stream_id=user_uuid,
                 record_inbound=False,
-                extras={"user_id": plan.key.stream_id},
+                extras={"user_id": user_uuid},
             )
+
+        from src.services.rooms import get_room_store
+        from src.services.workspace.agenda import user_today
+
+        def resolve() -> str:
+            room = get_room_store().current_room(
+                user_uuid, user_today(user_uuid))
+            return room["room_uuid"]
+        stream_id = await asyncio.to_thread(resolve)
+
         return Stimulus(
             kind="scheduled_tick",
-            stream_id=plan.key.stream_id,
+            stream_id=stream_id,
             platform=plan.target.platform,
             record_inbound=False,
             scope="dm",
@@ -211,7 +246,7 @@ class ChordialStimulusFactory:
             target=plan.target,
             reason=plan.reason,
             precondition=plan.precondition,
-            extras={"user_id": plan.key.stream_id},
+            extras={"user_id": user_uuid},
         )
 
 
@@ -249,8 +284,10 @@ def build_pulse(
         factory=ChordialStimulusFactory(user_manager, platforms=platforms, now=now),
         engine=orchestrator,
         store=store or InMemoryPulseStore(),
+        # rhythm keys are USERS: recency anchors and gate arithmetic must
+        # span every room (a reply in today's room answers yesterday's nudge)
         events_for=lambda sid: ReadOnlyEventReader(
-            SqlEventStore(sid, visibility=chordial_visibility)
+            SqlUserEvents(sid, visibility=chordial_visibility)
         ),
         gates=gates,
         now=now,

@@ -43,7 +43,11 @@ def user_of_context(context) -> str:
 
 
 def resolve_stream_user(stream_id: str) -> str:
-    """map an engine stream id to its user - the usage recorder's resolver.
-    legacy streams ARE user uuids; phase 2b replaces this body with a rooms
-    lookup (one place, by design)."""
-    return stream_id
+    """map an engine stream id to its user - the usage recorder's (and the
+    event store's) resolver. a room stream resolves through the rooms table;
+    anything unknown falls back to the legacy equality (pre-rooms streams
+    ARE user uuids - and the grandfathered legacy room's uuid is the user
+    uuid anyway, so both paths agree)."""
+    from src.services.rooms import get_room_store
+    user = get_room_store().user_of_room(stream_id)
+    return user or stream_id

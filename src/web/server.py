@@ -502,13 +502,16 @@ class WebService:
         identity = await self._device(request)
 
         def build() -> dict:
+            from src.services.rooms import get_room_store
             from src.services.workspace.agenda import user_today
+            room = get_room_store().current_room(
+                identity.user_uuid, user_today(identity.user_uuid))
             return {
                 "room": {
-                    "id": "today",          # a real room id in phase 2
-                    "type": "daily",
-                    "date": user_today(identity.user_uuid).isoformat(),
-                    "status": "open",
+                    "id": room["room_uuid"],
+                    "type": room["room_type"],
+                    "date": room["date"],
+                    "status": room["status"],
                 },
                 "chat_available": self.chat_service is not None,
             }
@@ -522,16 +525,25 @@ class WebService:
             return _error("limit must be an integer")
 
         def read() -> list[dict]:
-            from src.managers.event_log import EventLog
-            events = EventLog(identity.user_uuid).recent(message_limit=limit)
-            return [{
-                "id": e.db_id,
-                "author": e.author,
-                "author_type": e.author_type,
-                "content": e.content,
-                "at": e.created_at.isoformat() if e.created_at else None,
-                "platform": e.platform,
-            } for e in events if e.kind == "message"]
+            from src.database.models import ConversationEvent
+            from src.services.rooms import get_room_store
+            from src.services.workspace.agenda import user_today
+            room = get_room_store().current_room(
+                identity.user_uuid, user_today(identity.user_uuid))
+            with get_db() as db:
+                rows = db.query(ConversationEvent).filter(
+                    ConversationEvent.stream_id == room["room_uuid"],
+                    ConversationEvent.kind == "message",
+                ).order_by(ConversationEvent.id.desc()).limit(limit).all()
+                # serialize INSIDE the session - orm rows detach at close
+                return [{
+                    "id": r.id,
+                    "author": r.author,
+                    "author_type": r.author_type,
+                    "content": r.content,
+                    "at": r.created_at.isoformat() if r.created_at else None,
+                    "platform": r.platform,
+                } for r in reversed(rows)]
         return web.json_response({"messages": await asyncio.to_thread(read)})
 
     async def _api_room_send(self, request: web.Request) -> web.Response:

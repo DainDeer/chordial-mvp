@@ -247,11 +247,17 @@ class ChordialContext:
         """the workspace agenda digest for the volatile 'now' turn. pure db
         reads, fully guarded - any failure degrades to None, i.e. today's
         exact prompt bytes."""
-        if not self.agenda_service:
-            return None
         try:
             parts = []
-            digest = self.agenda_service.get_digest(user_uuid)
+            # yesterday's compressed consequences (ROOMS_DESIGN §4): the new
+            # room reads the previous room's summary, never its transcript -
+            # hydrated even on deployments without an agenda service
+            from src.services.rooms import get_room_store
+            summary = get_room_store().latest_summary(user_uuid)
+            if summary and summary["content"]:
+                parts.append("previously:\n" + summary["content"])
+            digest = (self.agenda_service.get_digest(user_uuid)
+                      if self.agenda_service else None)
             if digest:
                 parts.append(digest)
             return "\n\n".join(parts) if parts else None

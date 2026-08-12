@@ -92,9 +92,15 @@ class ConversationEvent(Base):
 
     id = Column(Integer, primary_key=True)
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    # WHICH conversation this event belongs to (rooms overhaul): a room uuid,
+    # or - for grandfathered pre-rooms history - the user uuid itself (the
+    # legacy one-stream-per-user, preserved as a legacy room). user_uuid
+    # stays the WHOSE key: user-level reads (recency, active_platform) span
+    # every room by filtering it, room reads filter stream_id.
+    stream_id = Column(String, nullable=True, index=True)
     # provenance: which platform this event happened on. NOT a conversation
-    # key - a user has ONE conversation spanning platforms; this just records
-    # where each moment took place (delivery targeting, switch detection).
+    # key; this just records where each moment took place (delivery
+    # targeting, switch detection).
     platform = Column(String)
 
     author_type = Column(String, nullable=False)   # 'user' | 'agent' | 'system'
@@ -737,4 +743,66 @@ class AppMessageReceipt(Base):
         UniqueConstraint('device_id', 'client_message_uuid',
                          name='uq_app_receipts_device_msg'),
         {'sqlite_autoincrement': True},
+    )
+
+
+# --- rooms (docs/ROOMS_DESIGN.md sections 4 + 12, phase 2b) ------------------
+# a room is a bounded conversation: purpose, participants, scoped context,
+# lifecycle. each room is its own engine stream (room_uuid IS the stream id).
+
+
+class Room(Base):
+    """one bounded conversational space.
+
+    lifecycle is the section-4 idempotent state machine: open -> closing ->
+    closed, every transition safe to retrigger. daily rooms are lazy: created
+    on the first interaction of a user's local day, closed by the arrival of
+    the NEXT day's first interaction (never a midnight cron). the pre-rooms
+    per-user stream is grandfathered as a single room_type='legacy' room
+    whose room_uuid equals the user uuid - which is exactly what old
+    conversation_events rows backfill their stream_id to.
+    """
+    __tablename__ = 'rooms'
+
+    id = Column(Integer, primary_key=True)
+    room_uuid = Column(String, nullable=False, unique=True,
+                       default=lambda: str(uuid.uuid4()))
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    room_type = Column(String, nullable=False)     # 'daily' | 'legacy' | ...
+    status = Column(String, nullable=False, default='open')  # open|closing|closed
+    # the user-local date a daily room belongs to; null for non-dated types
+    date = Column(Date, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    closed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # at most one room per (user, type, date): the lazy-create race ends
+        # in one winner and one integrity error, not two mondays
+        UniqueConstraint('user_uuid', 'room_type', 'date',
+                         name='uq_rooms_user_type_date'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class RoomSummary(Base):
+    """the close pass's durable output: the compressed consequences the NEXT
+    room reads instead of this room's transcript. exactly one per room
+    (unique constraint = the section-4 idempotence guarantee). v0 summaries
+    are deterministic digests; an LLM close pass can upgrade content later
+    without touching the shape.
+    """
+    __tablename__ = 'room_summaries'
+
+    id = Column(Integer, primary_key=True)
+    room_id = Column(Integer, ForeignKey('rooms.id'), nullable=False,
+                     unique=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    content = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True}
     )

@@ -64,8 +64,9 @@ def test_accessors_prefer_the_explicit_user_id():
     assert identity.user_of_context(context) == U1
 
 
-def test_accessors_fall_back_to_the_legacy_equality():
-    """a legacy stream IS its user - unthreaded callers keep working."""
+def test_accessors_fall_back_to_the_legacy_equality(env):
+    """a legacy stream IS its user - unthreaded callers keep working (the
+    resolver consults the rooms table now, hence the db fixture)."""
     stimulus = SimpleNamespace(stream_id=U1, extras={})
     briefing = SimpleNamespace(stream_id=U1, extras=None)
     context = ToolContext(stream_id=U1, activation_id="a", actor="pip")
@@ -112,8 +113,14 @@ def test_chat_service_stimulus_carries_user_id(env):
         content="hello", platform_user_id="discord-123", platform="discord",
         platform_message_id="m1")))
     stimulus = captured["stimulus"]
-    assert stimulus.extras["user_id"] == stimulus.stream_id  # legacy equality
-    assert stimulus.extras["user_id"]  # and it is actually set
+    # phase 2b: the stream is TODAY'S ROOM, not the user - and the room
+    # belongs to the stimulus's user
+    assert stimulus.extras["user_id"]
+    assert stimulus.stream_id != stimulus.extras["user_id"]
+    from src.services.rooms import get_room_store
+    room = get_room_store().get_by_uuid(stimulus.stream_id)
+    assert room is not None and room["room_type"] == "daily"
+    assert room["user_uuid"] == stimulus.extras["user_id"]
 
 
 def test_pulse_stimuli_carry_user_id(env):

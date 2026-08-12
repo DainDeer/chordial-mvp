@@ -215,6 +215,9 @@ class EventLog:
         with get_db() as db:
             row = ConversationEvent(
                 user_uuid=self.user_uuid,
+                # direct EventLog writers are legacy-stream writers by
+                # definition (room-aware paths write via SqlEventStore)
+                stream_id=self.user_uuid,
                 platform=platform,
                 author_type=author_type,
                 author=author,
@@ -254,7 +257,7 @@ class EventLog:
 
         # privacy path: pull a generous tail, drop what this helper can't see,
         # THEN window on the visible messages. bounded pull keeps it cheap at
-        # mvp scale (a user's whole log is trimmed to ~1000 events anyway).
+        # mvp scale (bounded pull; archives are kept forever - ROOMS_DESIGN §4).
         # detach into Event dataclasses INSIDE the session - the orm rows are
         # invalid once it closes.
         with get_db() as db:
@@ -336,20 +339,3 @@ class EventLog:
             db.commit()
         logger.info("cleared event log for user %s", self.user_uuid)
 
-
-def cleanup_old_events(max_per_user: int = 1000) -> None:
-    """trim each user's log to the most recent N events (run periodically)."""
-    with get_db() as db:
-        users = db.query(ConversationEvent.user_uuid).distinct().all()
-        for (user_uuid,) in users:
-            cutoff_row = db.query(ConversationEvent.id).filter(
-                ConversationEvent.user_uuid == user_uuid,
-            ).order_by(ConversationEvent.id.desc()).offset(max_per_user).first()
-            if cutoff_row is None:
-                continue
-            db.query(ConversationEvent).filter(
-                ConversationEvent.user_uuid == user_uuid,
-                ConversationEvent.id <= cutoff_row[0],
-            ).delete()
-        db.commit()
-    logger.info("cleaned up old conversation events")

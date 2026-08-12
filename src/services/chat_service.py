@@ -26,6 +26,7 @@ from weakref import WeakValueDictionary
 from dainframe.core import DeliveryTarget, Stimulus
 
 from src.models.unified_message import UnifiedMessage
+from src.services.rooms import get_room_store
 from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
 
@@ -74,6 +75,20 @@ class ChatService:
         # this registry from growing forever as one-off users come and go; a
         # waiter/holder retains the lock strongly for as long as it is needed.
         self._user_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+    @staticmethod
+    async def _current_stream(user_uuid: str) -> str:
+        """the stream every inbound interaction lands in: today's daily room
+        (lazily created; its arrival is also what closes yesterday's). the
+        engine's stream key stops being the user here - the user rides
+        extras/metadata per the identity split."""
+        from src.services.workspace.agenda import user_today
+
+        def resolve() -> str:
+            today = user_today(user_uuid)
+            room = get_room_store().current_room(user_uuid, today)
+            return room["room_uuid"]
+        return await asyncio.to_thread(resolve)
 
     def _lock_for_user(self, user_uuid: str) -> asyncio.Lock:
         lock = self._user_locks.get(user_uuid)
@@ -133,10 +148,12 @@ class ChatService:
                 if not self.orchestrator:
                     return f"echo: {unified_message.content}"
 
+                stream_id = await self._current_stream(user_uuid)
+
                 if chat_scope == "group":
                     stimulus = Stimulus(
                         kind=kind,
-                        stream_id=user_uuid,
+                        stream_id=stream_id,
                         content=unified_message.content,
                         platform=platform,
                         scope="group",
@@ -156,7 +173,7 @@ class ChatService:
                     # name of the private channel the inbound records into
                     stimulus = Stimulus(
                         kind=kind,
-                        stream_id=user_uuid,
+                        stream_id=stream_id,
                         content=unified_message.content,
                         platform=platform,
                         scope="dm",
@@ -201,10 +218,12 @@ class ChatService:
                 if not self.orchestrator:
                     return f"echo: meet {helper_id}"
 
+                stream_id = await self._current_stream(user_uuid)
+
                 result = await self.orchestrator.handle(
                     Stimulus(
                         kind="introduction",
-                        stream_id=user_uuid,
+                        stream_id=stream_id,
                         content=None,
                         platform=platform,
                         scope="dm",
