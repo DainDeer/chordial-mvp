@@ -3,11 +3,12 @@ check-in it earns (docs/ROOMS_DESIGN.md §5).
 
 the rust collector posts {bundle_id, idle_seconds} every couple of seconds.
 this module keeps the latest sample and watches for exactly one pattern in
-v1: the person going quiet mid-block (idle past the threshold) and coming
-back. drift earns AT MOST one soft check-in per episode, the return earns
-one welcome, and an unanswered check-in is silently assumed to be a break -
-never re-asked, never scored. app-based drift (a distracting bundle id
-while working) waits for user-declared app->task maps in a later phase.
+v1: the person going quiet mid-block (idle past the threshold - ten
+minutes, the design's number) and coming back. drift earns AT MOST one
+soft check-in per episode, the return earns one welcome, and an unanswered
+check-in is silently assumed to be a break - never re-asked, never scored.
+app-based drift (a distracting bundle id while working) waits for
+user-declared app->task maps in a later phase.
 
 facts (drift.detected / return.detected) always land in the outbox; the
 LINES ride the gate stack. a blocklisted frontmost app (meetings) hushes
@@ -22,7 +23,9 @@ from typing import Callable, Optional
 from src.sidecar.gates import blocklist
 from src.sidecar.store import SidecarStore
 
-DRIFT_IDLE_MINUTES = float(os.getenv("SIDECAR_DRIFT_IDLE_MINUTES", "5"))
+# ten minutes adrift earns at most one soft check-in - the AUTHORITATIVE
+# number from docs/ROOMS_DESIGN.md section 5; change the doc first
+DRIFT_IDLE_MINUTES = float(os.getenv("SIDECAR_DRIFT_IDLE_MINUTES", "10"))
 # activity within this many seconds counts as "back at the desk"
 _RETURN_IDLE_SECONDS = 10.0
 # a collector gone quiet this long means signals are stale, not the person

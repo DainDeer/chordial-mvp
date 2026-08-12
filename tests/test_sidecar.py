@@ -587,6 +587,54 @@ def test_activity_endpoint_validates_and_feeds_state(store):
     _sidecar_client_flow(store, clock, flow)
 
 
+def test_time_based_expiry_broadcasts_posture(store):
+    """blocked and drifting can expire by TIME alone (a collector going
+    stale) - no line rides along, so the ticker itself must push the
+    state or the window stays hushed forever."""
+    from src.sidecar.drift import ActivityState, DriftWatch
+    clock = Clock()
+    activity = ActivityState(clock=clock)
+    drift = DriftWatch(store, activity, clock=clock)
+
+    async def flow(client, service):
+        ws = await client.ws_connect("/v1/ws")
+        hello = await ws.receive_json()
+        assert hello["activity"]["blocked"] is False
+
+        # zoom frontmost: the handler broadcasts the hush
+        await client.post("/v1/activity", json={
+            "bundle_id": "us.zoom.xos", "idle_seconds": 0})
+        hushed = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert hushed["activity"]["blocked"] is True
+
+        # the collector dies; staleness lifts the hush with no line - the
+        # ticker must broadcast the change on its own
+        clock.advance(minutes=1)
+        await service._tick_once()
+        lifted = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert lifted["type"] == "state"
+        assert lifted["activity"]["blocked"] is False
+        assert lifted["activity"]["fresh"] is False
+
+        # and a quiet tick with nothing changed broadcasts nothing
+        await service._tick_once()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(ws.receive_json(), timeout=0.2)
+        await ws.close()
+
+    async def run_flow():
+        service = SidecarService(
+            store, engine=FocusEngine(store, clock=clock),
+            activity=activity, drift=drift)
+        client = TestClient(TestServer(service.build_app()))
+        await client.start_server()
+        try:
+            await flow(client, service)
+        finally:
+            await client.close()
+    _run(run_flow())
+
+
 def test_sidecar_cors_refuses_strangers(store):
     clock = Clock()
 

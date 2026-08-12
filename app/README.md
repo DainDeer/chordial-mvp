@@ -59,7 +59,7 @@ The sidecar turns those signals into at most one gentle drift check-in per
 episode (and a welcome back), gated by arithmetic, tunable by env:
 
 ```bash
-SIDECAR_DRIFT_IDLE_MINUTES=5    # idle this long mid-block = one soft check-in
+SIDECAR_DRIFT_IDLE_MINUTES=10   # idle this long mid-block = one soft check-in
 SIDECAR_LINES_PER_HOUR=6        # unprompted-speech budget, rolling hour
 SIDECAR_QUIET_HOURS=            # e.g. "22-8" (machine-local; empty = off)
 SIDECAR_BLOCKLIST=              # meeting apps that hush the deer entirely

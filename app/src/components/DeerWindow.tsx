@@ -307,15 +307,19 @@ export default function DeerWindow() {
         🦌
       </div>
       <p className="deer-caption">
-        {activity?.blocked
-          ? "hushed — meeting nearby"
-          : activity?.drifting
-            ? "*ears soft* you wandered — that’s allowed"
-            : focus.running
-              ? overtime
-                ? "still here — every extra minute counts"
-                : "on watch beside you"
-              : "loafing nearby"}
+        <InlineContent
+          content={
+            activity?.blocked
+              ? "hushed — meeting nearby"
+              : activity?.drifting
+                ? "*ears soft* you wandered — that’s allowed"
+                : focus.running
+                  ? overtime
+                    ? "still here — every extra minute counts"
+                    : "on watch beside you"
+                  : "loafing nearby"
+          }
+        />
       </p>
 
       {focus.running && (

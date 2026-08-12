@@ -67,6 +67,10 @@ class SidecarService:
         self.gates = gates or SpeechGates()
         self._sockets: Set[web.WebSocketResponse] = set()
         self._last_line: Optional[str] = None
+        # the posture (blocked, drifting) as of the LAST broadcast - the
+        # ticker compares against this, never against the start of its own
+        # tick: time-based expiry happens BETWEEN ticks
+        self._posture: tuple[bool, bool] = (False, False)
         self._tasks: list[asyncio.Task] = []
 
     # --- app assembly -----------------------------------------------------
@@ -141,12 +145,14 @@ class SidecarService:
 
     def _world(self) -> dict:
         """the state payload: the clock plus derived activity flags (never
-        the bundle id - the ui gets moods, not surveillance)."""
+        the bundle id - the ui gets moods, not surveillance). building it
+        stamps the broadcast posture the ticker compares against."""
+        self._posture = (self.activity.blocked, self.drift.drifting)
         return {
             "type": "state",
             "focus": self.engine.state(),
             "activity": {**self.activity.snapshot(),
-                         "drifting": self.drift.drifting},
+                         "drifting": self._posture[1]},
         }
 
     async def _announce(self, moment: str) -> str:
@@ -171,21 +177,30 @@ class SidecarService:
     # --- the ticker -----------------------------------------------------------
 
     async def _ticker(self) -> None:
-        """the second-hand: the target ding and the drift watch, both
-        unprompted and therefore both gated."""
         while True:
             await asyncio.sleep(1)
             try:
-                if self.engine.crossed_target():
-                    await self._announce_unprompted("block_target")
-                moment = self.drift.tick(
-                    self.engine.state().get("running", False))
-                if moment:
-                    await self._announce_unprompted(moment)
+                await self._tick_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("ticker hiccup; continuing")
+
+    async def _tick_once(self) -> None:
+        """the second-hand: the target ding and the drift watch (both
+        unprompted, both gated) - plus posture honesty: blocked and
+        drifting can expire by TIME alone (a collector going stale lifts
+        the hush, disarms a drift), and those transitions carry no line,
+        so the state must broadcast on its own. the comparison is against
+        the last BROADCAST posture - the change happened between ticks,
+        so the tick's own before/after would never see it."""
+        if self.engine.crossed_target():
+            await self._announce_unprompted("block_target")
+        moment = self.drift.tick(self.engine.state().get("running", False))
+        if moment:
+            await self._announce_unprompted(moment)
+        elif (self.activity.blocked, self.drift.drifting) != self._posture:
+            await self._broadcast(self._world())
 
     # --- handlers ------------------------------------------------------------
 
