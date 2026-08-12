@@ -15,6 +15,7 @@ import {
   type ChatMessage,
 } from "../lib/messages";
 import { memberHue } from "../lib/council";
+import { pickStirring } from "../lib/stirrings";
 
 interface Props {
   token: string;
@@ -29,6 +30,31 @@ const STATUS_DOT: Record<SocketStatus, string> = {
   closed: "away",
   revoked: "away",
 };
+
+const STIRRING_ROTATE_MS = 2400;
+
+/** the waiting line: a small creature doing small things, a new one every
+ * couple of seconds so the wait feels inhabited rather than stuck */
+function Stirring() {
+  const [phrase, setPhrase] = useState(() => pickStirring());
+  useEffect(() => {
+    const timer = setInterval(
+      () => setPhrase((current) => pickStirring(current)),
+      STIRRING_ROTATE_MS,
+    );
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <p className="stirring">
+      <span className="stir-dot" />
+      <span className="stir-dot" />
+      <span className="stir-dot" />
+      <span key={phrase} className="stir-word">
+        {phrase}…
+      </span>
+    </p>
+  );
+}
 
 /** today's room: the shared space where the council answers. history is the
  * persisted log; live lines arrive over the websocket and the send response
@@ -211,14 +237,7 @@ export default function Room({
             </div>
           );
         })}
-        {sending && (
-          <p className="stirring">
-            <span className="stir-dot" />
-            <span className="stir-dot" />
-            <span className="stir-dot" />
-            the room is stirring
-          </p>
-        )}
+        {sending && <Stirring />}
       </div>
 
       {sendError && <p className="soft-error">{sendError}</p>}
