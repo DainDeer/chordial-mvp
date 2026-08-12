@@ -66,7 +66,7 @@ def registry(monkeypatch):
 def call(registry, name, **tool_input):
     result = run(registry.execute(
         ToolCall(id="t", name=name, input=tool_input),
-        ToolContext(stream_id=U1, activation_id="test-act", actor="chordial")))
+        ToolContext(stream_id=U1, activation_id="test-act", actor="vel")))
     return result
 
 
@@ -129,7 +129,7 @@ def test_ambiguity_returns_candidates_never_a_guess(registry):
 
 
 def test_goal_link_implies_its_plan(registry):
-    call(registry, "create_project", title="finish the album", helper="aria")
+    call(registry, "create_project", title="finish the album", helper="juniper")
     call(registry, "create_goal", plan="finish the album", title="mix track one")
     call(registry, "create_task", title="bounce stems", goal="mix track one")
     listing = call(registry, "list_tasks").content
@@ -137,7 +137,7 @@ def test_goal_link_implies_its_plan(registry):
 
 
 def test_win_inherits_plan_from_task(registry):
-    call(registry, "create_project", title="finish the album", helper="aria")
+    call(registry, "create_project", title="finish the album", helper="juniper")
     call(registry, "create_task", title="bounce stems", project="finish the album")
     call(registry, "log_win", title="bounced the stems", task="bounce stems")
     wins = call(registry, "list_wins").content
@@ -175,12 +175,12 @@ def test_note_promotion_via_tool(registry):
 # --- allowlists under both backends ------------------------------------------
 
 
-def test_mochi_allowlist_resolves_under_native(registry):
+def test_mabel_allowlist_resolves_under_native(registry):
     from src.personas import load_personas
-    view = registry.view(load_personas()["mochi"].tools)
+    view = registry.view(load_personas()["mabel"].tools)
     names = {d.name for d in view.definitions()}
     assert {"jot", "log_occasion", "list_wins", "list_checkins"} <= names
-    assert not names & set(LEGACY_CONTRACTS), "mochi must never see task tools"
+    assert not names & set(LEGACY_CONTRACTS), "mabel must never see task tools"
 
 
 def test_every_persona_allowlist_resolves():
@@ -191,3 +191,38 @@ def test_every_persona_allowlist_resolves():
     for card in load_personas().values():
         if card.tools is not None:
             reg.view(card.tools)   # must not raise
+
+
+# --- steward validation (sol's P2: retired ids must not orphan plans) --------
+
+
+def test_plan_steward_must_be_a_deployed_helper(registry):
+    """the schema used to advertise the retired cast (chordial/tempo/...) and
+    the handlers persisted whatever id arrived - a plan stewarded by a helper
+    who no longer exists is orphaned the moment it's written."""
+    rejected = call(registry, "create_plan", title="finish the album",
+                    helper="aria").content
+    assert "isn't a helper in this council" in rejected
+    assert "vel" in rejected  # the corrective lists who IS valid
+    assert "no plans matched." in call(registry, "list_plans").content
+
+    accepted = call(registry, "create_plan", title="finish the album",
+                    helper="juniper").content
+    assert "steward=juniper" in accepted
+
+    re_steward = call(registry, "update_plan", plan="finish the album",
+                      helper="chordial").content
+    assert "isn't a helper in this council" in re_steward
+
+
+def test_plan_steward_defaults_to_the_acting_helper(registry):
+    result = call(registry, "create_plan", title="ship the rooms").content
+    assert "steward=vel" in result  # the test context's actor
+
+
+def test_plan_steward_schema_names_the_live_council(registry):
+    from src.services.tools.workspace_tools import _PLAN_WRITE_PROPS
+    description = _PLAN_WRITE_PROPS["helper"]["description"]
+    for retired in ("chordial", "tempo", "aria", "pep", "poet"):
+        assert retired not in description
+    assert "vel" in description and "pip" in description

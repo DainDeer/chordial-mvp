@@ -1,9 +1,9 @@
-"""chordial's pulse wiring: the source's beats, the factory's plans, the
-gate stack's chordial-specific members, and ambient ticks end-to-end through
+"""vel's pulse wiring: the source's beats, the factory's plans, the
+gate stack's vel-specific members, and ambient ticks end-to-end through
 the real engine against a real temp db.
 
 the rhythm/gate/store arithmetic itself is library-tested in the dainframe;
-what's chordial's to lock down is the COMPOSITION - who gets which beats,
+what's vel's to lock down is the COMPOSITION - who gets which beats,
 what a plan resolves, what curation is exempt from, and that a tick lands a
 scheduled message through the same delivery path as every chat message.
 """
@@ -54,7 +54,7 @@ def run(coro):
 
 
 def naive(dt):
-    """chordial's db rows are naive utc."""
+    """vel's db rows are naive utc."""
     return dt.replace(tzinfo=None)
 
 
@@ -88,7 +88,7 @@ def seed_message(db, author_type, author, content, at, message_type="conversatio
 
 
 class RecordingAgent:
-    def __init__(self, name="chordial", outcome=None):
+    def __init__(self, name="vel", outcome=None):
         self.name = name
         self.outcome = outcome or AgentOutcome(text="checking in~")
         self.briefings = []
@@ -118,7 +118,7 @@ class FakeDeliver:
         self.ok = ok
         self.calls = []
 
-    async def __call__(self, platform, target_id, text, speaker="chordial"):
+    async def __call__(self, platform, target_id, text, speaker="vel"):
         self.calls.append((platform, target_id, text, speaker))
         return self.ok
 
@@ -126,7 +126,7 @@ class FakeDeliver:
 def make_pulse(db, *, companion=None, curator=None, deliver=None):
     companion = companion or RecordingAgent()
     deliver = deliver or FakeDeliver()
-    agents = {"chordial": companion}
+    agents = {"vel": companion}
     if curator is not None:
         agents["curator"] = curator
     orch = build_orchestrator(
@@ -170,13 +170,13 @@ def test_checkin_plan_resolves_delivery_and_carries_staleness(db):
         UserManager(), platforms=["discord"], now=lambda: NOW
     )
     plan = run(factory.plan("u1", checkin_rhythm(), RhythmDecision(due_at=NOW)))
-    assert plan.actor == "chordial"
+    assert plan.actor == "vel"
     assert plan.target == DeliveryTarget(platform="discord", target_id="42")
     assert plan.precondition is not None
 
     stimulus = run(factory.build(plan))
     assert stimulus.kind == "scheduled_tick"
-    assert (stimulus.scope, stimulus.audience) == ("dm", "chordial")
+    assert (stimulus.scope, stimulus.audience) == ("dm", "vel")
     assert stimulus.record_inbound is False
     assert stimulus.precondition is plan.precondition
 
@@ -199,7 +199,7 @@ def test_curation_plan_is_minimal(db):
     assert stimulus.record_inbound is False
 
 
-# --- the gates: chordial's members and exemptions ----------------------------
+# --- the gates: vel's members and exemptions ----------------------------
 
 
 def test_onboarding_gate_blocks_outreach_but_never_curation(db):
@@ -211,7 +211,7 @@ def test_onboarding_gate_blocks_outreach_but_never_curation(db):
     def firing(kind):
         return FiringPlan(
             key=RhythmKey(stream_id="u2", rhythm_id="x"), kind=kind,
-            due_at=NOW, actor="chordial",
+            due_at=NOW, actor="vel",
         )
 
     outreach = run(gate.check(firing("scheduled_tick"), None, NOW))
@@ -230,12 +230,12 @@ def test_pulse_tick_delivers_a_checkin_end_to_end(db):
     run(pulse.tick())
 
     # delivered through the same speaker-aware path as chat, recorded as a
-    # scheduled dm from chordial
-    assert deliver.calls == [("discord", "42", "checking in~", "chordial")]
+    # scheduled dm from vel
+    assert deliver.calls == [("discord", "42", "checking in~", "vel")]
     assert companion.briefings[0].kind == "scheduled_checkin"
     events = EventLog("u1").recent()
     assert [(e.author, e.message_type) for e in events] == [
-        ("user", "conversation"), ("chordial", "scheduled"),
+        ("user", "conversation"), ("vel", "scheduled"),
     ]
 
     # immediately after: the horizon holds, nothing re-fires
@@ -250,7 +250,7 @@ def test_stale_checkin_cancels_before_generation(db):
     companion = RecordingAgent()
     deliver = FakeDeliver()
     orch = build_orchestrator(
-        agents={"chordial": companion}, user_manager=UserManager(),
+        agents={"vel": companion}, user_manager=UserManager(),
         deliver=deliver,
     )
     factory = ChordialStimulusFactory(

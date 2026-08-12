@@ -6,7 +6,7 @@ prompt and isn't unit-testable deterministically, so a scripted fake provider
 stands in for it. what these lock down is the machinery around it: open tasks
 are gathered from the agenda snapshot, no open tasks means no llm call, only
 genuinely-open ids get marked Done (hallucinated ids are rejected), json is
-parsed tolerantly, and the orchestrator records the Done marks as chordial's
+parsed tolerantly, and the orchestrator records the Done marks as vel's
 own actions after a user turn.
 """
 import asyncio
@@ -204,25 +204,25 @@ def db(monkeypatch):
     engine.dispose()
 
 
-async def _ok_deliver(platform, target_id, text, speaker="chordial"):
+async def _ok_deliver(platform, target_id, text, speaker="vel"):
     return True
 
 
 def _dm_stimulus(content):
     from dainframe.core import DeliveryTarget, Stimulus
     return Stimulus(kind="user_message", stream_id="u1", platform="discord",
-                    content=content, scope="dm", audience="chordial",
-                    addressed=("chordial",),
+                    content=content, scope="dm", audience="vel",
+                    addressed=("vel",),
                     target=DeliveryTarget(platform="discord", target_id="42"),
                     extras={"user_name": "dain", "user_timezone": "UTC"})
 
 
-def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
+def test_orchestrator_records_reconciled_marks_as_chair_actions(db):
     from src.agents import AgentOutcome
     from src.services.orchestration import build_orchestrator
 
     class FakeCompanion:
-        name = "chordial"
+        name = "vel"
         async def act(self, briefing):
             return AgentOutcome(text="nice, sounds like a good day 🦌")
 
@@ -230,14 +230,14 @@ def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
     reconciler = _service('{"completed": [{"id": "piano-1"}]}',
                           _payload(("piano-1", "practice piano")), record)
     orch = build_orchestrator(
-        agents={"chordial": FakeCompanion()},
+        agents={"vel": FakeCompanion()},
         user_manager=__import__("src.managers.user_manager", fromlist=["UserManager"]).UserManager(),
         reconciler=reconciler,
         deliver=_ok_deliver,
     )
     run(orch.handle(_dm_stimulus("i practiced piano and went for a walk :3")))
 
-    # the task got marked, and the mark is recorded as chordial's own action,
+    # the task got marked, and the mark is recorded as vel's own action,
     # after the reply
     assert record == [("piano-1", "Done")]
     with db() as s:
@@ -245,7 +245,7 @@ def test_orchestrator_records_reconciled_marks_as_chordial_actions(db):
                   s.query(ConversationEvent).order_by(ConversationEvent.id).all()]
     kinds = [k for k, _, _ in events]
     assert kinds == ["message", "message", "action"]  # user, reply, then the Done mark
-    assert events[2][1] == "chordial"
+    assert events[2][1] == "vel"
     assert "update_task" in events[2][2]
 
 
@@ -255,7 +255,7 @@ def test_reconciler_does_not_run_on_scheduled_tick(db):
     from src.services.orchestration import build_orchestrator
 
     class FakeCompanion:
-        name = "chordial"
+        name = "vel"
         async def act(self, briefing):
             return AgentOutcome(text="evening check-in!")
 
@@ -267,13 +267,13 @@ def test_reconciler_does_not_run_on_scheduled_tick(db):
         tool_registry=_registry(record), usage_recorder=NoUsage(),
     )
     orch = build_orchestrator(
-        agents={"chordial": FakeCompanion()},
+        agents={"vel": FakeCompanion()},
         user_manager=__import__("src.managers.user_manager", fromlist=["UserManager"]).UserManager(),
         reconciler=reconciler,
         deliver=_ok_deliver,
     )
     run(orch.handle(Stimulus(kind="scheduled_tick", stream_id="u1", platform="discord",
-                             record_inbound=False, scope="dm", audience="chordial",
+                             record_inbound=False, scope="dm", audience="vel",
                              target=DeliveryTarget(platform="discord", target_id="42"))))
     assert provider.calls == 0   # reconciler only runs on user messages
     assert record == []
@@ -343,30 +343,30 @@ def _df_event(author_type, author, content):
     )
 
 
-def test_format_recent_labels_dainframe_companion_events_as_chordial():
+def test_format_recent_labels_dainframe_companion_events_as_helper():
     svc = _service('{"completed": []}', _payload(), [])
     rendered = svc._format_recent([
         _df_event("user", "user", "i'm heading out"),
-        _df_event("agent", "chordial", "you should practice piano later!"),
+        _df_event("agent", "vel", "you should practice piano later!"),
     ])
     assert "[user] i'm heading out" in rendered
-    assert "[chordial] you should practice piano later!" in rendered
+    assert "[helper] you should practice piano later!" in rendered
 
 
-def test_format_recent_still_labels_chordial_events_correctly():
+def test_format_recent_still_labels_helper_events_correctly():
     from src.managers.event_log import Event
     svc = _service('{"completed": []}', _payload(), [])
     rendered = svc._format_recent([
         Event(author_type="user", author="user", kind="message", content="hi"),
-        Event(author_type="agent", author="chordial", kind="message", content="hello!"),
+        Event(author_type="agent", author="vel", kind="message", content="hello!"),
     ])
     assert "[user] hi" in rendered
-    assert "[chordial] hello!" in rendered
+    assert "[helper] hello!" in rendered
 
 
-def test_companion_suggestion_is_attributed_to_chordial_in_the_llm_request():
+def test_companion_suggestion_is_attributed_to_a_helper_in_the_llm_request():
     """end to end through _build_request: the companion's own 'you should
-    practice piano' must reach the model labeled [chordial], never [user]."""
+    practice piano' must reach the model labeled [helper], never [user]."""
 
     class CapturingProvider(FakeProvider):
         def __init__(self, reply_text):
@@ -385,9 +385,9 @@ def test_companion_suggestion_is_attributed_to_chordial_in_the_llm_request():
     )
     run(svc.reconcile(
         "u1", "discord", "sounds good!",
-        recent=[_df_event("agent", "chordial", "you should practice piano tonight!")],
+        recent=[_df_event("agent", "vel", "you should practice piano tonight!")],
     ))
 
     prompt = provider.requests[0].messages[0].content
-    assert "[chordial] you should practice piano tonight!" in prompt
+    assert "[helper] you should practice piano tonight!" in prompt
     assert "[user] you should practice piano tonight!" not in prompt

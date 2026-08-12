@@ -85,7 +85,7 @@ def test_tool_acts_for_the_user_not_the_stream(env):
     from src.services.tools.link_tools import LINK_DEVICE
 
     context = ToolContext(stream_id="room-1", activation_id="test-act",
-                          actor="chordial",
+                          actor="vel",
                           metadata={"scope": "dm", "user_id": U1})
     result = _run(LINK_DEVICE.handler({}, context))
     code = result.split("device link code:")[1].split()[0]
@@ -133,7 +133,7 @@ def test_pulse_stimuli_carry_user_id(env):
         key=RhythmKey(stream_id=U1, rhythm_id="checkin"),
         kind="scheduled_tick",
         due_at=None,
-        actor="chordial",
+        actor="vel",
         target=DeliveryTarget(platform="telegram", target_id="t-1"),
     )
     stimulus = _run(factory.build(plan))
@@ -171,7 +171,7 @@ def test_usage_default_resolver_keeps_legacy_equality(env):
         turn_kind="conversation",
         usage=Usage(input_tokens=1, output_tokens=1,
                     cache_read_tokens=0, cache_write_tokens=0),
-        actor="chordial")))
+        actor="vel")))
     with db_mod.SessionLocal() as s:
         assert s.query(UsageLog).one().user_uuid == U1
 
@@ -187,8 +187,10 @@ def test_helper_tool_context_keeps_stream_and_user_separate(env, monkeypatch):
     from src.personas import PersonaCard
 
     card = PersonaCard(
-        id="pip", archetype="test", telegram_handle="", specialty="",
-        proactivity=0.5, tools=None, persona_block="test",
+        id="pip", species="squirrel", emoji="🐿️", lane="productivity",
+        archetype="test", telegram_handle="", specialty="",
+        proactivity=0.5, tools=None, speak_when=["directly_addressed"],
+        default_rooms=["daily"], persona_block="test",
         intro_block="test", intro_question="test")
 
     captured = {}
@@ -240,7 +242,7 @@ def test_introductions_hydrate_with_summary_but_not_agenda(env):
     import src.managers.event_store_adapter as adapter
     from dainframe.core.events import NewEvent
     _run(adapter.SqlEventStore(monday["room_uuid"], user_uuid=U1).append(
-        NewEvent(author_type="agent", author="chordial", kind="message",
+        NewEvent(author_type="agent", author="vel", kind="message",
                  content="welcome to the forest...", platform="app")))
     store.current_room(U1, date(2026, 8, 11))       # closes monday
 

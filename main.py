@@ -20,7 +20,7 @@ def _build_interfaces(chat_service, link_service, user_manager):
     token (Config.telegram_helper_tokens()), all sharing one UpdateDeduper (N
     bots in a group each receive every human message; the deduper keeps the
     first) and one handle->helper map (for resolving @mentions). a single-bot
-    deployment - only chordial's TELEGRAM_TOKEN set - yields exactly one
+    deployment - only the chair's TELEGRAM_TOKEN set - yields exactly one
     telegram interface, i.e. v2 behavior.
 
     the real @username (mention parsing, deep links) is config
@@ -43,14 +43,14 @@ def _build_interfaces(chat_service, link_service, user_manager):
         if not tokens:
             raise RuntimeError(
                 "ENABLE_TELEGRAM is true but no helper has a telegram token "
-                "(set TELEGRAM_TOKEN for chordial and/or TELEGRAM_TOKEN_<HELPER>)"
+                "(set TELEGRAM_TOKEN for the chair and/or TELEGRAM_TOKEN_<HELPER>)"
             )
         missing_username = [h for h in tokens if not Config.telegram_username_for(h)]
         if missing_username:
             raise RuntimeError(
                 "ENABLE_TELEGRAM is true but these helpers have a token and no "
                 f"configured @username: {', '.join(missing_username)} (set "
-                "TELEGRAM_BOT_USERNAME for chordial and/or "
+                "TELEGRAM_BOT_USERNAME for the chair and/or "
                 "TELEGRAM_USERNAME_<HELPER> for the rest - this must be the "
                 "REAL BotFather username, not the persona card's placeholder)"
             )
@@ -282,21 +282,18 @@ async def main():
     curator_agent = None
     if agent_service is not None:
         from src.agents import HelperAgent, CuratorAgent
-        from src.personas import load_personas
+        from src.personas import load_personas, validate_enabled
         from src.services.orchestration import build_orchestrator
 
-        # each enabled helper is a HelperAgent driven by its persona card. an
-        # unknown id in ENABLED_HELPERS is a startup crash (same fail-loudly
-        # style as the telegram config checks) - a mistyped helper should be
-        # loud, never a silently-absent persona.
+        # each enabled helper is a HelperAgent driven by its persona card.
+        # validate_enabled crashes at startup on an unknown id or a missing
+        # chair (same fail-loudly style as the telegram config checks) - a
+        # mistyped helper or an unroutable deployment should be loud, never a
+        # silently-absent persona.
+        validate_enabled(Config.ENABLED_HELPERS)
         cards = load_personas()
         agents = {}
         for helper_id in Config.ENABLED_HELPERS:
-            if helper_id not in cards:
-                raise RuntimeError(
-                    f"ENABLED_HELPERS lists unknown persona '{helper_id}' "
-                    f"(known: {', '.join(sorted(cards))})"
-                )
             agents[helper_id] = HelperAgent(cards[helper_id], agent_service, registry)
 
         # one utility provider (haiku; thinking=False - it doesn't support
@@ -349,7 +346,7 @@ async def main():
             reconciler=reconciler,
             # speaker-aware delivery: the engine makes a specific helper speak
             # (a group line via that helper's bot, or the switch notice as
-            # chordial). the router resolves (platform, speaker) -> interface.
+            # the chair). the router resolves (platform, speaker) -> interface.
             router=router,
             helper_state_manager=HelperStateManager(),
         )

@@ -41,29 +41,44 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # standing crew awareness, carried in system block 2 on EVERY turn kind - not
-# just introductions. without it a helper has no in-context evidence that its
-# crewmates exist at all: a persona_block never names them, and the roster
-# lives only inside list_available_guides. asked "introduce me to the other
-# companions?" mid-conversation, a helper with no roster and no instruction to
-# fetch one confabulates the answer - inventing crewmate names, mismatched
-# specialties, and dead links (which is exactly what shipped to a user on
-# 2026-08-05; the tool was on the request and never called).
+# just introductions. the council roster is AUTHORED now (every persona_block
+# names its crewmates - that part is safe, static truth), but everything
+# per-user still is not: who this person has actually met, who they've
+# declined, what they've renamed anyone to, and how to reach a crewmate all
+# live only in list_available_guides. the 2026-08-05 confabulation incident
+# (invented crewmates, dead links; the tool was on the request and never
+# called) is the reason this rides on every turn, not just introductions.
 #
 # static bytes, so it costs one cache re-warm at deploy and nothing per turn.
 _CREW_AWARENESS = (
-    "about the rest of the crew:\n"
-    "- you are one of several helpers who share this person. each has its own "
-    "specialty and its own separate chat with them.\n"
-    "- you do NOT know the roster: not who is in it, not what they do, not how "
-    "to reach them. that lives in your list_available_guides tool, which also "
-    "knows who this person has already met.\n"
-    "- so whenever they ask about the others - who else is there, who should "
-    "they meet, can they have a link, \"introduce me to the other "
-    "helpers/companions/guides\" - call list_available_guides FIRST and say "
-    "only what it hands back. never name a crewmate, describe their specialty, "
-    "or write out a link from memory or from an older message in this "
-    "conversation: an invented name is a crewmate who doesn't exist, and an "
-    "invented link is a dead end you just sent them to."
+    "about the rest of the council:\n"
+    "- the roster in your persona is how the full council is AUTHORED. it "
+    "can NOT tell you anything about THIS deployment or THIS person: which "
+    "crewmates are actually available here, who they have actually met, who "
+    "they have declined, what they may have renamed or reshaped anyone "
+    "into, or how to reach a crewmate.\n"
+    "- all of that lives in your list_available_guides tool. call it FIRST "
+    "whenever meeting the others comes up - \"who else is there?\", \"can i "
+    "get a link to X?\", \"who should i talk to about <topic>?\", or you "
+    "offering an introduction unprompted - and offer only what it hands "
+    "back.\n"
+    "- never write out a link from memory or from an older message in this "
+    "conversation: an invented link is a dead end you just sent them to. and "
+    "if they've renamed a crewmate, the name they chose (in your memories) "
+    "wins over the card name."
+)
+
+# the solo-deployment counterpart: one enabled helper means the council in
+# its persona is authored fiction for THIS deployment - without this note the
+# card's own crew paragraph would have it offering introductions to residents
+# who can never answer. same config-stable bytes rule as _CREW_AWARENESS.
+_SOLO_AWARENESS = (
+    "about the rest of the council:\n"
+    "- your persona describes crewmates, but none of them are available in "
+    "this deployment: you are the only helper here. never offer to "
+    "introduce another helper, promise one will chime in, or hand out a "
+    "link to one - there is nowhere for that to go. the lanes your "
+    "crewmates would hold, you help with yourself, in your own voice."
 )
 
 # shared framing for every introduction activation, regardless of which
@@ -93,27 +108,31 @@ _INTRO_SHARED_GUIDANCE = (
     "your own voice, not read verbatim. you may riff on their answer with at "
     "most ONE warm follow-up, then move on. save what you learn with save_memory "
     "(visibility='shared' - it's calibration for the whole crew).\n"
-    "4. then - proactively, without being prompted - flow into the "
-    "representation ritual: ask how they'd like you to appear to them: any form, "
-    "any gender, any vibe, \"surprise me\", or no character at all. every answer "
-    "is a good one. propose a name that fits what they chose, or let them name "
-    "you. this is the best part - you ALWAYS reach it; never let the "
-    "conversation stall out before you do.\n"
-    "5. once identity is settled (or they've declined a character, or declined "
-    "you entirely), save the identity with save_memory(is_core=true, "
-    "visibility='PRIVATE') AND call complete_introduction - do both. private is "
-    "important here: how YOU look and what YOU'RE called is between you and them "
-    "only - if it were shared, your crewmates would see 'you are a red panda' as "
-    "a core memory and think it describes THEM. (facts about the person's life "
-    "from step 3 stay shared; only your own appearance is private.) then, warmly "
-    "and only now, offer to introduce the rest of the crew (use "
-    "list_available_guides for who's left and their links).\n"
+    "4. then - lightly, in passing - the \"make me yours\" offer: you arrived "
+    "as yourself (your name and species are authored on your card), so there "
+    "is nothing they HAVE to decide. mention that everything about you is "
+    "reshapeable - name, species, gender, whole vibe - whenever they'd like. "
+    "\"you're perfect as you are\", \"surprise me\", and \"actually, be a "
+    "dragon named toast\" are all great answers, and so is moving right on. "
+    "an offer, never a form - don't stall the conversation on it.\n"
+    "5. close the meeting with complete_introduction - ALWAYS (accepted=true "
+    "if they want you around, false if they've declined you). if they DID "
+    "reshape you, do two things: pass persona_name/persona_form to "
+    "complete_introduction, AND save the new identity with "
+    "save_memory(is_core=true, visibility='PRIVATE'). if they kept you as "
+    "authored, pass neither - the card stays the truth. private is important "
+    "here: how YOU look and what YOU'RE called is between you and them only - "
+    "if it were shared, your crewmates would see 'you are a dragon named "
+    "toast' as a core memory and think it describes THEM. (facts about the "
+    "person's life from step 3 stay shared; only your own appearance is "
+    "private.) then, warmly and only now, offer to introduce the rest of the "
+    "council (use list_available_guides for who's left and their links).\n"
     "hard rules: END EVERY MESSAGE ON FORWARD MOTION - a question or the next "
     "beat - NEVER on a bare validation like \"noted!\" that leaves them to "
     "restart the conversation. if an answer trails off, YOU pick up the thread "
     "and move to the next beat yourself. don't stack nested either/or questions. "
     "interruptions and tangents are fine - there's no rigid order to desync - "
-    "but you are always, gently, headed toward the ritual."
+    "but you always, gently, land the close (complete_introduction)."
 )
 
 
@@ -186,15 +205,21 @@ class PromptService:
         block2 = "\n".join(profile_parts)
         if self._crew_awareness_applies():
             block2 += "\n\n" + _CREW_AWARENESS
+        elif len(Config.ENABLED_HELPERS) < 2:
+            # solo deployment: the persona's authored council isn't here -
+            # say so, or the card's own crew paragraph invites offering
+            # introductions to residents who can never answer
+            block2 += "\n\n" + _SOLO_AWARENESS
         blocks.append(SystemBlock(text=block2, cache=True))
         return blocks
 
     def _crew_awareness_applies(self) -> bool:
-        """whether this helper should be told a crew exists. two guards, both
-        config/card-stable (so the bytes never move mid-deploy):
+        """whether this helper should be told a live crew exists. two guards,
+        both config/card-stable (so the bytes never move mid-deploy):
 
         - a solo deployment (ENABLED_HELPERS is just this one) has no crew to
-          promise, and promising one is its own confabulation.
+          promise, and promising one is its own confabulation - it gets the
+          _SOLO_AWARENESS counterpart instead.
         - a card whose tool allowlist omits list_available_guides can't act on
           the instruction. no card omits it today; this keeps the guidance and
           the tool surface from drifting apart if one ever does."""

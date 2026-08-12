@@ -50,7 +50,7 @@ def db(monkeypatch):
 
 
 class FakeCompanion:
-    name = "chordial"
+    name = "vel"
 
     async def act(self, briefing):
         return AgentOutcome(text="hi there!")
@@ -65,7 +65,7 @@ class FakeDeliver:
         self.fail_notices = fail_notices
         self.sent = []  # every (platform, target_id, message, speaker)
 
-    async def __call__(self, platform, target_id, message, speaker="chordial"):
+    async def __call__(self, platform, target_id, message, speaker="vel"):
         self.sent.append((platform, target_id, message, speaker))
         if self.fail_notices and "pssst" in message:
             return False
@@ -81,7 +81,7 @@ PIDS = {"discord": "d-1", "telegram": "t-1"}
 
 def _orch(deliver):
     return build_orchestrator(
-        agents={"chordial": FakeCompanion()},
+        agents={"vel": FakeCompanion()},
         user_manager=UserManager(),
         deliver=deliver,
     )
@@ -90,7 +90,7 @@ def _orch(deliver):
 def _say(orch, text, platform):
     return run(orch.handle(Stimulus(
         kind="user_message", stream_id="u1", content=text, platform=platform,
-        scope="dm", audience="chordial", addressed=("chordial",),
+        scope="dm", audience="vel", addressed=("vel",),
         target=DeliveryTarget(platform=platform, target_id=PIDS[platform]),
         extras={"user_name": "dain", "user_timezone": "UTC"},
     )))
@@ -200,7 +200,7 @@ def test_notice_is_invisible_to_scheduler_and_prompts(db):
 
     # prompt view: the note's text appears nowhere in rendered turns
     events = log.recent()
-    ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+    ps = PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
     req = run(ps.build_conversation_request(
         conversation_history=events, user_name="dain",
         user_uuid=None, user_timezone="UTC",

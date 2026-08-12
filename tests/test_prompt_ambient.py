@@ -31,7 +31,7 @@ def _user(content, ts):
 
 
 def _agent(content, ts):
-    return Event(author_type="agent", author="chordial", kind="message",
+    return Event(author_type="agent", author="vel", kind="message",
                  content=content, created_at=ts)
 
 
@@ -45,7 +45,7 @@ def _history():
 
 
 def _svc():
-    return PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+    return PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
 
 
 DIGEST = "workspace agenda: today (1): \"book dentist\" [To do]"

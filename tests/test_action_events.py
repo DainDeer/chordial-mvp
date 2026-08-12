@@ -48,17 +48,17 @@ def _user(content, ts):
 
 
 def _agent(content, ts):
-    return Event(author_type="agent", author="chordial", kind="message",
+    return Event(author_type="agent", author="vel", kind="message",
                  content=content, created_at=ts)
 
 
-def _action(content, ts, author="chordial"):
+def _action(content, ts, author="vel"):
     return Event(author_type="agent", author=author, kind="action",
                  content=content, created_at=ts)
 
 
 def _svc():
-    return PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+    return PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
 
 
 ACTION_LINE = 'create_task {"scheduled_date": "2026-07-10", "title": "Look into VR fitness club discord schedule"} -> created task "Look into VR fitness club discord schedule" (id=22e0e094)'
@@ -106,7 +106,7 @@ def test_action_folds_into_next_user_turn_with_attribution():
     # the "second" user turn carries the action block, before its timestamp line
     second_turn = req.messages[2]
     assert second_turn.role == "user"
-    assert second_turn.content.startswith("[chordial's tool actions - ")
+    assert second_turn.content.startswith("[vel's tool actions - ")
     assert ACTION_LINE in second_turn.content
     assert "] second" in second_turn.content
 
@@ -160,7 +160,7 @@ def test_consecutive_actions_group_into_one_block():
         user_uuid=None, user_timezone="UTC",
     ))
     current = req.messages[-1].content
-    assert current.count("chordial's tool actions") == 1  # one block, two lines
+    assert current.count("vel's tool actions") == 1  # one block, two lines
     assert "(id=1)" in current and "(id=2)" in current
 
 
@@ -250,7 +250,7 @@ def _registry():
 
 class FakeAgent:
     """returns a canned AgentOutcome; lets us drive the orchestrator's recording."""
-    name = "chordial"
+    name = "vel"
 
     def __init__(self, outcome):
         self._outcome = outcome
@@ -260,7 +260,7 @@ class FakeAgent:
 
 
 class OkDeliver:
-    async def __call__(self, platform, target_id, text, speaker="chordial"):
+    async def __call__(self, platform, target_id, text, speaker="vel"):
         return True
 
 
@@ -268,7 +268,7 @@ def _orchestrator(outcome):
     from src.managers.user_manager import UserManager
     from src.services.orchestration import build_orchestrator
     return build_orchestrator(
-        agents={"chordial": FakeAgent(outcome)},
+        agents={"vel": FakeAgent(outcome)},
         user_manager=UserManager(),
         deliver=OkDeliver(),
     )
@@ -277,8 +277,8 @@ def _orchestrator(outcome):
 def _stimulus(content="hey"):
     from dainframe.core import DeliveryTarget, Stimulus
     return Stimulus(kind="user_message", stream_id="u1", platform="discord",
-                    content=content, scope="dm", audience="chordial",
-                    addressed=("chordial",),
+                    content=content, scope="dm", audience="vel",
+                    addressed=("vel",),
                     target=DeliveryTarget(platform="discord", target_id="42"),
                     extras={"user_name": "dain", "user_timezone": "UTC"})
 
@@ -303,7 +303,7 @@ def test_successful_mutation_is_recorded_before_reply(db):
     events = _events(db)
     kinds = [k for k, _, _ in events]
     assert kinds == ["message", "action", "message"]  # user -> action -> reply
-    assert events[1][1] == "chordial"
+    assert events[1][1] == "vel"
     assert 'create_task {"title": "x"} -> created task "x" (id=1)' == events[1][2]
 
 
@@ -350,7 +350,7 @@ def test_provider_failure_after_tools_keeps_the_action_trail(db):
     from src.services.orchestration import build_orchestrator
 
     class DyingAgent:
-        name = "chordial"
+        name = "vel"
 
         async def act(self, briefing):
             raise AgentExecutionError(
@@ -363,7 +363,7 @@ def test_provider_failure_after_tools_keeps_the_action_trail(db):
             )
 
     orch = build_orchestrator(
-        agents={"chordial": DyingAgent()},
+        agents={"vel": DyingAgent()},
         user_manager=UserManager(),
         deliver=OkDeliver(),
     )
@@ -386,12 +386,12 @@ def test_pulse_recency_clock_ignores_trailing_action_event(db):
     from src.services.pulse_wiring import ANY_MESSAGE
 
     log = EventLog("u1")
-    log.append_message("agent", "chordial", "checking in~", message_type="scheduled",
+    log.append_message("agent", "vel", "checking in~", message_type="scheduled",
                        platform="discord")
-    log.append_action("chordial", "create_task", {"title": "x"}, "created",
+    log.append_action("vel", "create_task", {"title": "x"}, "created",
                       platform="discord")
 
     store = SqlEventStore("u1", visibility=chordial_visibility)
     latest = run(store.latest(ANY_MESSAGE))
     assert (latest.kind, latest.message_type) == ("message", "scheduled")
-    assert latest.author == "chordial"
+    assert latest.author == "vel"

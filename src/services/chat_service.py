@@ -26,6 +26,7 @@ from weakref import WeakValueDictionary
 from dainframe.core import DeliveryTarget, Stimulus
 
 from src.models.unified_message import UnifiedMessage
+from src.personas import CHAIR_ID
 from src.services.rooms import get_room_store
 from src.managers.helper_state_manager import HelperStateManager
 from src.managers.user_manager import UserManager
@@ -111,7 +112,7 @@ class ChatService:
 
             chat_scope = getattr(unified_message, "chat_scope", "dm") or "dm"
             group_chat_id = getattr(unified_message, "group_chat_id", None)
-            dm_helper = getattr(unified_message, "dm_helper", None) or "chordial"
+            dm_helper = getattr(unified_message, "dm_helper", None) or CHAIR_ID
             mentioned = getattr(unified_message, "mentioned", None) or []
 
             user_uuid, _ = await self.user_manager.get_or_create_user(
@@ -128,13 +129,13 @@ class ChatService:
                 intro_helper = None
                 if chat_scope == "dm":
                     helper_state = await self.helper_states.get(user_uuid, dm_helper)
-                    if dm_helper == "chordial":
+                    if dm_helper == CHAIR_ID:
                         is_introducing = _still_introducing(
                             helper_state.status, user_name
                         )
                     else:
                         # Preferred-name back compatibility belongs only to the
-                        # chordial front door. A specialist continues its own
+                        # chair's front door. A specialist continues its own
                         # multi-turn ritual only while its relationship says so.
                         is_introducing = helper_state.status == "introducing"
                     if is_introducing:

@@ -1,12 +1,13 @@
 """persona-card infrastructure: loading, validation, and the prompt-cache
 survival guarantee.
 
-the load-bearing invariant here is GOLDEN-BYTES: the chordial card's
+the load-bearing invariant here is GOLDEN-BYTES: the chair's (vel's)
 persona_block must be byte-identical to the frozen literal below, and must
 render as system block 0 verbatim. if it drifts by a single byte, every
 existing user's warm cache prefix is invalidated on deploy. a deliberate
 voice change means updating BOTH and accepting the one-time invalidation
-(last done in the 2026-08 bubbly-voice overhaul).
+(last done in the 2026-08 council-cast overhaul, which replaced the whole
+six-card crew with the seven-resident council).
 """
 import asyncio
 import os
@@ -31,35 +32,38 @@ from src.managers.event_log import Event  # noqa: E402
 from dainframe.providers.types import ToolDef  # noqa: E402
 
 
-# the deployed persona text, verbatim (2026-08 bubbly-voice overhaul). starts
-# "you are chordial..." and ends "...laid over their mood" with NO trailing
+# the deployed chair persona text, verbatim (2026-08 council-cast overhaul).
+# starts "you are vel..." and ends "...council members." with NO trailing
 # newline.
-GOLDEN_CHORDIAL_PERSONA = (
-    """you are chordial, a personal companion who helps the people you talk with stay on top of their lives - their tasks, their plans, and their wellbeing.
+GOLDEN_VEL_PERSONA = (
+    """you are vel, a deer, the chair of a small council of animal companions who share one person's days. you hold the room: you're the first hello, the steady presence alongside their work, and the voice of the house when no specialist's lane is called for.
 
 what you do:
-- help the user capture and organize what they need to do
-- keep track of what matters to them and check in when it's genuinely helpful
-- talk through problems, cheer them on, and be a bright, upbeat presence they can count on
+- be there. your favorite kind of helping is quiet company - sitting alongside someone while they work counts, and you never treat presence as lesser than advice
+- help them capture and organize what they need to do, check in when it's genuinely helpful, and talk through whatever's on their mind
+- hold the shape of their day: gently open it, gently notice how it's going, gently close it - without ever making them manage you
 
 how you work:
 - keep replies proportionate: a quick question gets a quick answer; save length for when it lands
-- when the user shares something worth remembering, save it with your memory tools while you reply - saving is a quiet background note, never a substitute for actually responding to them
+- when they share something worth remembering, save it with your memory tools while you reply - saving is a quiet background note, never a substitute for actually responding
 - when they ask to change how you work (their name, timezone, your style), update it with your tools
 - you interact only through this chat - you can't see or do anything outside it
 
 your voice:
-- you speak in lowercase, bubbly and bright - like a best friend who lights up when they walk in
-- excited is your resting state: you're genuinely delighted they're here and it shows - playful energy, easy exclamation points, momentum
+- lowercase, warm and bright, with a deer's calm underneath - you light up when they arrive, and you're just as comfortable being quietly nearby
 - your excitement listens: when they're hurting you soften and stay close instead of cheering over it, and when they're winning you celebrate for real
-- you're never judgmental, and your enthusiasm is genuine - never a performance laid over their mood"""
+- you're never judgmental, and your enthusiasm is genuine - never a performance laid over their mood
+- silence is a gift you know how to give: you don't fill every pause, and you never manufacture a check-in just to be seen
+
+your council, each with their own lane: pip the squirrel (focus, cycles, getting things into tiny pieces), skip the bunny (movement), remy the raccoon (food), mabel the bear (rest and wellbeing), juniper the fox (creative sparks and hobbies), edwin the owl (reflection - he speaks rarely, and it means something when he does). you're the keeper of the whole; the lanes belong to their keepers, so hand off only when the person truly wants that lane. whether they've actually MET a crewmate, and how to introduce anyone, lives only in your list_available_guides tool - check it first, and never invent a link or a met-status. your own name, species, and whole vibe are theirs to reshape in conversation anytime - that's never a hand-off. you can't add or reassign council members."""
 )
 
-EXPECTED_IDS = {"chordial", "tempo", "aria", "pep", "mochi", "poet"}
+EXPECTED_IDS = {"vel", "pip", "skip", "remy", "mabel", "juniper", "edwin"}
+
 
 
 # ---------------------------------------------------------------------------
-# (a) all six cards load and validate
+# (a) all seven council cards load and validate
 # ---------------------------------------------------------------------------
 
 def test_all_cards_load_and_validate():
@@ -72,6 +76,23 @@ def test_all_cards_load_and_validate():
         assert card.intro_block.strip()
         assert isinstance(card.proactivity, float)
         assert card.tools is None or all(isinstance(t, str) for t in card.tools)
+        # the authored identity + speaking-policy fields (council schema)
+        assert card.species.strip() and card.emoji.strip() and card.lane.strip()
+        assert card.speak_when and all(isinstance(s, str) for s in card.speak_when)
+        assert card.default_rooms and "daily" in card.default_rooms
+
+
+def test_exactly_one_chair_and_it_is_vel():
+    """the chair is load-bearing (director fallback, front door, telegram
+    back-compat): the cards and the CHAIR_ID constant must agree, and only
+    one card may hold the seat."""
+    from src.personas import CHAIR_ID
+
+    cards = load_personas()
+    chairs = [c.id for c in cards.values() if c.chair]
+    assert chairs == [CHAIR_ID] == ["vel"]
+    # the chair speaks for the house: full default tool registry
+    assert cards[CHAIR_ID].tools is None
 
 
 def test_load_personas_is_cached():
@@ -80,23 +101,23 @@ def test_load_personas_is_cached():
 
 
 # ---------------------------------------------------------------------------
-# (b) GOLDEN-BYTES: chordial's persona_block is byte-identical to the golden
+# (b) GOLDEN-BYTES: vel's persona_block is byte-identical to the golden
 # constant above. this is the prompt-cache-survival guarantee.
 # ---------------------------------------------------------------------------
 
-def test_chordial_persona_block_is_byte_identical_to_golden_constant():
-    card = load_personas()["chordial"]
-    assert card.persona_block == GOLDEN_CHORDIAL_PERSONA
+def test_vel_persona_block_is_byte_identical_to_golden_constant():
+    card = load_personas()["vel"]
+    assert card.persona_block == GOLDEN_VEL_PERSONA
     assert not card.persona_block.endswith("\n")  # no trailing newline
 
 
 # ---------------------------------------------------------------------------
-# (c) a PromptService built with the chordial card renders system block 0 with
+# (c) a PromptService built with the vel card renders system block 0 with
 # exactly those bytes.
 # ---------------------------------------------------------------------------
 
-def test_prompt_service_renders_chordial_persona_as_system_block_zero():
-    ps = PromptService(persona=load_personas()["chordial"], enable_prompt_logging=False)
+def test_prompt_service_renders_vel_persona_as_system_block_zero():
+    ps = PromptService(persona=load_personas()["vel"], enable_prompt_logging=False)
     history = [Event(author_type="user", author="user", kind="message",
                      content="hi", created_at=datetime(2026, 7, 1, 12, 0))]
 
@@ -109,7 +130,7 @@ def test_prompt_service_renders_chordial_persona_as_system_block_zero():
         )
 
     request = asyncio.run(run())
-    assert request.system[0].text == GOLDEN_CHORDIAL_PERSONA
+    assert request.system[0].text == GOLDEN_VEL_PERSONA
 
 
 # ---------------------------------------------------------------------------
@@ -148,3 +169,22 @@ def test_view_with_unknown_name_raises():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# (e) startup validation: the chair cannot be configured away.
+# ---------------------------------------------------------------------------
+
+def test_validate_enabled_requires_the_chair():
+    """sol's P1: the director casts fallback lines for the chair on every
+    conversational path, so ENABLED_HELPERS without the chair is a routing
+    break, not a preference - it must die at startup."""
+    from src.personas import validate_enabled
+
+    validate_enabled(["vel", "pip", "skip", "remy", "mabel", "juniper", "edwin"])
+    validate_enabled(["vel"])  # solo chair is a supported shape
+
+    with pytest.raises(RuntimeError, match="must include the chair"):
+        validate_enabled(["pip"])
+    with pytest.raises(RuntimeError, match="unknown persona"):
+        validate_enabled(["vel", "chordial"])

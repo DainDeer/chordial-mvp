@@ -21,6 +21,7 @@ from typing import Dict, Optional, Tuple
 
 from src.providers.platforms.base import BaseInterface, UndeliverableError
 from src.managers.user_manager import UserManager
+from src.personas import CHAIR_ID
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +108,9 @@ class MessageRouter:
             return False
 
     async def deliver(self, platform: str, platform_user_id: str, message: str) -> bool:
-        """send `message` to `platform_user_id` on `platform`, as chordial. the
-        legacy 3-arg hook the scheduler and the orchestrator's switch-notice
-        call; delegates to deliver_as with the default speaker."""
+        """send `message` to `platform_user_id` on `platform`, as the chair.
+        the legacy 3-arg hook the scheduler and the orchestrator's
+        switch-notice call; delegates to deliver_as with the default speaker."""
         return await self.deliver_as(
-            platform, platform_user_id, message, speaker="chordial"
+            platform, platform_user_id, message, speaker=CHAIR_ID
         )

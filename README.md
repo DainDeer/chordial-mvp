@@ -6,20 +6,20 @@ built and run solo. in continuous daily production use since june 2025.
 
 chordial runs on [**the dainframe**](https://github.com/DainDeer/the-dainframe) — its orchestration machinery (ai providers, tool registry, agent loop; soon the engine and ambient pulse), extracted into its own framework with chordial as the first consumer. the dainframe is a **required dependency**: see [installing & running](#installing--running).
 
-### the ensemble
+### the council
 
-| helper | specialty |
+| helper | lane |
 |---|---|
-| **chordial** | general companion — reaches out the most |
-| **tempo** | fitness & movement |
-| **aria** | music |
-| **pep** | productivity cheerleader & cycle balance-keeper |
-| **mochi** | emotional support — never assigns work |
-| **poet** | writing (songwriting is a deliberate poet↔aria duet) |
+| 🦌 **vel** (chair) | orchestrator & ambient presence — holds the room, speaks for the house |
+| 🐿️ **pip** | productivity — cycles, focus blocks, task breakdown |
+| 🐰 **skip** | movement — five minutes counts |
+| 🦝 **remy** | nutrition — approximate estimates, zero moralizing |
+| 🐻 **mabel** | wellbeing — rest, comfort, the whole organism |
+| 🦊 **juniper** | creative & hobbies — keeper of sparks, defender of unproductive joy |
+| 🦉 **edwin** | reflection & scoring — speaks rarely, and it counts |
 
-- archetypes are repo config ([src/personas/*.yaml](src/personas/)) — form-agnostic baseline personalities, each a cache-stable frozen prompt block
-- *identities* are emergent per user: name, form, and vibe are chosen during a storytelling introduction ("you enter the chordial forest…") and persisted as shared memories + `HelperState`
-- group chat is for shared presence; each helper is also its own private DM. DMs are **truly private** — never rendered into a sibling's context window. the cross-helper channel is memory: important DM facts become shared memories with attribution, so a sibling can say "i heard from aria that…"
+- characters are **authored defaults, personally reshapeable** ([src/personas/*.yaml](src/personas/), see [docs/ROOMS_DESIGN.md](docs/ROOMS_DESIGN.md) §3): each card ships an identity, voice, and lane as a cache-stable frozen prompt block, and every user-facing aspect — name, species, whole vibe — can be renamed in conversation and stored as a per-user override
+- group chat is for shared presence; each helper is also its own private DM. DMs are **truly private** — never rendered into a sibling's context window (or a shared room summary). the cross-helper channel is memory: important DM facts become shared memories with attribution, so a sibling can say "i heard from juniper that…"
 
 ### how a message flows
 
