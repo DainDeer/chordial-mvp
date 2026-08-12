@@ -15,6 +15,7 @@ import {
   type ChatMessage,
 } from "../lib/messages";
 import { memberHue } from "../lib/council";
+import { chunkInline } from "../lib/markup";
 import { pickStirring } from "../lib/stirrings";
 
 interface Props {
@@ -32,6 +33,22 @@ const STATUS_DOT: Record<SocketStatus, string> = {
 };
 
 const STIRRING_ROTATE_MS = 2400;
+
+/** helper prose with the council's action beats honored: *em* and
+ * **strong** only, everything else literal (chunks are data - react
+ * escapes the text, so nothing in a message can inject markup) */
+function InlineContent({ content }: { content: string }) {
+  return (
+    <>
+      {chunkInline(content).map((chunk, i) => {
+        if (chunk.style === "em") return <em key={i}>{chunk.text}</em>;
+        if (chunk.style === "strong")
+          return <strong key={i}>{chunk.text}</strong>;
+        return <span key={i}>{chunk.text}</span>;
+      })}
+    </>
+  );
+}
 
 /** the waiting line: a small creature doing small things, a new one every
  * couple of seconds so the wait feels inhabited rather than stuck */
@@ -66,6 +83,7 @@ export default function Room({
   onAuthLost,
 }: Props) {
   const [room, setRoom] = useState<RoomInfo | null>(null);
+  const [chatAvailable, setChatAvailable] = useState(true);
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [extras, setExtras] = useState<ChatMessage[]>([]);
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("connecting");
@@ -84,6 +102,7 @@ export default function Room({
         fetchRoomMessages(token),
       ]);
       setRoom(current.room);
+      setChatAvailable(current.chat_available);
       const rows = log.messages.map(fromHistory);
       setHistory(rows);
       setExtras((prev) => reconcileExtras(prev, rows));
@@ -129,38 +148,68 @@ export default function Room({
       el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || sending) return;
-    const clientMessageId = crypto.randomUUID();
-    const mine = pendingUserLine(clientMessageId, text);
-    setDraft("");
+  /** run (or re-run) one send under its receipt key. a failure keeps the
+   * line - marked failed, id preserved - because the failure may be
+   * ambiguous: the server can finish a turn whose response never reached
+   * us, and only a retry under the SAME client_message_id replays the
+   * stored receipt instead of paying for (and mutating with) a second turn. */
+  async function runSend(mine: ChatMessage) {
     setSendError(null);
     setSending(true);
-    setExtras((prev) => [...prev, mine]);
-    pinnedToBottom.current = true;
     try {
-      const result = await sendRoomMessage(token, text, clientMessageId);
+      const result = await sendRoomMessage(
+        token,
+        mine.content,
+        mine.clientMessageId!,
+      );
       const fresh = result.messages
         .map((payload) => admitLive(seen.current, payload))
         .filter((line): line is ChatMessage => line !== null);
       setExtras((prev) => [
-        ...prev.map((m) => (m.key === mine.key ? { ...m, pending: false } : m)),
+        ...prev.map((m) =>
+          m.key === mine.key ? { ...m, pending: false, failed: false } : m,
+        ),
         ...fresh,
       ]);
       onTurnComplete();
+      // the server routed this turn to the CURRENT local-day room; refetch
+      // so a lazy rollover (app open across midnight) swaps the header and
+      // history to the new day instead of appending under yesterday
+      await refresh();
     } catch (e) {
       if (isAuthError(e)) {
         onAuthLost();
         return;
       }
-      // give the words back: drop the optimistic line, restore the draft
-      setExtras((prev) => prev.filter((m) => m.key !== mine.key));
-      setDraft(text);
+      setExtras((prev) =>
+        prev.map((m) =>
+          m.key === mine.key ? { ...m, pending: false, failed: true } : m,
+        ),
+      );
       setSendError(e instanceof Error ? e.message : "that didn’t go through");
     } finally {
       setSending(false);
     }
+  }
+
+  function send() {
+    const text = draft.trim();
+    if (!text || sending || !chatAvailable) return;
+    const mine = pendingUserLine(crypto.randomUUID(), text);
+    setDraft("");
+    setExtras((prev) => [...prev, mine]);
+    pinnedToBottom.current = true;
+    void runSend(mine);
+  }
+
+  function retry(mine: ChatMessage) {
+    if (sending || !mine.clientMessageId) return;
+    setExtras((prev) =>
+      prev.map((m) =>
+        m.key === mine.key ? { ...m, pending: true, failed: false } : m,
+      ),
+    );
+    void runSend(mine);
   }
 
   function onComposerKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -213,6 +262,15 @@ export default function Room({
                 className={`line mine${m.pending ? " pending" : ""}`}
               >
                 <div className="bubble">{m.content}</div>
+                {m.failed && (
+                  <button
+                    className="line-retry"
+                    onClick={() => retry(m)}
+                    disabled={sending}
+                  >
+                    didn’t go through — send again
+                  </button>
+                )}
               </div>
             );
           }
@@ -233,7 +291,9 @@ export default function Room({
                   </span>
                 </div>
               )}
-              <div className="bubble">{m.content}</div>
+              <div className="bubble">
+                <InlineContent content={m.content} />
+              </div>
             </div>
           );
         })}
@@ -242,25 +302,31 @@ export default function Room({
 
       {sendError && <p className="soft-error">{sendError}</p>}
 
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={onComposerKey}
-          placeholder="say something…"
-          rows={2}
-          disabled={sending}
-        />
-        <button type="submit" disabled={sending || !draft.trim()}>
-          send
-        </button>
-      </form>
+      {chatAvailable ? (
+        <form
+          className="composer"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onKeyDown={onComposerKey}
+            placeholder="say something…"
+            rows={2}
+            disabled={sending}
+          />
+          <button type="submit" disabled={sending || !draft.trim()}>
+            send
+          </button>
+        </form>
+      ) : (
+        <p className="room-quiet">
+          the council is away right now — this connection can’t chat yet.
+        </p>
+      )}
     </div>
   );
 }

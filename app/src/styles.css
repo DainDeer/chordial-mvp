@@ -659,6 +659,33 @@ textarea::placeholder {
   cursor: default;
 }
 
+.line-retry {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rose-alert);
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.line-retry:hover {
+  background: var(--blush-soft);
+}
+
+.line-retry:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.room-quiet {
+  margin: 0;
+  padding: 18px 26px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--ink-dim);
+  font-style: italic;
+  text-align: center;
+}
+
 /* --- shared ----------------------------------------------------------------- */
 
 .soft-error {
