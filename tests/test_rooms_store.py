@@ -165,3 +165,68 @@ def test_room_events_carry_both_keys(env, store):
         row = s.query(ConversationEvent).one()
         assert row.stream_id == room["room_uuid"]   # which conversation
         assert row.user_uuid == U1                  # whose reality
+
+
+# --- review hardening ---------------------------------------------------------
+
+
+def _dm_message(room_uuid, user, author_type, author, content, with_helper):
+    import asyncio
+    from dainframe.core.events import NewEvent
+    from src.managers.event_store_adapter import SqlEventStore
+    asyncio.run(SqlEventStore(room_uuid, user_uuid=user).append(NewEvent(
+        author_type=author_type, author=author, kind="message",
+        content=content, platform="app", scope="dm", audience=with_helper)))
+
+
+def test_private_dms_never_leak_into_summaries(env, store):
+    """the P1: an aria-only dm must not appear in the shared summary every
+    helper hydrates with - not in the exchange, not even in the counts."""
+    monday = store.current_room(U1, MON)
+    _room_message(monday["room_uuid"], U1, "user", "user", "public plans")
+    _dm_message(monday["room_uuid"], U1, "user", "user",
+                "aria, a secret song idea", with_helper="aria")
+    _dm_message(monday["room_uuid"], U1, "agent", "aria",
+                "your secret is safe with me", with_helper="aria")
+
+    store.current_room(U1, TUE)
+    summary = store.latest_summary(U1)
+    assert "secret" not in summary["content"]
+    assert "aria" not in summary["content"]
+    assert "1 user messages, 0 helper replies" in summary["content"]
+    assert "public plans" in summary["content"]
+
+
+def test_late_events_refresh_a_frozen_summary(env, store):
+    """the P1: an activation racing the close can land its reply after the
+    summary froze; the next sweep folds it in (eventually-correct, no
+    cross-process locks)."""
+    monday = store.current_room(U1, MON)
+    _room_message(monday["room_uuid"], U1, "user", "user", "good night!")
+    store.current_room(U1, TUE)                      # closes monday
+    before = store.latest_summary(U1)
+    assert "0 helper replies" in before["content"]
+
+    # the in-flight activation lands late, into the CLOSED room
+    _room_message(monday["room_uuid"], U1, "agent", "pip",
+                  "sweet dreams! block logged 🌙")
+    store.current_room(U1, TUE)                      # next interaction sweeps
+    after = store.latest_summary(U1)
+    assert "1 helper replies" in after["content"]
+    assert "sweet dreams" in after["content"]
+
+
+def test_interrupted_grandfather_resumes(env, store):
+    """the P2: a legacy room stuck in 'closing' (crash mid-grandfather)
+    finishes on the next touch instead of dangling summaryless forever."""
+    EventLog(U1).append_message("user", "user", "from the before times")
+    with env() as s:
+        s.add(Room(room_uuid=U1, user_uuid=U1, room_type="legacy",
+                   status="closing"))
+        s.commit()
+    store.current_room(U1, TUE)
+    with env() as s:
+        legacy = s.query(Room).filter(Room.room_type == "legacy").one()
+        assert legacy.status == "closed"
+        assert s.query(RoomSummary).filter(
+            RoomSummary.room_id == legacy.id).count() == 1

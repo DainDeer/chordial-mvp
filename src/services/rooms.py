@@ -119,18 +119,62 @@ class RoomStore:
             ).all()]
         for room_id in stale:
             self.close_room(room_id)
+        self._refresh_stale_summaries(user_uuid)
+
+    def _refresh_stale_summaries(self, user_uuid: str) -> None:
+        """closing races the engine: an activation already generating on
+        yesterday's stream may land its reply AFTER the summary froze (the
+        store accepts late appends on purpose - the action trail must
+        survive). rather than coordinate locks across processes, the sweep
+        is eventually-correct: any closed room whose newest event postdates
+        its summary gets its digest recomputed on the next interaction."""
+        with get_db() as db:
+            candidates = db.query(RoomSummary, Room).join(
+                Room, Room.id == RoomSummary.room_id,
+            ).filter(
+                RoomSummary.user_uuid == user_uuid,
+                Room.status == "closed",
+            ).all()
+            to_refresh = []
+            for summary, room in candidates:
+                newest = db.query(func.max(ConversationEvent.created_at)).filter(
+                    ConversationEvent.stream_id == room.room_uuid,
+                ).scalar()
+                if newest is not None and newest > summary.created_at:
+                    to_refresh.append((summary.id, room.id))
+        for summary_id, room_id in to_refresh:
+            digest = self._digest(room_id)
+            with get_db() as db:
+                db.query(RoomSummary).filter(
+                    RoomSummary.id == summary_id,
+                ).update({"content": digest, "created_at": utc_now()},
+                         synchronize_session=False)
+                db.commit()
+            logger.info("room %s summary refreshed after late events", room_id)
 
     def _grandfather_legacy(self, user_uuid: str) -> None:
         """first touch of the rooms era: if the user has pre-rooms history
         and no legacy room yet, enroll that stream as a closed legacy room
         (room_uuid == user_uuid == the backfilled stream_id)."""
         with get_db() as db:
-            exists = db.query(Room.id).filter(
+            existing = db.query(Room).filter(
                 Room.user_uuid == user_uuid,
                 Room.room_type == "legacy",
             ).first()
-            if exists is not None:
-                return
+            if existing is not None:
+                if existing.status != "closed":
+                    # a crash mid-grandfather (or the loser of the creation
+                    # race) left it unfinished; close_room resumes from any
+                    # partial state
+                    room_id = existing.id
+                else:
+                    return
+            else:
+                room_id = None
+        if room_id is not None:
+            self.close_room(room_id)
+            return
+        with get_db() as db:
             has_history = db.query(ConversationEvent.id).filter(
                 ConversationEvent.stream_id == user_uuid,
             ).first() is not None
@@ -188,17 +232,25 @@ class RoomStore:
     def _digest(self, room_id: int) -> str:
         """deterministic compressed consequences: counts + the last exchange.
         an LLM close pass upgrades this content later; the shape (one text
-        block the next room hydrates with) is the stable part."""
+        block the next room hydrates with) is the stable part.
+
+        SHARED-CHANNEL ONLY: the summary hydrates every helper's next-room
+        prompt, so dm-scope events (a private 1:1 with one helper) are
+        excluded entirely - from the counts, the last exchange, everything.
+        per-helper summary variants can exist later; leaking never can."""
+        def _shared(row) -> bool:
+            return (row.event_metadata or {}).get("scope") != "dm"
+
         with get_db() as db:
             room = db.query(Room).filter(Room.id == room_id).one()
-            rows = db.query(ConversationEvent).filter(
+            rows = [r for r in db.query(ConversationEvent).filter(
                 ConversationEvent.stream_id == room.room_uuid,
                 ConversationEvent.kind == "message",
-            ).order_by(ConversationEvent.id).all()
-            n_actions = db.query(func.count(ConversationEvent.id)).filter(
+            ).order_by(ConversationEvent.id).all() if _shared(r)]
+            n_actions = sum(1 for r in db.query(ConversationEvent).filter(
                 ConversationEvent.stream_id == room.room_uuid,
                 ConversationEvent.kind == "action",
-            ).scalar() or 0
+            ).all() if _shared(r))
 
             n_user = sum(1 for r in rows if r.author_type == "user")
             n_agent = sum(1 for r in rows if r.author_type == "agent")

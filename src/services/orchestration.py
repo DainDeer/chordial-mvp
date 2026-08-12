@@ -229,12 +229,12 @@ class ChordialContext:
 
         return BriefingContext(
             kind=briefing_kind,
-            # an introduction stays light (no agenda digest) but keeps the
-            # event window, so a returning user's intro sees prior context
-            ambient_context=(
-                None
-                if briefing_kind == "introduction"
-                else self._compose_ambient(user_uuid)
+            # an introduction stays light (no agenda digest) but must still
+            # see the privacy-safe previous-room summary: a multi-day intro
+            # starts its second day in a FRESH room with an empty window, and
+            # without the summary it would re-introduce itself from scratch
+            ambient_context=self._compose_ambient(
+                user_uuid, include_agenda=(briefing_kind != "introduction")
             ),
             extras={
                 "user_id": user_uuid,
@@ -243,10 +243,13 @@ class ChordialContext:
             },
         )
 
-    def _compose_ambient(self, user_uuid: str) -> Optional[str]:
-        """the workspace agenda digest for the volatile 'now' turn. pure db
-        reads, fully guarded - any failure degrades to None, i.e. today's
-        exact prompt bytes."""
+    def _compose_ambient(self, user_uuid: str,
+                         include_agenda: bool = True) -> Optional[str]:
+        """the volatile 'now' zone: the previous room's summary (always -
+        it is shared-channel-only by construction, so it is safe for any
+        helper's prompt) plus the workspace agenda digest (skipped for
+        introductions). pure db reads, fully guarded - any failure degrades
+        to None, i.e. today's exact prompt bytes."""
         try:
             parts = []
             # yesterday's compressed consequences (ROOMS_DESIGN §4): the new
@@ -257,7 +260,7 @@ class ChordialContext:
             if summary and summary["content"]:
                 parts.append("previously:\n" + summary["content"])
             digest = (self.agenda_service.get_digest(user_uuid)
-                      if self.agenda_service else None)
+                      if include_agenda and self.agenda_service else None)
             if digest:
                 parts.append(digest)
             return "\n\n".join(parts) if parts else None

@@ -221,3 +221,48 @@ def test_helper_tool_context_keeps_stream_and_user_separate(env, monkeypatch):
     assert context.stream_id == "room-1"          # the conversation, verbatim
     assert context.metadata["user_id"] == U1      # the user, in metadata
     assert captured["prompt_user"] == U1          # prompts built for the user
+
+
+# --- introduction hydration (multi-day intros must not amnesia) ---------------
+
+
+def test_introductions_hydrate_with_summary_but_not_agenda(env):
+    """the P2: an unfinished introduction resuming in the next day's fresh
+    room sees the previous room's (privacy-safe) summary - but still no
+    agenda digest."""
+    from datetime import date
+    from src.services.orchestration import ChordialContext
+    from src.services.rooms import RoomStore
+    from src.managers.user_manager import UserManager
+
+    store = RoomStore()
+    monday = store.current_room(U1, date(2026, 8, 10))
+    import src.managers.event_store_adapter as adapter
+    from dainframe.core.events import NewEvent
+    _run(adapter.SqlEventStore(monday["room_uuid"], user_uuid=U1).append(
+        NewEvent(author_type="agent", author="chordial", kind="message",
+                 content="welcome to the forest...", platform="app")))
+    store.current_room(U1, date(2026, 8, 11))       # closes monday
+
+    class LoudAgenda:
+        def get_digest(self, user_uuid):
+            return "AGENDA DIGEST"
+
+    context = ChordialContext(UserManager(), agenda_service=LoudAgenda())
+    briefing = _run(context.enrich(
+        SimpleNamespace(kind="introduction", stream_id="room-x",
+                        extras={"user_id": U1}),
+        line=None))
+    assert briefing.ambient_context is not None
+    assert "previously:" in briefing.ambient_context
+    assert "welcome to the forest" in briefing.ambient_context
+    assert "AGENDA DIGEST" not in briefing.ambient_context
+
+    # ordinary turns still get both
+    briefing = _run(context.enrich(
+        SimpleNamespace(kind="user_message", stream_id="room-x",
+                        extras={"user_id": U1, "user_name": "megan",
+                                "user_timezone": "UTC"}),
+        line=None))
+    assert "AGENDA DIGEST" in briefing.ambient_context
+    assert "previously:" in briefing.ambient_context
