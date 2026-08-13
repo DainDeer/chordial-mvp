@@ -226,3 +226,42 @@ def test_plan_steward_schema_names_the_live_council(registry):
     for retired in ("chordial", "tempo", "aria", "pep", "poet"):
         assert retired not in description
     assert "vel" in description and "pip" in description
+
+
+# --- cycle planning fields (phase 5a review round) -----------------------------
+
+
+def test_cycle_tools_carry_theme_and_capacity(registry):
+    """sol's find on #65: theme/capacity_blocks existed in the schema but
+    no model-facing door could set them."""
+    out = call(registry, "create_cycle", title="cycle t", status="Active",
+               theme="build rhythm", capacity_blocks=24).content
+    assert "created cycle" in out
+    out = call(registry, "list_cycles").content
+    assert "theme=build rhythm" in out and "capacity=24" in out
+
+    out = call(registry, "update_cycle", cycle="cycle t",
+               theme="steadier now", capacity_blocks=20).content
+    assert "updated cycle" in out
+    out = call(registry, "list_cycles").content
+    assert "theme=steadier now" in out and "capacity=20" in out
+
+
+def test_update_cycle_redirects_frozen_capacity_to_change_scope(registry):
+    """after the freeze, the general update door bounces capacity to the
+    scope ledger - promptably, so pip self-corrects."""
+    call(registry, "create_cycle", title="cycle t", status="Active",
+         capacity_blocks=10)
+    call(registry, "create_commitment", title="one promise",
+         blocks_planned=3)
+    out = call(registry, "freeze_cycle").content
+    assert "baseline frozen" in out
+
+    out = call(registry, "update_cycle", cycle="cycle t", capacity_blocks=99).content
+    assert "change_scope" in out and "updated cycle" not in out
+
+    out = call(registry, "change_scope", reason="the week collapsed",
+               capacity_blocks=8).content
+    assert "scope change recorded" in out
+    out = call(registry, "view_cycle").content
+    assert "capacity=8 blocks" in out

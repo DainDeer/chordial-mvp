@@ -306,6 +306,8 @@ async def _create_cycle(tool_input: dict, context: ToolContext) -> str:
         end_date=tool_input.get("end_date"),
         goal=tool_input.get("goal"),
         focus=tool_input.get("focus") or tool_input.get("description"),
+        theme=tool_input.get("theme"),
+        capacity_blocks=tool_input.get("capacity_blocks"),
     )
     return f"created cycle \"{title}\" (id={row['public_id']})."
 
@@ -321,14 +323,21 @@ async def _update_cycle(tool_input: dict, context: ToolContext) -> str:
     changes = {}
     for key, store_key in (("new_title", "title"), ("status", "status"),
                            ("start_date", "start_date"), ("end_date", "end_date"),
-                           ("goal", "goal"), ("focus", "focus")):
+                           ("goal", "goal"), ("focus", "focus"),
+                           ("theme", "theme"),
+                           ("capacity_blocks", "capacity_blocks")):
         if tool_input.get(key) is not None:
             changes[store_key] = tool_input[key]
     if tool_input.get("description") is not None and "focus" not in changes:
         changes["focus"] = tool_input["description"]
     if not changes:
         return "nothing to update - pass at least one field to change."
-    row = _store().update_cycle(user_uuid, target["id"], **changes)
+    try:
+        row = _store().update_cycle(user_uuid, target["id"], **changes)
+    except ValueError as e:
+        # e.g. capacity on a frozen cycle - the store's redirect to
+        # change_scope is the promptable answer
+        return str(e)
     return f"updated cycle (id={row['public_id']}): {_fields_note(changes)}."
 
 
@@ -762,28 +771,42 @@ LIST_CYCLES = _tool(
     _list_cycles, record_event=False,
 )
 
+_CYCLE_THEME = {"type": "string",
+                "description": "The cycle's theme, the user's words "
+                               "('build rhythm without overloading')."}
+_CYCLE_CAPACITY = {"type": "integer",
+                   "description": "Honest capacity estimate in focus "
+                                  "blocks (25 min each)."}
+
 CREATE_CYCLE = _tool(
     "create_cycle",
     "Create a cycle (the bi-weekly balancing window). Only 'title' is "
     "required; defaults status to 'Upcoming'. Give it a date range, a goal, "
-    "and a 'focus' (the negotiated balance statement) when known.",
+    "a 'focus' (the negotiated balance statement), a theme, and a capacity "
+    "estimate in focus blocks when known.",
     {"title": {"type": "string"},
      "status": {"type": "string", "enum": _CYCLE_STATUS},
      "start_date": _ISO_DATE, "end_date": _ISO_DATE,
      "goal": {"type": "string", "description": "The cycle goal."},
      "focus": {"type": "string", "description": "The balance statement across plans."},
+     "theme": _CYCLE_THEME,
+     "capacity_blocks": _CYCLE_CAPACITY,
      "description": {"type": "string", "description": "Alias for 'focus'."}},
     _create_cycle, required=["title"],
 )
 
 UPDATE_CYCLE = _tool(
     "update_cycle",
-    "Update a cycle (identify by title or id via 'cycle'). Pass only fields to change.",
+    "Update a cycle (identify by title or id via 'cycle'). Pass only fields "
+    "to change. Once the cycle's baseline is frozen, capacity_blocks must "
+    "move through change_scope instead.",
     {"cycle": {"type": "string", "description": "Title or id of the cycle."},
      "new_title": {"type": "string"},
      "status": {"type": "string", "enum": _CYCLE_STATUS},
      "start_date": _ISO_DATE, "end_date": _ISO_DATE,
      "goal": {"type": "string"}, "focus": {"type": "string"},
+     "theme": _CYCLE_THEME,
+     "capacity_blocks": _CYCLE_CAPACITY,
      "description": {"type": "string", "description": "Alias for 'focus'."}},
     _update_cycle, required=["cycle"],
 )

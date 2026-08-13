@@ -30,6 +30,11 @@ TASK_STATUS_CLOSED = ["done", "deprioritized"]
 CYCLE_STATUS_OPEN = ["upcoming", "active"]
 CYCLE_STATUS_CLOSED = ["complete"]
 
+# ROOMS_DESIGN section 6: completing a commitment is progress; releasing
+# one moves planned capacity (post-freeze that must be a scope change)
+COMMITMENT_STATUS_OPEN = ["active"]
+COMMITMENT_STATUS_CLOSED = ["completed", "released"]
+
 NOTE_STATUS_OPEN = ["active"]
 NOTE_STATUS_CLOSED = ["promoted", "archived"]
 
@@ -47,6 +52,7 @@ STATUS_SETS = {
     "task": (TASK_STATUS_OPEN, TASK_STATUS_CLOSED),
     "cycle": (CYCLE_STATUS_OPEN, CYCLE_STATUS_CLOSED),
     "note": (NOTE_STATUS_OPEN, NOTE_STATUS_CLOSED),
+    "commitment": (COMMITMENT_STATUS_OPEN, COMMITMENT_STATUS_CLOSED),
 }
 
 
@@ -129,6 +135,7 @@ def display(value: Optional[str]) -> Optional[str]:
 _PREFIXES = {
     "plan": "p", "goal": "g", "task": "t", "cycle": "c",
     "win": "w", "checkin": "ci", "note": "n", "occasion": "o",
+    "commitment": "cm",
 }
 # longest prefix first so 'ci4' parses as checkin, not cycle
 _PARSE_ORDER = sorted(_PREFIXES.items(), key=lambda kv: -len(kv[1]))
@@ -194,7 +201,20 @@ def format_goal(row: dict) -> str:
 def format_cycle(row: dict) -> str:
     parts = [f'"{row["title"]}" [{display(row["status"])}]']
     _kv(parts, "range", _range(row.get("start_date"), row.get("end_date")))
+    _kv(parts, "theme", row.get("theme"))
+    _kv(parts, "capacity", row.get("capacity_blocks"))
     _kv(parts, "focus", row.get("focus"))
+    _kv(parts, "id", row["public_id"])
+    return " ".join(parts)
+
+
+def format_commitment(row: dict) -> str:
+    parts = [f'"{row["title"]}" [{display(row["status"])}]']
+    _kv(parts, "prio", row.get("priority"))
+    _kv(parts, "blocks", row.get("blocks_planned"))
+    _kv(parts, "plan", row.get("plan_title"))
+    _kv(parts, "task", row.get("task_title"))
+    _kv(parts, "next", row.get("next_action"))
     _kv(parts, "id", row["public_id"])
     return " ".join(parts)
 

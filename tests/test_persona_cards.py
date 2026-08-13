@@ -203,3 +203,31 @@ def test_validate_enabled_requires_the_chair():
         validate_enabled(["pip"])
     with pytest.raises(RuntimeError, match="unknown persona"):
         validate_enabled(["vel", "chordial"])
+
+
+# ---------------------------------------------------------------------------
+# (f) card allowlists resolve against the REAL default registry - a card
+# naming a ghost tool would otherwise only explode at wiring time in prod.
+# ---------------------------------------------------------------------------
+
+def test_every_card_allowlist_resolves_in_the_default_registry():
+    from src.services.tools import build_default_registry
+
+    reg = build_default_registry()
+    for card in load_personas().values():
+        if card.tools is None:
+            continue    # the chair: full registry by definition
+        view = reg.view(card.tools)   # KeyError here = a ghost tool name
+        assert {d.name for d in view.definitions()} == set(card.tools), \
+            f"{card.id}'s allowlist did not resolve cleanly"
+
+
+def test_pip_holds_the_whole_cycle_lifecycle():
+    """sol's find on #65: the spine tools told pip to call create_cycle -
+    which her allowlist didn't carry. her lane must be reachable end to
+    end: start a cycle, commit, freeze, change scope, read the picture."""
+    pip = load_personas()["pip"]
+    needed = {"list_cycles", "create_cycle", "update_cycle", "view_cycle",
+              "create_commitment", "update_commitment", "freeze_cycle",
+              "change_scope"}
+    assert needed <= set(pip.tools)

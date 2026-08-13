@@ -31,7 +31,8 @@ from typing import Any, Optional
 from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
-from src.database.models import Plan, Goal, Task, Cycle, Win, Checkin, Note, Occasion
+from src.database.models import (Plan, Goal, Task, Cycle, CycleBaseline,
+                                 Win, Checkin, Note, Occasion)
 from src.services.workspace import vocab
 from src.utils.timezone_utils import utc_now
 
@@ -165,6 +166,7 @@ class WorkspaceStore:
             "title": row.title, "status": row.status,
             "start_date": _iso(row.start_date), "end_date": _iso(row.end_date),
             "goal": row.goal, "focus": row.focus,
+            "theme": row.theme, "capacity_blocks": row.capacity_blocks,
             "created_at": _iso(row.created_at), "closed_at": _iso(row.closed_at),
         }
 
@@ -458,23 +460,37 @@ class WorkspaceStore:
     def create_cycle(self, user_uuid: str, title: str, *,
                      status: str = "upcoming", start_date=None, end_date=None,
                      goal: Optional[str] = None, focus: Optional[str] = None,
+                     theme: Optional[str] = None,
+                     capacity_blocks: Optional[int] = None,
                      notion_page_id: Optional[str] = None) -> dict:
         status = vocab.canonical_status("cycle", status)
         with get_db() as db:
             row = Cycle(user_uuid=user_uuid, title=title,
                         start_date=_coerce_date(start_date),
                         end_date=_coerce_date(end_date),
-                        goal=goal, focus=focus, notion_page_id=notion_page_id)
+                        goal=goal, focus=focus, theme=theme,
+                        capacity_blocks=capacity_blocks,
+                        notion_page_id=notion_page_id)
             self._apply_status(row, "cycle", status)
             db.add(row)
             db.flush()
             return self._cycle_dict(row)
 
     def update_cycle(self, user_uuid: str, cycle_id: int, **changes) -> dict:
-        allowed = {"title", "status", "start_date", "end_date", "goal", "focus"}
+        allowed = {"title", "status", "start_date", "end_date", "goal",
+                   "focus", "theme", "capacity_blocks"}
         self._check_keys(changes, allowed, "cycle")
         with get_db() as db:
             row = self._get_owned(db, Cycle, user_uuid, cycle_id, "cycle")
+            if "capacity_blocks" in changes and db.query(
+                    CycleBaseline.id).filter(
+                    CycleBaseline.cycle_id == row.id).first() is not None:
+                # the section-6 invariant guards EVERY door, not just
+                # CycleStore's: after the freeze, planned capacity moves
+                # only through the scope-change ledger
+                raise ValueError(
+                    "this cycle's baseline is frozen - capacity moves only "
+                    "through a scope change (change_scope with a reason)")
             if "status" in changes:
                 self._apply_status(row, "cycle", vocab.canonical_status("cycle", changes.pop("status")))
             for key in ("start_date", "end_date"):

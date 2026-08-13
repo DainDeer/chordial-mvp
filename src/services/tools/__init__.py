@@ -45,6 +45,13 @@ def build_default_registry() -> ToolRegistry:
     logger.info("workspace tools enabled (%d registered)",
                 len(WORKSPACE_CORE_TOOLS) + len(WORKSPACE_EXTRA_TOOLS))
 
+    # the cycle spine (phase 5, ROOMS_DESIGN section 6): commitments, the
+    # freeze, scope changes, the projection. always on like the workspace -
+    # pip's card allowlists them; vel gets them with the full registry.
+    from .cycle_tools import CYCLE_SPINE_TOOLS
+    for tool in CYCLE_SPINE_TOOLS:
+        registry.register(tool)
+
     if Config.telegram_linking_enabled():
         # config-stable gating (like notion): the tool's bytes only change at
         # deploy time, so the prompt cache is unaffected.
