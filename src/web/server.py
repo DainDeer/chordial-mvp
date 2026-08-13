@@ -169,6 +169,11 @@ class WebService:
                            self._api_room_messages)
         app.router.add_post("/api/v1/rooms/current/messages",
                             self._api_room_send)
+        # the archive routes register AFTER the /current ones so "current"
+        # never resolves as a {room_uuid}
+        app.router.add_get("/api/v1/rooms", self._api_rooms_archive)
+        app.router.add_get("/api/v1/rooms/{room_uuid}/messages",
+                           self._api_room_archive_messages)
         app.router.add_get("/api/v1/ws", self._api_ws)
         app.router.add_static("/static", STATIC_DIR)
         app.on_startup.append(self._start_flow_sweep)
@@ -728,6 +733,61 @@ class WebService:
                     "platform": r.platform,
                 } for r in reversed(rows)]
         return web.json_response({"messages": await asyncio.to_thread(read)})
+
+    async def _api_rooms_archive(self, request: web.Request) -> web.Response:
+        """the journal-like timeline (section 4): daily rooms with their
+        summaries where committed. archives are forever - and forever must
+        be reachable, so limit/offset page all the way back."""
+        identity = await self._device(request)
+        try:
+            limit = max(1, min(int(request.query.get("limit", "30")), 100))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _error("limit and offset must be integers")
+
+        def read() -> list[dict]:
+            from src.services.rooms import get_room_store
+            rooms = get_room_store().archive(identity.user_uuid,
+                                             limit=limit, offset=offset)
+            return [{k: v for k, v in r.items() if k != "user_uuid"}
+                    for r in rooms]
+        return web.json_response({"rooms": await asyncio.to_thread(read)})
+
+    async def _api_room_archive_messages(self, request: web.Request
+                                         ) -> web.Response:
+        """a past room's transcript, read-only. an archived day reopens for
+        remembering, never for writing - there is no POST twin."""
+        identity = await self._device(request)
+        room_uuid = request.match_info["room_uuid"]
+        try:
+            limit = max(1, min(int(request.query.get("limit", "200")), 500))
+        except ValueError:
+            return _error("limit must be an integer")
+
+        def read() -> Optional[list[dict]]:
+            from src.database.models import ConversationEvent
+            from src.services.rooms import get_room_store
+            # tenant check first: someone else's room and a room that never
+            # existed answer identically
+            if get_room_store().user_of_room(room_uuid) != identity.user_uuid:
+                return None
+            with get_db() as db:
+                rows = db.query(ConversationEvent).filter(
+                    ConversationEvent.stream_id == room_uuid,
+                    ConversationEvent.kind == "message",
+                ).order_by(ConversationEvent.id.desc()).limit(limit).all()
+                return [{
+                    "id": r.id,
+                    "author": r.author,
+                    "author_type": r.author_type,
+                    "content": r.content,
+                    "at": r.created_at.isoformat() if r.created_at else None,
+                    "platform": r.platform,
+                } for r in reversed(rows)]
+        messages = await asyncio.to_thread(read)
+        if messages is None:
+            return _error("no such room", status=404)
+        return web.json_response({"messages": messages})
 
     async def _api_room_send(self, request: web.Request) -> web.Response:
         identity = await self._device(request)

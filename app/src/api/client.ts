@@ -3,7 +3,9 @@
 // which the app treats as "return to the link screen".
 
 import type {
+  ArchivedRoom,
   CouncilMember,
+  CyclePayload,
   RoomCurrent,
   HistoryRow,
   SendResult,
@@ -77,6 +79,24 @@ export function fetchRoomMessages(
 
 export function fetchToday(token: string): Promise<TodayPayload> {
   return request("/api/v1/today", { token });
+}
+
+/** the shared cycle state: projection of baseline + scope changes + progress */
+export function fetchCycle(token: string): Promise<CyclePayload> {
+  return request("/api/v1/cycle", { token });
+}
+
+/** the journal: recent daily rooms, newest first, summaries where committed */
+export function fetchArchive(token: string): Promise<{ rooms: ArchivedRoom[] }> {
+  return request("/api/v1/rooms", { token });
+}
+
+/** a past room's transcript - read-only, remembering not writing */
+export function fetchArchivedMessages(
+  token: string,
+  roomUuid: string,
+): Promise<{ messages: HistoryRow[] }> {
+  return request(`/api/v1/rooms/${roomUuid}/messages`, { token });
 }
 
 /** quick-add from the deer window: title only, lands scheduled-today */

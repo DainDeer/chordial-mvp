@@ -78,6 +78,70 @@ export interface DoneTaskRow {
   plan_title: string | null;
 }
 
+/** a commitment inside the cycle projection (GET /api/v1/cycle) */
+export interface CommitmentRow {
+  id: number;
+  public_id: string;
+  uuid: string;
+  title: string;
+  status: string;
+  priority: string | null;
+  blocks_planned: number | null;
+  baseline_blocks: number | null;
+  blocks_done: number;
+  seconds_done: number;
+  next_action: string | null;
+  plan_id: number | null;
+  plan_title: string | null;
+  task_id: number | null;
+  task_title: string | null;
+}
+
+/** the cycle view projection: baseline + scope changes + progress.
+ * cycle is null when no cycle is active. */
+export interface CyclePayload {
+  cycle: {
+    id: number;
+    public_id: string;
+    title: string;
+    status: string;
+    theme: string | null;
+    capacity_blocks: number | null;
+    start_date: string | null;
+    end_date: string | null;
+  } | null;
+  frozen?: boolean;
+  frozen_at?: string | null;
+  commitments?: CommitmentRow[];
+  scope_changes?: {
+    id: number;
+    commitment_uuid: string | null;
+    reason: string;
+    deltas: Record<string, unknown>;
+    created_at: string | null;
+  }[];
+  totals?: {
+    capacity_blocks: number | null;
+    planned_blocks: number;
+    done_blocks: number;
+    unattributed_seconds: number;
+    unallocated_blocks: number | null;
+  };
+}
+
+/** an archived (or still-open) day in the journal (GET /api/v1/rooms) */
+export interface ArchivedRoom {
+  id: number;
+  room_uuid: string;
+  room_type: string;
+  status: string;
+  date: string | null;
+  summary: string | null;
+  /** contractual one-liner (message counts) - safe to show in lists,
+   * unlike the free-text digest whose tail quotes conversation */
+  summary_line: string | null;
+}
+
 export interface TodayPayload {
   today: string;
   user: { name: string | null };

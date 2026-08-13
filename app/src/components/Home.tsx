@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { fetchToday, isAuthError } from "../api/client";
-import type { TaskRow, TodayPayload } from "../api/types";
+import { fetchArchive, fetchToday, isAuthError } from "../api/client";
+import type { ArchivedRoom, TaskRow, TodayPayload } from "../api/types";
+import CyclePanel from "./CyclePanel";
 
 interface Props {
   token: string;
   onEnterRoom: () => void;
+  onOpenArchive: (room: ArchivedRoom) => void;
   onAuthLost: () => void;
 }
 
@@ -37,9 +39,16 @@ function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
   );
 }
 
-/** the landing: a greeting, the shape of today, and the door to the room. */
-export default function Home({ token, onEnterRoom, onAuthLost }: Props) {
+/** the landing: a greeting, the shape of today, the shared cycle, the door
+ * to the room, and the journal of remembered days. */
+export default function Home({
+  token,
+  onEnterRoom,
+  onOpenArchive,
+  onAuthLost,
+}: Props) {
   const [today, setToday] = useState<TodayPayload | null>(null);
+  const [pastDays, setPastDays] = useState<ArchivedRoom[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,6 +61,16 @@ export default function Home({ token, onEnterRoom, onAuthLost }: Props) {
         if (cancelled) return;
         if (isAuthError(e)) onAuthLost();
         else setError(e instanceof Error ? e.message : "couldn’t load today");
+      });
+    fetchArchive(token)
+      .then((body) => {
+        if (cancelled) return;
+        // the journal shows what's settled: closed days only
+        setPastDays(body.rooms.filter((r) => r.status === "closed"));
+      })
+      .catch((e) => {
+        if (!cancelled && isAuthError(e)) onAuthLost();
+        // a missing journal is not an error worth a banner
       });
     return () => {
       cancelled = true;
@@ -99,9 +118,43 @@ export default function Home({ token, onEnterRoom, onAuthLost }: Props) {
         </div>
       )}
 
+      <CyclePanel
+        token={token}
+        pomMinutes={today?.pom_minutes ?? 25}
+        onAuthLost={onAuthLost}
+      />
+
       <button className="enter-room" onClick={onEnterRoom}>
         step into today’s room →
       </button>
+
+      {pastDays.length > 0 && (
+        <section className="past-days">
+          <h3>remembered days</h3>
+          <ul>
+            {pastDays.map((r) => (
+              <li key={r.room_uuid}>
+                <button
+                  className="past-day"
+                  onClick={() => onOpenArchive(r)}
+                >
+                  <span className="past-day-date">
+                    {r.date
+                      ? new Date(`${r.date}T12:00:00`).toLocaleDateString(
+                          undefined,
+                          { weekday: "short", month: "short", day: "numeric" },
+                        )
+                      : "before the rooms"}
+                  </span>
+                  {r.summary_line && (
+                    <span className="past-day-hint">{r.summary_line}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }
