@@ -227,6 +227,26 @@ class RoomStore:
             ).order_by(Room.id.desc()).limit(limit).all()
             return [self._detach(r) for r in rows]
 
+    def archive(self, user_uuid: str, limit: int = 30) -> list[dict]:
+        """the browsable past (section 4: archives are forever): recent
+        daily rooms newest-first, each carrying its summary where the close
+        pass has committed one (None = still pending or never closed). the
+        grandfathered legacy room rides along - it holds the pre-rooms
+        history and belongs in the journal."""
+        with get_db() as db:
+            rows = db.query(Room, RoomSummary.content).outerjoin(
+                RoomSummary, RoomSummary.room_id == Room.id,
+            ).filter(
+                Room.user_uuid == user_uuid,
+                Room.room_type.in_(("daily", "legacy")),
+            ).order_by(Room.id.desc()).limit(limit).all()
+            out = []
+            for room, summary in rows:
+                d = self._detach(room)
+                d["summary"] = summary
+                out.append(d)
+            return out
+
     # --- the v0 close digest --------------------------------------------------
 
     def _digest(self, room_id: int) -> str:

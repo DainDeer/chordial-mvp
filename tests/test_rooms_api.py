@@ -572,3 +572,58 @@ def test_revoked_device_socket_closes_within_the_window(env, monkeypatch):
         await asyncio.sleep(0.05)
         assert await app.send_message(U1, "still there?") is False
     _run(_with_service(_service(None, app), flow))
+
+
+# --- the archive (phase 5b: archives are forever) ------------------------------
+
+
+def test_archive_lists_days_with_summaries(env):
+    room = _seed_room_message(U1, "user", "user", "yesterday's words")
+    _seed_room_message(U1, "agent", "vel", "held gently")
+    from src.services.rooms import get_room_store
+    get_room_store().close_room(room["id"])
+
+    async def flow(client):
+        headers = {"Authorization": f"Bearer {_token(U1)}"}
+        resp = await client.get("/api/v1/rooms", headers=headers)
+        assert resp.status == 200
+        rooms = (await resp.json())["rooms"]
+        closed = [r for r in rooms if r["status"] == "closed"]
+        assert len(closed) == 1
+        assert closed[0]["room_uuid"] == room["room_uuid"]
+        assert "1 user messages" in closed[0]["summary"]
+        assert "user_uuid" not in closed[0]
+
+        # an unauthenticated caller sees nothing
+        resp = await client.get("/api/v1/rooms")
+        assert resp.status == 401
+    _run(_with_service(_service(), flow))
+
+
+def test_archived_transcript_reads_and_tenancy(env):
+    room = _seed_room_message(U1, "user", "user", "a remembered day")
+    from src.services.rooms import get_room_store
+    get_room_store().close_room(room["id"])
+
+    async def flow(client):
+        headers = {"Authorization": f"Bearer {_token(U1)}"}
+        resp = await client.get(
+            f"/api/v1/rooms/{room['room_uuid']}/messages", headers=headers)
+        assert resp.status == 200
+        rows = (await resp.json())["messages"]
+        assert [r["content"] for r in rows] == ["a remembered day"]
+
+        # someone else's archive answers exactly like a room that never was
+        other = {"Authorization": f"Bearer {_token(U2)}"}
+        resp = await client.get(
+            f"/api/v1/rooms/{room['room_uuid']}/messages", headers=other)
+        assert resp.status == 404
+        resp = await client.get("/api/v1/rooms/not-a-room/messages",
+                                headers=headers)
+        assert resp.status == 404
+
+        # the /current route still resolves as itself, never as a uuid
+        resp = await client.get("/api/v1/rooms/current/messages",
+                                headers=headers)
+        assert resp.status == 200
+    _run(_with_service(_service(), flow))

@@ -3,7 +3,7 @@ import { memberHue } from "../lib/council";
 
 interface Props {
   council: CouncilMember[];
-  view: "home" | "room";
+  view: "home" | "room" | "archive";
   onNavigate: (view: "home" | "room") => void;
 }
 
