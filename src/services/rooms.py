@@ -227,23 +227,51 @@ class RoomStore:
             ).order_by(Room.id.desc()).limit(limit).all()
             return [self._detach(r) for r in rows]
 
-    def archive(self, user_uuid: str, limit: int = 30) -> list[dict]:
-        """the browsable past (section 4: archives are forever): recent
-        daily rooms newest-first, each carrying its summary where the close
-        pass has committed one (None = still pending or never closed). the
+    def archive(self, user_uuid: str, limit: int = 30,
+                offset: int = 0) -> list[dict]:
+        """the browsable past (section 4: archives are forever): daily
+        rooms newest-first, each carrying its summary where the close pass
+        has committed one (None = still pending or never closed) plus a
+        CONTRACTUAL one-line `summary_line` (message counts, computed from
+        the rows themselves - never derived from the free-text digest,
+        whose shape may change and whose tail quotes conversation). the
         grandfathered legacy room rides along - it holds the pre-rooms
-        history and belongs in the journal."""
+        history and belongs in the journal. limit/offset page ALL the way
+        back; forever means reachable."""
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
         with get_db() as db:
             rows = db.query(Room, RoomSummary.content).outerjoin(
                 RoomSummary, RoomSummary.room_id == Room.id,
             ).filter(
                 Room.user_uuid == user_uuid,
                 Room.room_type.in_(("daily", "legacy")),
-            ).order_by(Room.id.desc()).limit(limit).all()
+            ).order_by(Room.id.desc()).offset(offset).limit(limit).all()
+
+            uuids = [room.room_uuid for room, _ in rows]
+            counts: dict[str, dict[str, int]] = {}
+            if uuids:
+                for stream_id, author_type, n in db.query(
+                    ConversationEvent.stream_id,
+                    ConversationEvent.author_type,
+                    func.count(ConversationEvent.id),
+                ).filter(
+                    ConversationEvent.stream_id.in_(uuids),
+                    ConversationEvent.kind == "message",
+                ).group_by(ConversationEvent.stream_id,
+                           ConversationEvent.author_type).all():
+                    counts.setdefault(stream_id, {})[author_type] = n
+
             out = []
             for room, summary in rows:
                 d = self._detach(room)
                 d["summary"] = summary
+                by_type = counts.get(room.room_uuid, {})
+                n_user = by_type.get("user", 0)
+                n_agent = by_type.get("agent", 0)
+                d["summary_line"] = (
+                    f"{n_user} from you, {n_agent} from the council"
+                    if (n_user or n_agent) else "a quiet day")
                 out.append(d)
             return out
 

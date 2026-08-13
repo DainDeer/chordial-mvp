@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchCycle, isAuthError } from "../api/client";
 import { startFocus } from "../api/sidecar";
 import type { CommitmentRow, CyclePayload } from "../api/types";
@@ -23,12 +23,23 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
   const [view, setView] = useState<CyclePayload | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<number | null>(null);
+  // the poll must DIE with the session: an interval that keeps 401-ing
+  // over the link screen is noise and a repeated onAuthLost
+  const timerRef = useRef<number | null>(null);
+  // double-tap guard that doesn't wait for a react re-render
+  const startingRef = useRef(false);
 
   const refresh = useCallback(() => {
     fetchCycle(token)
       .then(setView)
       .catch((e) => {
-        if (isAuthError(e)) onAuthLost();
+        if (isAuthError(e)) {
+          if (timerRef.current !== null) {
+            window.clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          onAuthLost();
+        }
         // otherwise stay quietly absent - the panel is a window, not a wall
       });
   }, [token, onAuthLost]);
@@ -37,11 +48,18 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
     refresh();
     // the projection moves when blocks land; a slow poll keeps the panel
     // honest while the app sits open (the deer syncs every ~15s)
-    const timer = setInterval(refresh, 20_000);
-    return () => clearInterval(timer);
+    timerRef.current = window.setInterval(refresh, 20_000);
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [refresh]);
 
   async function startBlock(c: CommitmentRow) {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setNote(null);
     setStartingId(c.id);
     try {
@@ -51,9 +69,19 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
         pomMinutes,
       );
       setNote("clock started — the deer has it 🦌");
-    } catch {
-      setNote("the deer isn’t home — is the sidecar running?");
+    } catch (e) {
+      // the sidecar answering with a refusal ("that task's clock is
+      // already running") is a different truth than the sidecar being
+      // gone - a network failure is a TypeError, an answered error isn't
+      setNote(
+        e instanceof TypeError
+          ? "the deer isn’t home — is the sidecar running?"
+          : e instanceof Error && e.message
+            ? e.message
+            : "that didn’t take — try again?",
+      );
     } finally {
+      startingRef.current = false;
       setStartingId(null);
       window.setTimeout(() => setNote(null), 5000);
     }

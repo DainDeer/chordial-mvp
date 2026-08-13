@@ -146,10 +146,8 @@ export default function Home({
                         )
                       : "before the rooms"}
                   </span>
-                  {r.summary && (
-                    <span className="past-day-hint">
-                      {r.summary.split("\n")[0]}
-                    </span>
+                  {r.summary_line && (
+                    <span className="past-day-hint">{r.summary_line}</span>
                   )}
                 </button>
               </li>

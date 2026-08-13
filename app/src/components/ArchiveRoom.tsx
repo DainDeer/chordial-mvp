@@ -64,10 +64,15 @@ export default function ArchiveRoom({
       </header>
 
       {room.summary && (
-        <div className="archive-summary">
-          <p className="archive-summary-label">how the day settled</p>
+        // collapsed by default: the digest's tail quotes conversation, and
+        // an opened journal on a shared screen shouldn't volunteer it -
+        // one click opens it, the transcript below is scrollable anyway
+        <details className="archive-summary">
+          <summary className="archive-summary-label">
+            how the day settled
+          </summary>
           <pre>{room.summary}</pre>
-        </div>
+        </details>
       )}
 
       <div className="room-log">

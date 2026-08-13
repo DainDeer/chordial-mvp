@@ -735,13 +735,20 @@ class WebService:
         return web.json_response({"messages": await asyncio.to_thread(read)})
 
     async def _api_rooms_archive(self, request: web.Request) -> web.Response:
-        """the journal-like timeline (section 4): recent daily rooms with
-        their summaries where committed. archives are forever."""
+        """the journal-like timeline (section 4): daily rooms with their
+        summaries where committed. archives are forever - and forever must
+        be reachable, so limit/offset page all the way back."""
         identity = await self._device(request)
+        try:
+            limit = max(1, min(int(request.query.get("limit", "30")), 100))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _error("limit and offset must be integers")
 
         def read() -> list[dict]:
             from src.services.rooms import get_room_store
-            rooms = get_room_store().archive(identity.user_uuid)
+            rooms = get_room_store().archive(identity.user_uuid,
+                                             limit=limit, offset=offset)
             return [{k: v for k, v in r.items() if k != "user_uuid"}
                     for r in rooms]
         return web.json_response({"rooms": await asyncio.to_thread(read)})

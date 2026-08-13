@@ -960,11 +960,17 @@ textarea::placeholder {
 }
 
 .archive-summary-label {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--blush);
+  cursor: pointer;
+  user-select: none;
+}
+
+.archive-summary[open] .archive-summary-label {
+  margin-bottom: 6px;
 }
 
 .archive-summary pre {

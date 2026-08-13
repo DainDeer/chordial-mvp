@@ -137,6 +137,9 @@ export interface ArchivedRoom {
   status: string;
   date: string | null;
   summary: string | null;
+  /** contractual one-liner (message counts) - safe to show in lists,
+   * unlike the free-text digest whose tail quotes conversation */
+  summary_line: string | null;
 }
 
 export interface TodayPayload {
