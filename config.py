@@ -270,7 +270,8 @@ class Config:
     APP_ALLOWED_ORIGINS = [
         o.strip() for o in os.getenv(
             "APP_ALLOWED_ORIGINS",
-            "tauri://localhost,http://localhost:1420").split(",")
+            "tauri://localhost,http://tauri.localhost,http://localhost:1420"
+        ).split(",")
         if o.strip()
     ]
 

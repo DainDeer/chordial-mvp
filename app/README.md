@@ -12,9 +12,19 @@ Design: [`docs/ROOMS_DESIGN.md`](../docs/ROOMS_DESIGN.md) (authoritative).
 ## dev
 
 Prerequisites: **Node `^20.19` or `>=22.12`** (required by the locked Vite
-version), plus the Tauri prerequisites for macOS
-(<https://tauri.app/start/prerequisites/> — Xcode CLT and Rust via
-`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
+version), plus the Tauri prerequisites for your OS
+(<https://tauri.app/start/prerequisites/>):
+
+- **macOS:** Xcode CLT and Rust via
+  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Windows:** Visual Studio Build Tools (the "Desktop development with
+  C++" workload), the WebView2 runtime (preinstalled on Win 11), and Rust
+  via [rustup](https://rustup.rs) (default MSVC toolchain). The activity
+  collector is macOS-only for now (`cfg`-gated) — the app builds and runs,
+  the deer just has no drift/hush senses yet.
+
+The sidecar also needs **Python ≥3.10 + Poetry** (`poetry install` at the
+repo root).
 
 The shell is a client: it needs the chordial server running beside it, and
 the deer window needs the sidecar (the on-device engine that owns the
@@ -71,17 +81,39 @@ shell — useful for pure UI work. `npm test` runs the frontend unit tests
 (vitest); `npm run build` typechecks and bundles.
 
 The frontend talks to `http://localhost:8484` by default; point it elsewhere
-with `VITE_CHORDIAL_SERVER` in `app/.env.local` (it must also appear in the
-server's `APP_ALLOWED_ORIGINS`).
+with `VITE_CHORDIAL_SERVER` in `app/.env.local` (a *destination*, so it lives
+in the app CSP's `connect-src` — not in `APP_ALLOWED_ORIGINS`, which lists
+the *webview's* origins the server accepts requests from).
+
+## running against the real server
+
+To run the shell as a client of a remote chordial server (no local server
+needed — only the sidecar runs on-device):
+
+```bash
+# app/.env.local
+VITE_CHORDIAL_SERVER=https://api.internetcreature.dev
+```
+
+The origin must be listed in the app CSP's `connect-src`
+([`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json) — https *and* wss)
+and the server must be reachable over TLS (it binds loopback; a cloudflared
+tunnel fronts it). The deer window hands the sidecar this origin during the
+handshake, so the sidecar's outbox pumps to the same server. Linking uses a
+device code minted by the council: DM the telegram bot and ask to link this
+device (the `link_device` tool) — codes expire after ~10 minutes, so paste
+promptly.
 
 ## security posture
 
 - Production CSP is restrictive (`default-src 'self'`). `connect-src`
-  permits only IPC and the chordial server (currently the local dev server,
-  `http://localhost:8484`; swap for the real server origin at deploy).
-  The server allows the app's origins (`tauri://localhost`, the vite dev
-  origin) via a scoped CORS allowlist on `/api/v1` only — configured with
-  `APP_ALLOWED_ORIGINS` on the server side.
+  permits only IPC, the sidecar, and the chordial server (the local dev
+  server plus the real server origin, `api.internetcreature.dev`).
+  The server allows the app's origins (`tauri://localhost` on macOS/linux,
+  `http://tauri.localhost` on windows, the vite dev origin) via a scoped
+  CORS allowlist on `/api/v1` only — configured with `APP_ALLOWED_ORIGINS`
+  on the server side. The sidecar keeps the same list in
+  `SIDECAR_ALLOWED_ORIGINS`.
 - The device bearer token lives in webview localStorage for dev-mode; phase 7
   packaging graduates it to the OS keychain (stronghold plugin).
 - The template's opener plugin was removed (nothing opens external URLs yet).

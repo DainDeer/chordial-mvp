@@ -642,11 +642,13 @@ def test_sidecar_cors_refuses_strangers(store):
         evil = await client.get("/v1/state",
                                 headers={"Origin": "https://evil.example"})
         assert evil.status == 403
-        ok = await client.get("/v1/state",
-                              headers={"Origin": "http://localhost:1420"})
-        assert ok.status == 200
-        assert ok.headers["Access-Control-Allow-Origin"] == \
-            "http://localhost:1420"
+        # the webview's origin on every platform: tauri://localhost
+        # (macOS/linux), http://tauri.localhost (windows), vite (dev)
+        for origin in ("tauri://localhost", "http://tauri.localhost",
+                       "http://localhost:1420"):
+            ok = await client.get("/v1/state", headers={"Origin": origin})
+            assert ok.status == 200
+            assert ok.headers["Access-Control-Allow-Origin"] == origin
         # no Origin header = not a browser = the tauri shell / curl
         bare = await client.get("/v1/state")
         assert bare.status == 200

@@ -447,20 +447,24 @@ def test_link_device_tool_is_registered(env):
 
 def test_cors_preflight_and_headers_for_allowed_origin(env):
     async def flow(client):
-        origin = "tauri://localhost"
-        resp = await client.options(
-            "/api/v1/sync/events",
-            headers={"Origin": origin,
-                     "Access-Control-Request-Method": "POST",
-                     "Access-Control-Request-Headers": "authorization"})
-        assert resp.status == 204
-        assert resp.headers["Access-Control-Allow-Origin"] == origin
-        assert "Authorization" in resp.headers["Access-Control-Allow-Headers"]
+        # the packaged webview's origin differs by platform:
+        # tauri://localhost on macOS/linux, http://tauri.localhost on windows
+        for origin in ("tauri://localhost", "http://tauri.localhost"):
+            resp = await client.options(
+                "/api/v1/sync/events",
+                headers={"Origin": origin,
+                         "Access-Control-Request-Method": "POST",
+                         "Access-Control-Request-Headers": "authorization"})
+            assert resp.status == 204
+            assert resp.headers["Access-Control-Allow-Origin"] == origin
+            assert ("Authorization"
+                    in resp.headers["Access-Control-Allow-Headers"])
 
-        # the real request carries the headers too, even on an error status
-        resp = await client.get("/api/v1/today", headers={"Origin": origin})
-        assert resp.status == 401
-        assert resp.headers["Access-Control-Allow-Origin"] == origin
+            # the real request carries the headers too, even on an error
+            resp = await client.get("/api/v1/today",
+                                    headers={"Origin": origin})
+            assert resp.status == 401
+            assert resp.headers["Access-Control-Allow-Origin"] == origin
     _run(_with_client(flow))
 
 
