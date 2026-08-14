@@ -81,8 +81,9 @@ shell — useful for pure UI work. `npm test` runs the frontend unit tests
 (vitest); `npm run build` typechecks and bundles.
 
 The frontend talks to `http://localhost:8484` by default; point it elsewhere
-with `VITE_CHORDIAL_SERVER` in `app/.env.local` (it must also appear in the
-server's `APP_ALLOWED_ORIGINS`).
+with `VITE_CHORDIAL_SERVER` in `app/.env.local` (a *destination*, so it lives
+in the app CSP's `connect-src` — not in `APP_ALLOWED_ORIGINS`, which lists
+the *webview's* origins the server accepts requests from).
 
 ## running against the real server
 
@@ -108,9 +109,11 @@ promptly.
 - Production CSP is restrictive (`default-src 'self'`). `connect-src`
   permits only IPC, the sidecar, and the chordial server (the local dev
   server plus the real server origin, `api.internetcreature.dev`).
-  The server allows the app's origins (`tauri://localhost`, the vite dev
-  origin) via a scoped CORS allowlist on `/api/v1` only — configured with
-  `APP_ALLOWED_ORIGINS` on the server side.
+  The server allows the app's origins (`tauri://localhost` on macOS/linux,
+  `http://tauri.localhost` on windows, the vite dev origin) via a scoped
+  CORS allowlist on `/api/v1` only — configured with `APP_ALLOWED_ORIGINS`
+  on the server side. The sidecar keeps the same list in
+  `SIDECAR_ALLOWED_ORIGINS`.
 - The device bearer token lives in webview localStorage for dev-mode; phase 7
   packaging graduates it to the OS keychain (stronghold plugin).
 - The template's opener plugin was removed (nothing opens external URLs yet).

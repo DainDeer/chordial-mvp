@@ -45,10 +45,13 @@ logger = logging.getLogger(__name__)
 
 SIDECAR_HOST = "127.0.0.1"
 SIDECAR_PORT = int(os.getenv("SIDECAR_PORT", "8485"))
+# the webview's origin varies by platform: tauri://localhost on macOS and
+# linux, http://tauri.localhost on windows, the vite server in dev.
 ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv(
         "SIDECAR_ALLOWED_ORIGINS",
-        "tauri://localhost,http://localhost:1420").split(",") if o.strip()
+        "tauri://localhost,http://tauri.localhost,http://localhost:1420"
+    ).split(",") if o.strip()
 ]
 
 
