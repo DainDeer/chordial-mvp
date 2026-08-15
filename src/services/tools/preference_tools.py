@@ -33,6 +33,14 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         updates["preferred_name"] = name.strip()
         notes.append(f"call you {name.strip()}")
 
+    pronouns = tool_input.get("pronouns")
+    if pronouns:
+        # stored verbatim, deliberately unvalidated - there is no list of
+        # acceptable answers here, and rejecting one would be the single most
+        # alienating thing this tool could do
+        updates["pronouns"] = pronouns.strip()
+        notes.append(f"use {pronouns.strip()} for you")
+
     tz = tool_input.get("timezone")
     if tz:
         try:
@@ -68,10 +76,12 @@ SET_PREFERENCE = Tool(
         name="set_preference",
         description=(
             "Update the user's settings when they ask you to change how you "
-            "work. Use for: what to call them (preferred_name), their timezone "
-            "(so check-ins and time references land right), and your "
-            "conversational style (bot_personality). Only include fields the "
-            "user actually asked to change."
+            "work. Use for: what to call them (preferred_name), how to refer "
+            "to them (pronouns), their timezone (so check-ins and time "
+            "references land right), and your conversational style "
+            "(bot_personality). Only include fields the user actually asked to "
+            "change. If they tell you a new name or new pronouns at any point, "
+            "call this immediately - don't wait to be asked."
         ),
         input_schema={
             "type": "object",
@@ -79,6 +89,15 @@ SET_PREFERENCE = Tool(
                 "preferred_name": {
                     "type": "string",
                     "description": "What the user wants to be called.",
+                },
+                "pronouns": {
+                    "type": "string",
+                    "description": (
+                        "The user's pronouns, exactly as they said them, e.g. "
+                        "'she/her', 'they/them', 'he/they', 'any'. Free text - "
+                        "record what they actually said rather than mapping it "
+                        "onto an expected set."
+                    ),
                 },
                 "timezone": {
                     "type": "string",

@@ -80,6 +80,9 @@ class UserManager:
             if 'preferred_name' in preferences:
                 user.preferred_name = preferences['preferred_name']
             
+            if 'pronouns' in preferences:
+                user.pronouns = preferences['pronouns']
+
             if 'timezone' in preferences:
                 # canonical IANA only - a stored legacy alias ("US/Pacific")
                 # is unresolvable for stdlib-zoneinfo consumers (the pulse's
@@ -113,13 +116,22 @@ class UserManager:
                 return canonicalize_timezone(user.timezone)
             return "UTC"
 
-    async def get_user_profile(self, user_uuid: str) -> tuple[Optional[str], str]:
-        """(preferred_name, timezone) in one query - what a briefing needs."""
+    async def get_user_profile(
+        self, user_uuid: str
+    ) -> tuple[Optional[str], str, Optional[str]]:
+        """(preferred_name, timezone, pronouns) in one query - what a briefing
+        needs. pronouns come last so it stays the same shape a caller unpacks
+        by position; None means not yet asked, which the prompt renders as
+        silence rather than a guess."""
         with get_db() as db:
             user = db.query(User).filter(User.uuid == user_uuid).first()
             if user is None:
-                return None, "UTC"
-            return user.preferred_name, canonicalize_timezone(user.timezone or "UTC")
+                return None, "UTC", None
+            return (
+                user.preferred_name,
+                canonicalize_timezone(user.timezone or "UTC"),
+                user.pronouns,
+            )
 
     async def get_scheduled_users(self) -> List[str]:
         """distinct user_uuids eligible for proactive sends: the human is

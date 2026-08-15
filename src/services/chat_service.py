@@ -121,9 +121,11 @@ class ChatService:
             async with self._lock_for_user(user_uuid):
                 # Refresh inside the lock: an earlier queued turn may have
                 # learned the user's name or timezone while this turn waited.
-                user_name, user_timezone = await self.user_manager.get_user_profile(
-                    user_uuid
-                )
+                (
+                    user_name,
+                    user_timezone,
+                    user_pronouns,
+                ) = await self.user_manager.get_user_profile(user_uuid)
 
                 kind = "user_message"
                 intro_helper = None
@@ -176,6 +178,7 @@ class ChatService:
                         extras={
                             "user_id": user_uuid,
                             "user_name": user_name,
+                            "user_pronouns": user_pronouns,
                             "user_timezone": user_timezone,
                         },
                     )
@@ -196,6 +199,7 @@ class ChatService:
                         extras={
                             "user_id": user_uuid,
                             "user_name": user_name,
+                            "user_pronouns": user_pronouns,
                             "user_timezone": user_timezone,
                         },
                     )
@@ -220,9 +224,11 @@ class ChatService:
                 platform, platform_user_id
             )
             async with self._lock_for_user(user_uuid):
-                user_name, user_timezone = await self.user_manager.get_user_profile(
-                    user_uuid
-                )
+                (
+                    user_name,
+                    user_timezone,
+                    user_pronouns,
+                ) = await self.user_manager.get_user_profile(user_uuid)
 
                 await self.helper_states.set_status(user_uuid, helper_id, "introducing")
 
@@ -246,6 +252,7 @@ class ChatService:
                         extras={
                             "user_id": user_uuid,
                             "user_name": user_name,
+                            "user_pronouns": user_pronouns,
                             "user_timezone": user_timezone,
                         },
                     )
