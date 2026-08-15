@@ -1,33 +1,37 @@
 # chordial 🦌
 
-**chordial is an ADHD productivity tool** — a body-double on your desktop, a gentle two-week structure around your work, and a small council of animal characters who hold the thread when your brain drops it.
+**chordial is an ADHD productivity tool** — a body-double on your desktop, a gently imposed two-week structure around your work, and a cast of helpers who assist with different areas of life!
 
-built and run solo, by an ADHD brain, for daily use on the real thing. in continuous production since june 2025.
+chordial is built by one person with ADHD, primarily because i wanted this thing to exist for myself. i use it on my actual work every day!
 
 most productivity tools assume the hard part is deciding what to do. with ADHD the hard parts are **starting**, **staying**, and **coming back** — so those are what chordial is built around:
 
-- **starting is one tap.** home shows one next action with a *start a block* button. no triage screen, no seventeen lists. activation energy is treated as a design constraint, not a user failing.
-- **a body-double while you work.** a deer lives in a small always-on-top window — presence without demand, companionable silence as her default state. she holds the focus clock, dings once at the target, and throws confetti when you finish.
+- **starting is one tap.** chordial keeps the next action obvious and makes starting a focus block immediate. simple interactions and conversations handle the task and goal tracking around it.
+- **a body-double while you work.** chordial lives in a small always-on-top window — presence to help the user stay on task without being too deerstracting.
 - **time banks; nothing is ever "abandoned".** pause a block and the minutes bank. switch tasks and the old clock banks. work past the ding and overtime counts *up*. no mechanic anywhere in chordial makes wandering attention feel like losing.
-- **drift gets one soft check-in.** ten minutes idle mid-block earns at most one gentle word; an unanswered check-in is silently assumed to be a break and never re-asked. meetings hush her entirely.
-- **changing your mind is data, not failure.** two-week **cycles** freeze a baseline of commitments; every scope change afterwards is an appended fact with your own reason attached — visible, diffable, unshamed. completing things is always ordinary and always allowed.
-- **it fades, it doesn't leave.** as consistency becomes your own, the council quiets by design — routines that hold lose their nudges, and the end state is a sentinel: a quiet companion who still holds the door against the slide back.
+- **built to not be annoying.** ten minutes idle mid-block gets a tiny ear perk and one task nudge. breaks are encouraged, but productivity is reinforced and rewarded!
+- **provides structure, while keeping nothing set in stone** two-week **cycles** freeze a baseline of commitments; every scope change afterwards is an appended fact with your own reason attached. a separate scoring helper looks back at the cycle, identifies patterns, and gives targeted, sometimes adversarial, but always constructive advice.
+- **naturally quiets as you grow into your better self** as your work habits become more consistent and need less guidance, chordial quiets by design — mainly existing as a safeguard to nudge you when you start returning to old stagnating habits.
 
 the full design (and the reasoning behind it) is [docs/ROOMS_DESIGN.md](docs/ROOMS_DESIGN.md).
 
-### the council
+### a friendly cast of helpers
 
-the space is inhabited by seven authored characters — each with its own voice, lane, and speaking policy, every name and species reshapeable in conversation ([src/personas/*.yaml](src/personas/), voices in [docs/COUNCIL_VOICE_REFERENCE.md](docs/COUNCIL_VOICE_REFERENCE.md)):
+i've found that progress and personal development are much harder when tackled completely alone.
+
+human connection is paramount, and chordial will encourage you to seek out real people, communities, professionals, and other resources whenever they can help. but we're all fallible creatures with limited time and energy, and nobody can be available for everyone all the time.
+
+chordial's cast of helpers fills in some of those gaps, offering different perspectives across work, health, creativity, reflection, and everyday life, 24/7. because life is not only about work and productivity, after all :3
 
 | resident | lane |
 |---|---|
-| 🦌 **vel** (chair) | orchestrator & ambient presence — holds the room, lives on the desktop, speaks for the house |
+| 🦌 **vel** | orchestrator & ambient presence — lives on the desktop, acts your contact for whatever help you need in the moment |
 | 🐿️ **pip** | productivity — cycles, focus blocks, task breakdown |
-| 🐰 **skip** | movement — five minutes counts |
-| 🦝 **remy** | nutrition — approximate estimates, zero moralizing |
-| 🐻 **mabel** | wellbeing — rest, comfort, the whole organism |
-| 🦊 **juniper** | creative & hobbies — keeper of sparks, defender of unproductive joy |
-| 🦉 **edwin** | reflection & scoring — speaks rarely, and it counts |
+| 🐰 **skip** | movement — simple reminders to stand or move, while also optionally providing support for fitness goals |
+| 🦝 **remy** | nutrition — effortless approximate calorie tracking for kind tracking of personal weight and body goals |
+| 🐻 **mabel** | wellbeing — self-compassion, rest, and comfort are necessary for all but especially my fellow neurodivergent & ADHD folks |
+| 🦊 **juniper** | creative & hobbies — helps to spark the joy that comes from cultivating hobbies centered on creating, practicing, or doing rather than consuming |
+| 🦉 **edwin** | reflection & scoring — speaks rarely, but helps you notice patterns that may be working against the goals you've set for yourself. edwin doesn't tell you who to be or what to change. you decide that. he offers grounded retrospective advice and small, realistic things to try next time.  |
 
 a rules-first director decides who speaks (a cheap utility-model call only for genuinely gray turns; one speaker per turn by default), and helpers **notice** things as structured observations — pip processes every completed focus block into cycle progress without being asked.
 
@@ -45,13 +49,6 @@ client/server from day one ([docs/ROOMS_DESIGN.md](docs/ROOMS_DESIGN.md) §10):
 the activity collector is ~100 lines of rust ([app/src-tauri/src/collector.rs](app/src-tauri/src/collector.rs)) and is *the* boundary: it reads only the frontmost app's bundle id and idle seconds — window titles, urls, and content are structurally absent, sanitized before anything reaches even the local engine. raw signals never leave the machine; only derived events (`drift.detected`, `focus_block.completed`) sync. the server's proactive voice is metered too: a zero-token proactivity gate, per-hour word budgets, quiet hours, and meeting hush — silence is the default gift.
 
 ### engineering notes
-
-the parts that were hard-won, briefly:
-
-- **the event log, not "conversation history".** one log per user across every platform and room; `platform` is provenance, never a filter key. executed tool calls are frozen into promptable one-liners at write time and replayed — which eliminated the entire "model silently re-ran a tool" bug class. archives are forever; there is deliberately no deletion path.
-- **prompt caching as a tested invariant.** prompts build in frozen zones (tools → persona block → profile → history → volatile tail); golden-bytes tests guard the persona blocks, and migrations are verified to render old histories byte-identically, so warm caches have survived every refactor.
-- **sync that trusts nothing.** device events carry client uuids and per-device monotonic seqs; the server applies exactly-once, tombstones the semantically-invalid so the ack cursor never pins, and a fresh client db under an existing device realigns instead of silently losing history. the invariants are pinned by tests with names like `test_fresh_store_under_an_existing_device_loses_nothing`.
-- **typed provider errors** (`ProviderRateLimited`, `ProviderUnavailable`…) — never apology strings, and failures are never persisted as conversation events.
 
 chordial runs on [**the dainframe**](https://github.com/DainDeer/the-dainframe) — the orchestration machinery (ai providers, tool registry, agent loop) extracted into its own framework with chordial as first consumer.
 
@@ -101,9 +98,3 @@ the desktop app has its own dev runbook — sidecar, link codes, and the full fo
 ### design docs
 
 the interesting decisions are written down: [ROOMS_DESIGN.md](docs/ROOMS_DESIGN.md) (rooms, cycles, the council, the arc — authoritative), [COUNCIL_VOICE_REFERENCE.md](docs/COUNCIL_VOICE_REFERENCE.md) (who these characters are), [CREATIVE_COVENANT.md](docs/CREATIVE_COVENANT.md) (the ethics of a companion that helps you make things), [NATIVE_WORKSPACE_DESIGN.md](docs/NATIVE_WORKSPACE_DESIGN.md), [SECURITY_NOTES.md](docs/SECURITY_NOTES.md), and more in [docs/](docs/). the orchestration framework's own design lives in [the dainframe's DESIGN.md](https://github.com/DainDeer/the-dainframe/blob/main/docs/DESIGN.md).
-
-### status
-
-the v1 milestone is real and ran live end-to-end: one-tap block start → the deer's ding → sync → pip's observation → the cycle bar moving on its own → the day remembered in the archive.
-
-shipping next: edwin's scorecard and retrospective/planning rooms (phase 6), then packaging, the telegram tether, and presence-aware routing (phase 7).
