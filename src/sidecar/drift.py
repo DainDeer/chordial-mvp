@@ -104,6 +104,13 @@ class DriftWatch:
     def drifting(self) -> bool:
         return self._in_drift
 
+    def hydrate_in_drift(self) -> None:
+        """a sidecar restart mid-episode (an open rewind offer proves it):
+        resume the drift already in progress so the check-in isn't
+        re-asked; the return will still fire normally."""
+        self._in_drift = True
+        self._drift_started = None
+
     def tick(self, run_active: bool) -> Optional[str]:
         """called every second by the server loop. returns the line moment
         to (maybe) speak: 'drift_checkin' once at the start of an episode,

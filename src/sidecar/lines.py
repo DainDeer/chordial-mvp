@@ -47,6 +47,14 @@ LINE_POOLS: dict[str, list[str]] = {
         "*approving ear flick* target reached. overtime is yours if you "
         "want it.",
     ],
+    "focus_hold": [
+        "clock's stopped. one small question on the card whenever "
+        "you're ready - no rush.",
+        "*holds the clock gently* stopped, not banked - there's a "
+        "little question waiting first.",
+        "paused the counting. the card has one question, and it can "
+        "wait as long as you like.",
+    ],
     "drift_checkin": [
         "*ears soft* you've been quiet a bit - still with me? no pressure, "
         "blocks wait.",

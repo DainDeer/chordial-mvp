@@ -51,7 +51,28 @@ CREATE TABLE IF NOT EXISTS runs (
     seconds INTEGER,
     end_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS offers (
+    offer_uuid TEXT PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    returned_at TEXT,
+    candidates TEXT NOT NULL,
+    segments TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT,
+    excised TEXT
+);
 """
+
+# columns added to existing tables after the CREATE IF NOT EXISTS era -
+# executescript can't grow a table, so each is checked and ALTERed in.
+# rewind (docs/REWIND_DESIGN.md section 6): a run with an unresolved
+# correction freezes instead of banking; frozen_at stops its clock,
+# frozen_reason remembers which transition was intended.
+_COLUMN_MIGRATIONS = [
+    ("runs", "frozen_at", "TEXT"),
+    ("runs", "frozen_reason", "TEXT"),
+]
 
 
 class SidecarStore:
@@ -60,6 +81,12 @@ class SidecarStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        for table, column, kind in _COLUMN_MIGRATIONS:
+            present = {r["name"] for r in self._conn.execute(
+                f"PRAGMA table_info({table})")}
+            if column not in present:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         self._conn.commit()
 
     def close(self) -> None:
@@ -171,10 +198,33 @@ class SidecarStore:
         return int(cursor.lastrowid)
 
     def active_run(self) -> Optional[dict]:
+        """the RUNNING run: unbanked and not frozen. a frozen run is
+        stopped time waiting on its question - it is not active."""
         row = self._conn.execute(
             "SELECT * FROM runs WHERE ended_at IS NULL "
-            "ORDER BY id DESC LIMIT 1").fetchone()
+            "AND frozen_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+
+    def run(self, run_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def frozen_runs(self) -> list[dict]:
+        """unbanked runs whose clock was stopped by an unresolved
+        correction - each is waiting for its answer, oldest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM runs WHERE ended_at IS NULL "
+            "AND frozen_at IS NOT NULL ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def freeze_run(self, run_id: int, frozen_at: str, reason: str) -> None:
+        """stop the clock without banking: the transition happened, the
+        question is still open (docs/REWIND_DESIGN.md section 6)."""
+        self._conn.execute(
+            "UPDATE runs SET frozen_at = ?, frozen_reason = ? WHERE id = ?",
+            (frozen_at, reason, run_id))
+        self._conn.commit()
 
     def close_run(self, run_id: int, ended_at: str, seconds: int,
                   end_reason: str) -> None:
@@ -182,6 +232,110 @@ class SidecarStore:
             "UPDATE runs SET ended_at = ?, seconds = ?, end_reason = ? "
             "WHERE id = ?", (ended_at, seconds, end_reason, run_id))
         self._conn.commit()
+
+    # --- rewind offers ---------------------------------------------------------
+    # one row per correction question (docs/REWIND_DESIGN.md section 6).
+    # candidates/resolution are json; the applied excision interval sits in
+    # its own columns so credited-time arithmetic reads it without parsing.
+
+    def insert_offer(self, offer_uuid: str, run_id: int, created_at: str,
+                     candidates: list[dict]) -> None:
+        self._conn.execute(
+            "INSERT INTO offers (offer_uuid, run_id, created_at, candidates) "
+            "VALUES (?, ?, ?, ?)",
+            (offer_uuid, run_id, created_at, json.dumps(candidates)))
+        self._conn.commit()
+
+    def get_offer(self, offer_uuid: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE offer_uuid = ?",
+            (offer_uuid,)).fetchone()
+        return self._offer_dict(row) if row else None
+
+    def open_offer_for_run(self, run_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE run_id = ? AND status = 'open' "
+            "ORDER BY created_at DESC LIMIT 1", (run_id,)).fetchone()
+        return self._offer_dict(row) if row else None
+
+    def newest_open_offer(self) -> Optional[dict]:
+        """the question currently worth surfacing (at most one per run;
+        across runs the newest wins the chip)."""
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE status = 'open' "
+            "ORDER BY rowid DESC LIMIT 1").fetchone()
+        return self._offer_dict(row) if row else None
+
+    def extend_offer(self, offer_uuid: str, candidates: list[dict],
+                     segments: list[list[str]]) -> None:
+        """a further drift while the question is open: the previous
+        episode's contested interval moves into `segments` (the ONE
+        user-facing question accumulates every unresolved gap - resolving
+        'remove' excises their union, never just the newest), new
+        candidates cover the new tail, and the return is forgotten (the
+        person is away again)."""
+        self._conn.execute(
+            "UPDATE offers SET candidates = ?, segments = ?, "
+            "returned_at = NULL WHERE offer_uuid = ?",
+            (json.dumps(candidates), json.dumps(segments), offer_uuid))
+        self._conn.commit()
+
+    def mark_offer_returned(self, offer_uuid: str, returned_at: str) -> None:
+        """stamp the end of the current quiet - only once per episode: an
+        already-recorded return is earlier truth and must never be
+        overwritten (a restart's re-detected return would otherwise fold
+        legitimate post-return work into the proposed removal)."""
+        self._conn.execute(
+            "UPDATE offers SET returned_at = ? "
+            "WHERE offer_uuid = ? AND returned_at IS NULL",
+            (returned_at, offer_uuid))
+        self._conn.commit()
+
+    def resolve_offer(self, offer_uuid: str, status: str, resolution: dict,
+                      excised: Optional[list[list[str]]] = None) -> None:
+        self._conn.execute(
+            "UPDATE offers SET status = ?, resolution = ?, excised = ? "
+            "WHERE offer_uuid = ?",
+            (status, json.dumps(resolution),
+             json.dumps(excised) if excised is not None else None,
+             offer_uuid))
+        self._conn.commit()
+
+    def reopen_offer(self, offer_uuid: str) -> None:
+        """undo: the intervals are lifted and the question comes back -
+        the tap may have been the mistake. `segments` is untouched, so
+        the re-opened question still covers every gap it covered."""
+        self._conn.execute(
+            "UPDATE offers SET status = 'open', resolution = NULL, "
+            "excised = NULL WHERE offer_uuid = ?", (offer_uuid,))
+        self._conn.commit()
+
+    def excised_seconds(self, run_id: int) -> int:
+        """the run's total applied excision - a sum over every applied
+        offer's interval list (intervals are disjoint by construction:
+        segments end at returns, and a new episode needs new activity)."""
+        rows = self._conn.execute(
+            "SELECT excised FROM offers WHERE run_id = ? "
+            "AND status = 'applied' AND excised IS NOT NULL",
+            (run_id,)).fetchall()
+        total = 0.0
+        for r in rows:
+            for start, end in json.loads(r["excised"]):
+                total += max(0.0, (datetime.fromisoformat(end)
+                                   - datetime.fromisoformat(start)
+                                   ).total_seconds())
+        return int(total)
+
+    @staticmethod
+    def _offer_dict(row) -> dict:
+        offer = dict(row)
+        offer["candidates"] = json.loads(offer["candidates"])
+        offer["segments"] = json.loads(offer.get("segments") or "[]")
+        if offer.get("resolution"):
+            offer["resolution"] = json.loads(offer["resolution"])
+        if offer.get("excised"):
+            offer["excised"] = json.loads(offer["excised"])
+        return offer
 
     def banked_since(self, since_iso: str) -> dict[int, int]:
         """closed-run seconds per task since `since` (the local day start) -

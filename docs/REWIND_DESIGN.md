@@ -1,10 +1,13 @@
 # chordial: rewind (the retroactive pause)
 
 *designed 2026-08-17 · revised same day after sol's design review (lifecycle,
-deferral, undo, copy, data minimization) and again after sol's slice-A code
-review on PR #70 (the witness rule, impact at resolution time,
-freeze-don't-refuse) · builds on docs/ROOMS_DESIGN.md §5 (presence & focus)
-and §6 (the honesty model) · status: design locked, slice A built*
+deferral, undo, copy, data minimization), sol's slice-A code review on PR
+#70 (the witness rule, impact at resolution time, freeze-don't-refuse), and
+sol's slice-B code review on PR #71 (segment union, active-run resolution
+ownership, return-aware hydration, next-offer handoff, live clock promise) ·
+builds on docs/ROOMS_DESIGN.md §5 (presence & focus) and §6 (the honesty
+model) · status: design locked, slices A + B built (the v1 ship line);
+slice C (the tether door) remains*
 
 ## 1. what this is
 
@@ -81,6 +84,24 @@ honest data the arc depends on.
 - **moments outside `[floor, now]` are clipped** — a future moment (clock
   rollback, malformed sample) can never place a boundary past `now` and
   reverse an excision interval
+
+### from sol's slice-B code review (PR #71, applied)
+
+- **the question accumulates its gaps** — extension moves each returned
+  episode's interval into `segments`; remove excises the union, so a
+  second drift can never silently credit the first unresolved gap
+- **transition resolutions belong to the active run** — a held run's
+  question resolves only on the card (which banks it); riding it on
+  another run's pause would orphan the frozen run unbanked forever
+- **hydration respects a recorded return** — only an unreturned offer
+  re-arms the drift episode on boot, and a recorded return is never
+  overwritten
+- **resolution hands back the next question** — the response carries the
+  next authoritative open offer (another held block may be waiting), so
+  no card is lost to a broadcast race
+- **the clock promise is live** — "clock becomes 14:00" derives from the
+  ticking local clock for an active offer; only a frozen offer uses the
+  server's fixed value
 
 ## 2. principles
 
@@ -256,10 +277,22 @@ one unresolved offer per run**: a further drift while one is open extends it
 (candidates recomputed over the union of contested time), never stacks.
 
 **Persisted in the sidecar's sqlite** (a small `offers` table: `offer_uuid`,
-`run_id`, `created_at`, `candidates` json, `status`, `resolution` json,
-`excised_interval` json) so a sidecar restart mid-episode keeps the question
-alive — and **`DriftWatch` hydrates from the open offer on boot**, so a
-restart never re-detects the same drift into a duplicate episode.
+`run_id`, `created_at`, `returned_at`, `candidates` json, `segments` json,
+`status`, `resolution` json, `excised` json) so a sidecar restart
+mid-episode keeps the question alive — and **`DriftWatch` hydrates from an
+open offer that has not yet returned**, so a restart never re-detects the
+same drift into a duplicate episode; an offer whose return was already
+recorded must *not* re-arm the episode (the restart's first active sample
+would fire a second return and fold legitimate post-return work into the
+removal — a recorded return is earlier truth and is never overwritten).
+
+**Extension keeps every gap** (sol's slice-B review): when a further drift
+extends the open offer, the previous episode's contested interval
+(recommended boundary → its return) moves into the offer's `segments` list
+— the ONE user-facing question accumulates each unresolved gap. "Remove"
+excises the **union** (segments plus the current episode, at the chosen
+boundary); the first gap can never silently become credited just because a
+second one happened. A grown span re-emits `rewind.offered`.
 
 **States:** `open → applied | kept`, with `applied → open` again via undo.
 There is **no lapse state and no timer that destroys the question** (sol's
@@ -482,8 +515,12 @@ sidecar's CORS allowlist; no other windows work is implied.
   credited time
 - `test_undo_restores_the_minutes_and_the_question` — interval lifted,
   offer re-opens, no celebratory ding on the way back up
-- `test_a_second_drift_extends_the_offer` — one question per run, span
-  unioned
+- `test_a_second_drift_joins_the_first_unresolved_gap` ✓ slice B — one
+  question per run; segments accumulate; remove excises the union
+- `test_undo_restores_every_gap_of_the_union` ✓ slice B
+- `test_a_held_blocks_question_cannot_ride_another_runs_transition`
+  ✓ slice B — ownership + the next-offer handoff
+- `test_hydration_respects_a_recorded_return` ✓ slice B
 - `test_restart_hydrates_the_open_offer` — no duplicate episode, question
   survives
 - `test_started_at_is_never_rewritten` — excision intervals only; gross
