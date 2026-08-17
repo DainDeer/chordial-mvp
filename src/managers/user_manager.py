@@ -97,7 +97,22 @@ class UserManager:
             
             db.commit()
             logger.info(f"updated preferences for user {user_uuid}")
-    
+
+    async def merge_schedule_preferences(self, user_uuid: str,
+                                         updates: Dict[str, Any]) -> None:
+        """merge keys into the schedule_preferences json blob without
+        clobbering its other keys (update_user_preferences replaces the
+        whole blob). the read-modify-write happens under one session."""
+        with get_db() as db:
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            if not user:
+                logger.error(f"user {user_uuid} not found")
+                return
+            prefs = dict(user.schedule_preferences or {})
+            prefs.update(updates)
+            user.schedule_preferences = prefs
+            db.commit()
+
     async def needs_onboarding(self, user_uuid: str) -> bool:
         """check if user needs to complete onboarding (hasn't set preferred name)"""
         with get_db() as db:

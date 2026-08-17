@@ -969,3 +969,37 @@ class Assessment(Base):
     __table_args__ = (
         {'sqlite_autoincrement': True}
     )
+
+
+class RewindDecision(Base):
+    """the tether's view of one rewind offer (REWIND_DESIGN.md section 8).
+
+    folded from the device's rewind.* events by focus_flow, one row per
+    offer_uuid. the row carries only what the ping needs - contested LENGTH
+    and the task label - never candidate timestamps (data minimization).
+    lifecycle: offered opens (or re-arms) the row; applied/kept close it;
+    undone re-opens it fresh. `pinged_at` is the one-ping claim stamp;
+    `choice` is the phone's answer, which the sidecar polls for and remains
+    free to refuse - the device is authoritative, and the offer's eventual
+    terminal event is what closes the row, never the decision itself.
+    """
+    __tablename__ = 'rewind_decisions'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    offer_uuid = Column(String, nullable=False, unique=True)
+    label = Column(String, nullable=True)          # task label, for the copy
+    contested_seconds = Column(Integer, nullable=False, default=0)
+    offered_at = Column(DateTime, nullable=False)  # latest rewind.offered
+    returned_at = Column(DateTime, nullable=True)  # a return.detected since
+    pinged_at = Column(DateTime, nullable=True)    # claim stamp: one ping
+    ping_platform = Column(String, nullable=True)
+    choice = Column(String, nullable=True)         # 'remove' | 'keep'
+    decided_at = Column(DateTime, nullable=True)
+    source = Column(String, nullable=True)         # 'telegram' | 'discord'
+    closed_at = Column(DateTime, nullable=True)    # terminal event landed
+
+    __table_args__ = (
+        Index('ix_rewind_decisions_open', 'user_uuid', 'closed_at'),
+    )

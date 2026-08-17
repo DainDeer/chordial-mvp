@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
 from src.database.models import DeviceEvent, Observation
+from src.services import rewind_tether
 from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,11 @@ def process_pending(user_uuid: Optional[str] = None,
                 if row.event_type == "focus_block.completed":
                     with db.begin_nested():
                         db.add(_pip_noticing(row))
+                elif row.event_type in rewind_tether.FOLDED_TYPES:
+                    # the tether's shadow rows (REWIND_DESIGN section 8):
+                    # same claim discipline, so each event folds exactly once
+                    with db.begin_nested():
+                        rewind_tether.fold_event(db, row)
             except IntegrityError:
                 # the unique source_event_uuid floor: the consequence
                 # already exists (a racing pass got there) - the savepoint

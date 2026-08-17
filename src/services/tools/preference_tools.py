@@ -64,10 +64,22 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         updates["bot_personality"] = personality
         notes.append(f"switch my style to {personality}")
 
-    if not updates:
+    tether = tool_input.get("rewind_tether")
+    if tether is not None:
+        # the rewind tether is separately opt-in (REWIND_DESIGN section 8):
+        # linking a phone platform never by itself turns on pings about
+        # quiet focus blocks - only this explicit ask does
+        await _users.merge_schedule_preferences(
+            user_uuid, {"rewind_tether": bool(tether)})
+        notes.append(
+            "ping your phone when a focus block runs quiet" if tether
+            else "keep quiet-block questions on the desk only")
+
+    if not updates and tether is None:
         return "no recognized preferences to update."
 
-    await _users.update_user_preferences(user_uuid, updates)
+    if updates:
+        await _users.update_user_preferences(user_uuid, updates)
     return "updated: " + "; ".join(notes)
 
 
@@ -81,7 +93,10 @@ SET_PREFERENCE = Tool(
             "references land right), and your conversational style "
             "(bot_personality). Only include fields the user actually asked to "
             "change. If they tell you a new name or new pronouns at any point, "
-            "call this immediately - don't wait to be asked."
+            "call this immediately - don't wait to be asked. rewind_tether "
+            "opts them in (or out) of a phone ping when a focus block sits "
+            "quiet and unresolved - only set it when they explicitly ask for "
+            "that."
         ),
         input_schema={
             "type": "object",
@@ -107,6 +122,16 @@ SET_PREFERENCE = Tool(
                     "type": "string",
                     "enum": ["friendly", "professional", "cheerful", "calm"],
                     "description": "The conversational style the user prefers from you.",
+                },
+                "rewind_tether": {
+                    "type": "boolean",
+                    "description": (
+                        "True to ping their phone (telegram/discord) when a "
+                        "focus block has been quiet a while with its question "
+                        "unanswered; false to keep those questions on the "
+                        "desktop only. Separate consent - never infer it from "
+                        "having a linked platform."
+                    ),
                 },
             },
         },

@@ -911,3 +911,196 @@ def test_a_held_blocks_question_cannot_ride_another_runs_transition(tmp_path):
             await client.close()
     asyncio.run(flow())
     store.close()
+
+
+# =============================================================================
+# slice C: the tether's sidecar half (docs/REWIND_DESIGN.md section 8) -
+# phone answers arrive through the pump's decision poll; the sidecar stays
+# authoritative and presence-aware. the server half (fold/sweep/intake/
+# endpoint) lives in tests/test_rewind_tether.py.
+# =============================================================================
+
+
+def _tether_service(tmp_path, threshold_minutes=5):
+    from src.sidecar.drift import ActivityState, DriftWatch
+    from src.sidecar.server import SidecarService
+
+    store = SidecarStore(tmp_path / "sidecar.db")
+    clock = Clock(start=datetime(2026, 8, 17, 15, 0, tzinfo=timezone.utc))
+    activity = ActivityState(clock=clock)
+    drift = DriftWatch(store, activity, clock=clock,
+                       threshold_minutes=threshold_minutes)
+    service = SidecarService(store, engine=FocusEngine(store, clock=clock),
+                             activity=activity, drift=drift)
+    return store, clock, service
+
+
+def _drift_into_offer(store, clock, service):
+    """start, type ten minutes, go quiet past the threshold: one open
+    offer, nobody back at the desk yet."""
+
+    async def flow():
+        client = TestClient(TestServer(service.build_app()))
+        await client.start_server()
+        try:
+            await client.post("/v1/focus/start",
+                              json={"task_id": 7, "label": "novel"})
+            for _ in range(10):
+                clock.advance(minutes=1)
+                await client.post("/v1/activity", json={"idle_seconds": 0})
+            clock.advance(seconds=390)
+            await client.post("/v1/activity", json={"idle_seconds": 390})
+            await service._tick_once()
+        finally:
+            await client.close()
+    asyncio.run(flow())
+    offer = store.newest_open_offer()
+    assert offer is not None
+    return offer
+
+
+def test_a_phone_answer_while_still_away_removes_and_pauses(tmp_path):
+    """the away case the tether exists for: remove excises the quiet and
+    the clock pauses - the run banks with only the typed minutes."""
+    store, clock, service = _tether_service(tmp_path)
+    offer = _drift_into_offer(store, clock, service)
+
+    async def flow():
+        applied = await service._apply_tether_decision(
+            {"offer_uuid": offer["offer_uuid"], "choice": "remove"})
+        assert applied is True
+    asyncio.run(flow())
+
+    assert store.active_run() is None
+    assert store.frozen_runs() == []
+    assert store.get_offer(offer["offer_uuid"])["status"] == "applied"
+    ended = [e for e in store.pending() if e["type"] == "session.ended"][0]
+    # typing 600s + quiet 390s = gross 990s; the quiet comes off
+    assert ended["payload"]["gross_seconds"] == 990
+    assert ended["payload"]["seconds"] == 600
+    applied_event = [e for e in store.pending()
+                     if e["type"] == "rewind.applied"][0]
+    assert applied_event["payload"]["surface"] == "tether"
+
+
+def test_a_phone_answer_after_the_return_keeps_the_clock_running(tmp_path):
+    """sliced-c presence rule: if the person is back and working, a late
+    phone tap resolves the question but must NOT stop live work - the
+    correction never becomes the interruption."""
+    store, clock, service = _tether_service(tmp_path)
+    offer = _drift_into_offer(store, clock, service)
+
+    async def flow():
+        client = TestClient(TestServer(service.build_app()))
+        await client.start_server()
+        try:
+            # the comeback: the card is now showing on the desk
+            clock.advance(seconds=30)
+            await client.post("/v1/activity", json={"idle_seconds": 1})
+            await service._tick_once()
+            # ...and the phone answer arrives late
+            applied = await service._apply_tether_decision(
+                {"offer_uuid": offer["offer_uuid"], "choice": "keep"})
+            assert applied is True
+        finally:
+            await client.close()
+    asyncio.run(flow())
+
+    assert store.get_offer(offer["offer_uuid"])["status"] == "kept"
+    assert store.active_run() is not None          # the clock kept going
+
+
+def test_first_answer_wins(tmp_path):
+    """the doc's race: the card tap lands first, the tether decision
+    arrives after - refused as stale, the terminal state stands."""
+    store, clock, service = _tether_service(tmp_path)
+    offer = _drift_into_offer(store, clock, service)
+    service.offers.resolve(offer["offer_uuid"], "keep")   # the card tap
+
+    async def flow():
+        applied = await service._apply_tether_decision(
+            {"offer_uuid": offer["offer_uuid"], "choice": "remove"})
+        assert applied is False
+    asyncio.run(flow())
+
+    assert store.get_offer(offer["offer_uuid"])["status"] == "kept"
+    assert store.excised_seconds(offer["run_id"]) == 0
+
+
+def test_a_held_blocks_phone_answer_banks_at_the_freeze(tmp_path):
+    """pause at the desk without answering (held), walk away, answer from
+    the phone: the run banks at its freeze instant, same as the card path."""
+    store, clock, service = _tether_service(tmp_path)
+    offer = _drift_into_offer(store, clock, service)
+
+    async def flow():
+        client = TestClient(TestServer(service.build_app()))
+        await client.start_server()
+        try:
+            clock.advance(seconds=30)
+            await client.post("/v1/activity", json={"idle_seconds": 1})
+            await service._tick_once()
+            resp = await client.post("/v1/focus/pause")     # bare: holds
+            assert (await resp.json())["held"]["frozen"] is True
+            clock.advance(minutes=20)                       # gone again
+            applied = await service._apply_tether_decision(
+                {"offer_uuid": offer["offer_uuid"], "choice": "remove"})
+            assert applied is True
+        finally:
+            await client.close()
+    asyncio.run(flow())
+
+    assert store.frozen_runs() == []
+    ended = [e for e in store.pending() if e["type"] == "session.ended"][0]
+    # banks at the freeze instant: the 20 late minutes never count
+    assert ended["payload"]["gross_seconds"] == 600 + 390 + 30
+    assert ended["payload"]["seconds"] == 600
+
+
+def test_the_pump_polls_only_while_a_question_is_open(tmp_path):
+    """the decision poll is gated hard on an open offer, and hands each
+    fetched decision to the apply hook."""
+    from aiohttp import web as aioweb
+
+    from src.sidecar.sync import OutboxPump
+
+    calls = {"n": 0}
+
+    async def decisions(request):
+        calls["n"] += 1
+        assert request.headers["Authorization"] == "Bearer dev.tok"
+        return aioweb.json_response({"decisions": [
+            {"offer_uuid": "o1", "choice": "keep"},
+            "garbage",
+        ]})
+
+    async def flow():
+        app = aioweb.Application()
+        app.router.add_get("/api/v1/sync/decisions", decisions)
+        server = TestServer(app)
+        await server.start_server()
+        store = SidecarStore(tmp_path / "pump.db")
+        try:
+            store.put("device_token", "dev.tok")
+            store.put("server_url", str(server.make_url("")).rstrip("/"))
+            pump = OutboxPump(store)
+            applied = []
+
+            async def apply(decision):
+                applied.append(decision)
+                return True
+
+            # no hooks at all: the bare pump is exactly what it was
+            assert await pump.pull_decisions() == 0
+            pump.decision_apply = apply
+            pump.offer_gate = lambda: False
+            assert await pump.pull_decisions() == 0
+            assert calls["n"] == 0                # never even asked
+            pump.offer_gate = lambda: True
+            assert await pump.pull_decisions() == 1
+            assert applied == [{"offer_uuid": "o1", "choice": "keep"}]
+            await pump.close()
+        finally:
+            store.close()
+            await server.close()
+    asyncio.run(flow())

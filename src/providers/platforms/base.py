@@ -37,6 +37,16 @@ class BaseInterface(ABC):
         transient and leave the link active."""
         pass
 
+    async def send_choice(self, platform_user_id: str, content: str,
+                          choices: list, **kwargs) -> bool:
+        """send a message carrying inline choices (the rewind tether's ping).
+        `choices` is a list of {'data': str, 'label': str}; a tap must find
+        its way back to rewind_tether.record_decision_token with the data
+        token intact. same failure contract as send_message. the default is
+        an honest no: a platform with no interactive surface can't ask a
+        question, and the router treats False as undeliverable-for-now."""
+        return False
+
     @abstractmethod
     async def handle_incoming_message(self, message: Any):
         """handle an incoming message from the platform"""

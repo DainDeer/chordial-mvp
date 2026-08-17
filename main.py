@@ -160,7 +160,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def _run_services(interfaces, pulse, router):
+async def _run_services(interfaces, pulse, router, tether=None):
     """Supervise long-running services as one failure domain.
 
     A platform task returning normally is still unexpected while the process
@@ -176,6 +176,8 @@ async def _run_services(interfaces, pulse, router):
     if pulse is not None:
         named_tasks[asyncio.create_task(pulse.run())] = "pulse"
         logger.info("the pulse started")
+    if tether is not None:
+        named_tasks[asyncio.create_task(tether.run())] = "rewind tether"
 
     try:
         done, _ = await asyncio.wait(named_tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -411,6 +413,16 @@ async def main():
     # curation through the same engine as every chat message. built after
     # the interfaces register, so delivery targeting is restricted to
     # platforms that actually have a live interface. no engine, no pulse.
+    # the rewind tether (docs/REWIND_DESIGN.md section 8): a fixed-string
+    # ping through the router when an offer sits unresolved and away - no
+    # engine, no tokens. built only when a ringable platform is live.
+    tether = None
+    if any(p in ("telegram", "discord") for p in router.platforms()):
+        from src.services.rewind_tether import RewindTether
+
+        tether = RewindTether(router, user_manager)
+        logger.info("rewind tether watcher enabled")
+
     pulse = None
     if orchestrator is not None:
         pulse = build_pulse(
@@ -426,7 +438,7 @@ async def main():
         )
 
     try:
-        await _run_services(interfaces, pulse, router)
+        await _run_services(interfaces, pulse, router, tether)
     finally:
         logger.info("shutting down chordial...")
         await _close_provider(utility_provider)
