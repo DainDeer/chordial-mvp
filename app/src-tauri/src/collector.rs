@@ -25,6 +25,8 @@ fn frontmost_bundle_id() -> Option<String> {
 
 #[cfg(not(target_os = "macos"))]
 fn frontmost_bundle_id() -> Option<String> {
+    // windows: deliberately absent for now - rewind v1 is idle-only, and
+    // the app-context phase will add the foreground source with consent
     None
 }
 
@@ -50,7 +52,30 @@ fn idle_seconds() -> f64 {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn idle_seconds() -> f64 {
+    // GetLastInputInfo: milliseconds-since-boot of the last input event,
+    // session-wide - a counter read, no hooks, no permissions (the same
+    // posture as the macOS side). GetTickCount wraps at ~49.7 days;
+    // wrapping_sub keeps the difference honest across the wrap.
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetLastInputInfo, LASTINPUTINFO,
+    };
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // a failed read means "no signal", never "long idle" - 0.0 keeps the
+    // drift watcher honest (staleness is handled sidecar-side)
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return 0.0;
+    }
+    let now = unsafe { GetTickCount() };
+    f64::from(now.wrapping_sub(info.dwTime)) / 1000.0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn idle_seconds() -> f64 {
     0.0
 }

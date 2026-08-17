@@ -8,7 +8,9 @@ export const SIDECAR_URL: string =
 
 /** the task-clock model: one task's clock runs at a time, time BANKS.
  * `banked` is today's closed-run seconds per task id (json keys are
- * strings); the running clock's seconds are NOT in it until it pauses. */
+ * strings); the running clock's seconds are NOT in it until it pauses.
+ * `run_seconds` is CREDITED time (wall minus applied rewind excisions);
+ * `frozen` lists unbanked runs stopped by an unresolved correction. */
 export interface FocusState {
   running: boolean;
   task_id?: number | null;
@@ -16,8 +18,51 @@ export interface FocusState {
   target_minutes?: number;
   started_at?: string;
   run_seconds?: number;
+  excised_seconds?: number;
   over_target?: boolean;
   banked: Record<string, number>;
+  frozen?: FrozenRun[];
+}
+
+export interface FrozenRun {
+  run_id: number;
+  task_id?: number | null;
+  label?: string | null;
+  frozen_at: string;
+  frozen_reason: string;
+  run_seconds: number;
+}
+
+/** one correction boundary, impact-framed by the sidecar at render time -
+ * amounts are derived fresh, never persisted (docs/REWIND_DESIGN.md §5) */
+export interface RewindCandidate {
+  at: string;
+  kind: string;
+  rank: number;
+  removed_seconds: number;
+  credited_seconds: number;
+}
+
+/** the open correction question (docs/REWIND_DESIGN.md §6): at most one
+ * surfaces at a time; `frozen` means its run already stopped and the
+ * answer will bank it */
+export interface RewindOffer {
+  offer_uuid: string;
+  run_id: number;
+  task_id?: number | null;
+  label?: string | null;
+  frozen: boolean;
+  frozen_reason?: string | null;
+  contested_seconds: number;
+  candidates: RewindCandidate[];
+}
+
+/** a resolution riding a transition (the combined buttons): resolve the
+ * question atomically, then pause/finish/switch */
+export interface Resolution {
+  offer_uuid: string;
+  action: "remove" | "keep";
+  at?: string;
 }
 
 /** derived activity flags only - the sidecar never surfaces bundle ids */
@@ -31,14 +76,21 @@ export interface ActivityFlags {
 export interface SidecarState {
   focus: FocusState;
   activity?: ActivityFlags;
+  offer?: RewindOffer | null;
   line: string | null;
   linked: boolean;
   sync_error: string | null;
 }
 
 export type SidecarPush =
-  | { type: "state"; focus: FocusState; activity?: ActivityFlags }
-  | { type: "line"; moment: string; text: string };
+  | {
+      type: "state";
+      focus: FocusState;
+      activity?: ActivityFlags;
+      offer?: RewindOffer | null;
+    }
+  | { type: "line"; moment: string; text: string }
+  | { type: "rewind_offer"; offer: RewindOffer | null };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const resp = await fetch(`${SIDECAR_URL}${path}`, {
@@ -70,26 +122,68 @@ export const startFocus = (
   taskId: number | null,
   label: string,
   targetMinutes: number,
+  resolution?: Resolution,
 ) =>
-  request<{ focus: FocusState; line: string }>("/v1/focus/start", {
-    method: "POST",
-    body: JSON.stringify({
-      task_id: taskId,
-      label: label || null,
-      target_minutes: targetMinutes,
-    }),
-  });
-
-export const pauseFocus = () =>
-  request<{ focus: FocusState; run: unknown; line: string }>(
-    "/v1/focus/pause",
-    { method: "POST" },
+  request<{ focus: FocusState; line: string; offer?: RewindOffer | null }>(
+    "/v1/focus/start",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        task_id: taskId,
+        label: label || null,
+        target_minutes: targetMinutes,
+        resolution,
+      }),
+    },
   );
 
-export const finishFocus = () =>
-  request<{ focus: FocusState; run: unknown; line: string }>(
-    "/v1/focus/finish",
-    { method: "POST" },
+interface TransitionResponse {
+  focus: FocusState;
+  run?: unknown;
+  /** present when the run FROZE instead of banking: the clock stopped,
+   * the question is still open (docs/REWIND_DESIGN.md §6) */
+  held?: { frozen: boolean; run_id: number };
+  offer?: RewindOffer | null;
+  line: string;
+}
+
+export const pauseFocus = (resolution?: Resolution) =>
+  request<TransitionResponse>("/v1/focus/pause", {
+    method: "POST",
+    body: JSON.stringify(resolution ? { resolution } : {}),
+  });
+
+export const finishFocus = (resolution?: Resolution) =>
+  request<TransitionResponse>("/v1/focus/finish", {
+    method: "POST",
+    body: JSON.stringify(resolution ? { resolution } : {}),
+  });
+
+/** answer the open question in place (no transition): remove a candidate
+ * boundary or keep all time. if the run was frozen, the answer banks it. */
+export const resolveRewind = (
+  offerUuid: string,
+  action: "remove" | "keep",
+  at?: string,
+) =>
+  request<{
+    focus: FocusState;
+    offer: { offer_uuid: string; status: string };
+    run: { reason: string; seconds: number } | null;
+    line: string | null;
+  }>("/v1/focus/rewind", {
+    method: "POST",
+    body: JSON.stringify({ offer_uuid: offerUuid, action, at }),
+  });
+
+/** lift an applied excision - the tap may have been the mistake */
+export const undoRewind = (offerUuid: string) =>
+  request<{ focus: FocusState; offer: RewindOffer | null }>(
+    "/v1/focus/rewind/undo",
+    {
+      method: "POST",
+      body: JSON.stringify({ offer_uuid: offerUuid }),
+    },
   );
 
 const BACKOFF_START_MS = 1000;

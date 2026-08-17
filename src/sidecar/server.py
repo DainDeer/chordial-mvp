@@ -38,6 +38,8 @@ from src.sidecar.drift import ActivityState, DriftWatch
 from src.sidecar.focus import FocusEngine, FocusError
 from src.sidecar.gates import SpeechGates
 from src.sidecar.lines import pick_line
+from src.sidecar.offers import OfferError, RewindOffers
+from src.sidecar.rewind import ActivityLedger
 from src.sidecar.store import SidecarStore
 from src.sidecar.sync import OutboxPump
 
@@ -68,6 +70,15 @@ class SidecarService:
         self.activity = activity or ActivityState()
         self.drift = drift or DriftWatch(store, self.activity)
         self.gates = gates or SpeechGates()
+        self.ledger = ActivityLedger()
+        self.offers = RewindOffers(store, self.ledger,
+                                   clock=self.engine.clock)
+        # restart hydration: an open question on the live run means the
+        # drift episode is already mid-flight - re-detecting it fresh
+        # would re-ask what was already asked
+        active = self.store.active_run()
+        if active and self.store.open_offer_for_run(active["id"]):
+            self.drift.hydrate_in_drift()
         self._sockets: Set[web.WebSocketResponse] = set()
         self._last_line: Optional[str] = None
         # the posture (blocked, drifting) as of the LAST broadcast - the
@@ -85,6 +96,8 @@ class SidecarService:
         app.router.add_post("/v1/focus/start", self._focus_start)
         app.router.add_post("/v1/focus/pause", self._focus_pause)
         app.router.add_post("/v1/focus/finish", self._focus_finish)
+        app.router.add_post("/v1/focus/rewind", self._rewind)
+        app.router.add_post("/v1/focus/rewind/undo", self._rewind_undo)
         app.router.add_post("/v1/activity", self._activity)
         app.router.add_get("/v1/ws", self._ws)
         app.on_startup.append(self._start_background)
@@ -148,14 +161,16 @@ class SidecarService:
 
     def _world(self) -> dict:
         """the state payload: the clock plus derived activity flags (never
-        the bundle id - the ui gets moods, not surveillance). building it
-        stamps the broadcast posture the ticker compares against."""
+        the bundle id - the ui gets moods, not surveillance) plus the open
+        correction question, impact-framed fresh on every build. building
+        it stamps the broadcast posture the ticker compares against."""
         self._posture = (self.activity.blocked, self.drift.drifting)
         return {
             "type": "state",
             "focus": self.engine.state(),
             "activity": {**self.activity.snapshot(),
                          "drifting": self._posture[1]},
+            "offer": self.offers.payload(),
         }
 
     async def _announce(self, moment: str) -> str:
@@ -199,8 +214,21 @@ class SidecarService:
         so the tick's own before/after would never see it."""
         if self.engine.crossed_target():
             await self._announce_unprompted("block_target")
-        moment = self.drift.tick(self.engine.state().get("running", False))
-        if moment:
+        active = self.store.active_run()
+        moment = self.drift.tick(active is not None)
+        if moment == "drift_checkin" and active is not None:
+            # the drift mints (or extends) the correction question; the
+            # check-in line rides the gates as before
+            self.offers.on_drift(active)
+            await self._announce_unprompted(moment)
+        elif moment == "drift_return" and active is not None \
+                and self.offers.on_return(active) is not None:
+            # the card IS the welcome: one surface, not a pile of gentle
+            # messages - the drift_return line stays in its pocket
+            await self._broadcast({"type": "rewind_offer",
+                                   "offer": self.offers.payload()})
+            await self._broadcast(self._world())
+        elif moment:
             await self._announce_unprompted(moment)
         elif (self.activity.blocked, self.drift.drifting) != self._posture:
             await self._broadcast(self._world())
@@ -233,6 +261,7 @@ class SidecarService:
             "focus": self.engine.state(),
             "activity": {**self.activity.snapshot(),
                          "drifting": self.drift.drifting},
+            "offer": self.offers.payload(),
             "line": self._last_line,
             "linked": bool(self.store.get("device_token")),
             "sync_error": self.store.get("sync_error") or None,
@@ -256,11 +285,36 @@ class SidecarService:
             return _error("idle_seconds (non-negative number) required")
         was_blocked = self.activity.blocked
         self.activity.observe(bundle_id, float(idle))
+        self.ledger.observe(self.engine.clock(), float(idle))
         if self.activity.blocked != was_blocked:
             # hush on/off changes the deer's whole posture, and it happens
             # without a line - push the state so the window follows
             await self._broadcast(self._world())
         return web.json_response({"ok": True})
+
+    def _apply_resolution(self, body) -> Optional[web.Response]:
+        """the combined buttons ride the transition: resolve the offer
+        first, atomically from the caller's view. returns an error
+        response, or None when there was nothing to do / it worked."""
+        resolution = body.get("resolution") if isinstance(body, dict) \
+            else None
+        if resolution is None:
+            return None
+        if not isinstance(resolution, dict) \
+                or not isinstance(resolution.get("offer_uuid"), str) \
+                or resolution.get("action") not in ("remove", "keep"):
+            return _error("resolution needs offer_uuid and "
+                          "action ('remove' or 'keep')")
+        try:
+            offer = self.offers.resolve(
+                resolution["offer_uuid"], resolution["action"],
+                at=resolution.get("at")
+                if isinstance(resolution.get("at"), str) else None)
+        except OfferError as e:
+            return _error(str(e))
+        if resolution["action"] == "remove":
+            self.engine.rearm_after_excision(offer["run_id"])
+        return None
 
     async def _focus_start(self, request: web.Request) -> web.Response:
         body = await _json_body(request) or {}
@@ -268,6 +322,9 @@ class SidecarService:
         label = body.get("label") if isinstance(body, dict) else None
         target = body.get("target_minutes", 25) if isinstance(body, dict) \
             else 25
+        failed = self._apply_resolution(body)
+        if failed is not None:
+            return failed
         switching = self.engine.state().get("running", False)
         try:
             state = self.engine.start(
@@ -276,14 +333,34 @@ class SidecarService:
                 target)
         except FocusError as e:
             return _error(str(e))
+        self.ledger.clear()          # a new run starts a new story
         line = await self._announce(
             "focus_switch" if switching else "focus_start")
-        return web.json_response({"focus": state, "line": line})
+        return web.json_response({"focus": state, "line": line,
+                                  "offer": self.offers.payload()})
 
-    async def _focus_pause(self, _request: web.Request) -> web.Response:
+    async def _focus_pause(self, request: web.Request) -> web.Response:
+        body = await _json_body(request) or {}
+        failed = self._apply_resolution(body)
+        if failed is not None:
+            return failed
         run = self.engine.pause()
         if run is None:
-            return _error("no clock is running", status=409)
+            held = self.store.frozen_runs()
+            return _error(
+                "no clock is running" if not held else
+                "no clock is running - a held block is waiting on its "
+                "question", status=409)
+        if run.get("frozen"):
+            # the clock STOPPED (that's the point) - the run just isn't
+            # banked yet; the question is right there on the card
+            line = await self._announce("focus_hold")
+            return web.json_response({
+                "focus": self.engine.state(),
+                "held": run,
+                "offer": self.offers.payload(),
+                "line": line,
+            })
         line = await self._announce("focus_pause")
         return web.json_response({
             "focus": self.engine.state(),
@@ -291,16 +368,82 @@ class SidecarService:
             "line": line,
         })
 
-    async def _focus_finish(self, _request: web.Request) -> web.Response:
+    async def _focus_finish(self, request: web.Request) -> web.Response:
+        body = await _json_body(request) or {}
+        failed = self._apply_resolution(body)
+        if failed is not None:
+            return failed
         try:
             run = self.engine.finish()
         except FocusError as e:
             return _error(str(e), status=409)
+        if run.get("frozen"):
+            line = await self._announce("focus_hold")
+            return web.json_response({
+                "focus": self.engine.state(),
+                "held": run,
+                "offer": self.offers.payload(),
+                "line": line,
+            })
         line = await self._announce("task_finished")
         return web.json_response({
             "focus": self.engine.state(),
             "run": run,
             "line": line,
+        })
+
+    async def _rewind(self, request: web.Request) -> web.Response:
+        """answer the question: remove (a candidate boundary) or keep.
+        if the run was frozen waiting on this, the answer also banks it -
+        at its freeze instant - and speaks the line its transition owed."""
+        body = await _json_body(request)
+        if not isinstance(body, dict) \
+                or not isinstance(body.get("offer_uuid"), str):
+            return _error("offer_uuid required")
+        action = body.get("action")
+        if action not in ("remove", "keep"):
+            return _error("action must be 'remove' or 'keep'")
+        at = body.get("at") if isinstance(body.get("at"), str) else None
+        try:
+            offer = self.offers.resolve(body["offer_uuid"], action, at=at)
+        except OfferError as e:
+            return _error(str(e))
+        if action == "remove":
+            self.engine.rearm_after_excision(offer["run_id"])
+        run_summary = None
+        line = None
+        run = self.store.run(offer["run_id"])
+        if run and run["ended_at"] is None and run.get("frozen_at"):
+            run_summary = self.engine.close_frozen(offer["run_id"])
+            line = await self._announce(
+                "task_finished" if run_summary["reason"] == "finished"
+                else "focus_pause")
+        else:
+            await self._broadcast(self._world())
+        return web.json_response({
+            "focus": self.engine.state(),
+            "offer": {"offer_uuid": offer["offer_uuid"],
+                      "status": offer["status"],
+                      "excised_start": offer.get("excised_start"),
+                      "excised_end": offer.get("excised_end")},
+            "run": run_summary,
+            "line": line,
+        })
+
+    async def _rewind_undo(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        if not isinstance(body, dict) \
+                or not isinstance(body.get("offer_uuid"), str):
+            return _error("offer_uuid required")
+        try:
+            offer = self.offers.undo(body["offer_uuid"])
+        except OfferError as e:
+            return _error(str(e))
+        self.engine.suppress_ding(offer["run_id"])
+        await self._broadcast(self._world())
+        return web.json_response({
+            "focus": self.engine.state(),
+            "offer": self.offers.payload(),
         })
 
     async def _ws(self, request: web.Request) -> web.WebSocketResponse:

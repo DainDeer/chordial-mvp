@@ -58,6 +58,12 @@ KNOWN_EVENT_TYPES = frozenset({
     "return.detected",
     "session.started",
     "session.ended",
+    # rewind (docs/REWIND_DESIGN.md section 7): offered carries contested
+    # LENGTH only - candidate timestamps stay on-device
+    "rewind.offered",
+    "rewind.applied",
+    "rewind.kept",
+    "rewind.undone",
 })
 
 

@@ -51,7 +51,28 @@ CREATE TABLE IF NOT EXISTS runs (
     seconds INTEGER,
     end_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS offers (
+    offer_uuid TEXT PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    returned_at TEXT,
+    candidates TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT,
+    excised_start TEXT,
+    excised_end TEXT
+);
 """
+
+# columns added to existing tables after the CREATE IF NOT EXISTS era -
+# executescript can't grow a table, so each is checked and ALTERed in.
+# rewind (docs/REWIND_DESIGN.md section 6): a run with an unresolved
+# correction freezes instead of banking; frozen_at stops its clock,
+# frozen_reason remembers which transition was intended.
+_COLUMN_MIGRATIONS = [
+    ("runs", "frozen_at", "TEXT"),
+    ("runs", "frozen_reason", "TEXT"),
+]
 
 
 class SidecarStore:
@@ -60,6 +81,12 @@ class SidecarStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        for table, column, kind in _COLUMN_MIGRATIONS:
+            present = {r["name"] for r in self._conn.execute(
+                f"PRAGMA table_info({table})")}
+            if column not in present:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         self._conn.commit()
 
     def close(self) -> None:
@@ -171,10 +198,33 @@ class SidecarStore:
         return int(cursor.lastrowid)
 
     def active_run(self) -> Optional[dict]:
+        """the RUNNING run: unbanked and not frozen. a frozen run is
+        stopped time waiting on its question - it is not active."""
         row = self._conn.execute(
             "SELECT * FROM runs WHERE ended_at IS NULL "
-            "ORDER BY id DESC LIMIT 1").fetchone()
+            "AND frozen_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+
+    def run(self, run_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def frozen_runs(self) -> list[dict]:
+        """unbanked runs whose clock was stopped by an unresolved
+        correction - each is waiting for its answer, oldest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM runs WHERE ended_at IS NULL "
+            "AND frozen_at IS NOT NULL ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def freeze_run(self, run_id: int, frozen_at: str, reason: str) -> None:
+        """stop the clock without banking: the transition happened, the
+        question is still open (docs/REWIND_DESIGN.md section 6)."""
+        self._conn.execute(
+            "UPDATE runs SET frozen_at = ?, frozen_reason = ? WHERE id = ?",
+            (frozen_at, reason, run_id))
+        self._conn.commit()
 
     def close_run(self, run_id: int, ended_at: str, seconds: int,
                   end_reason: str) -> None:
@@ -182,6 +232,95 @@ class SidecarStore:
             "UPDATE runs SET ended_at = ?, seconds = ?, end_reason = ? "
             "WHERE id = ?", (ended_at, seconds, end_reason, run_id))
         self._conn.commit()
+
+    # --- rewind offers ---------------------------------------------------------
+    # one row per correction question (docs/REWIND_DESIGN.md section 6).
+    # candidates/resolution are json; the applied excision interval sits in
+    # its own columns so credited-time arithmetic reads it without parsing.
+
+    def insert_offer(self, offer_uuid: str, run_id: int, created_at: str,
+                     candidates: list[dict]) -> None:
+        self._conn.execute(
+            "INSERT INTO offers (offer_uuid, run_id, created_at, candidates) "
+            "VALUES (?, ?, ?, ?)",
+            (offer_uuid, run_id, created_at, json.dumps(candidates)))
+        self._conn.commit()
+
+    def get_offer(self, offer_uuid: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE offer_uuid = ?",
+            (offer_uuid,)).fetchone()
+        return self._offer_dict(row) if row else None
+
+    def open_offer_for_run(self, run_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE run_id = ? AND status = 'open' "
+            "ORDER BY created_at DESC LIMIT 1", (run_id,)).fetchone()
+        return self._offer_dict(row) if row else None
+
+    def newest_open_offer(self) -> Optional[dict]:
+        """the question currently worth surfacing (at most one per run;
+        across runs the newest wins the chip)."""
+        row = self._conn.execute(
+            "SELECT * FROM offers WHERE status = 'open' "
+            "ORDER BY rowid DESC LIMIT 1").fetchone()
+        return self._offer_dict(row) if row else None
+
+    def extend_offer(self, offer_uuid: str, candidates: list[dict]) -> None:
+        """a further drift while the question is open: new candidates over
+        the whole tail, the return forgotten (the person is away again)."""
+        self._conn.execute(
+            "UPDATE offers SET candidates = ?, returned_at = NULL "
+            "WHERE offer_uuid = ?", (json.dumps(candidates), offer_uuid))
+        self._conn.commit()
+
+    def mark_offer_returned(self, offer_uuid: str, returned_at: str) -> None:
+        self._conn.execute(
+            "UPDATE offers SET returned_at = ? WHERE offer_uuid = ?",
+            (returned_at, offer_uuid))
+        self._conn.commit()
+
+    def resolve_offer(self, offer_uuid: str, status: str, resolution: dict,
+                      excised_start: Optional[str] = None,
+                      excised_end: Optional[str] = None) -> None:
+        self._conn.execute(
+            "UPDATE offers SET status = ?, resolution = ?, "
+            "excised_start = ?, excised_end = ? WHERE offer_uuid = ?",
+            (status, json.dumps(resolution), excised_start, excised_end,
+             offer_uuid))
+        self._conn.commit()
+
+    def reopen_offer(self, offer_uuid: str) -> None:
+        """undo: the interval is lifted and the question comes back - the
+        tap may have been the mistake."""
+        self._conn.execute(
+            "UPDATE offers SET status = 'open', resolution = NULL, "
+            "excised_start = NULL, excised_end = NULL WHERE offer_uuid = ?",
+            (offer_uuid,))
+        self._conn.commit()
+
+    def excised_seconds(self, run_id: int) -> int:
+        """the run's total applied excision - intervals are disjoint by
+        construction (one open offer per run; a new drift needs new
+        activity after the last resolution), so a plain sum is the union."""
+        rows = self._conn.execute(
+            "SELECT excised_start, excised_end FROM offers "
+            "WHERE run_id = ? AND status = 'applied' "
+            "AND excised_start IS NOT NULL", (run_id,)).fetchall()
+        total = 0.0
+        for r in rows:
+            start = datetime.fromisoformat(r["excised_start"])
+            end = datetime.fromisoformat(r["excised_end"])
+            total += max(0.0, (end - start).total_seconds())
+        return int(total)
+
+    @staticmethod
+    def _offer_dict(row) -> dict:
+        offer = dict(row)
+        offer["candidates"] = json.loads(offer["candidates"])
+        if offer.get("resolution"):
+            offer["resolution"] = json.loads(offer["resolution"])
+        return offer
 
     def banked_since(self, since_iso: str) -> dict[int, int]:
         """closed-run seconds per task since `since` (the local day start) -

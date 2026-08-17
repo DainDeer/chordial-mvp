@@ -4,7 +4,8 @@
 deferral, undo, copy, data minimization) and again after sol's slice-A code
 review on PR #70 (the witness rule, impact at resolution time,
 freeze-don't-refuse) · builds on docs/ROOMS_DESIGN.md §5 (presence & focus)
-and §6 (the honesty model) · status: design locked, slice A built*
+and §6 (the honesty model) · status: design locked, slices A + B built
+(the v1 ship line); slice C (the tether door) remains*
 
 ## 1. what this is
 
