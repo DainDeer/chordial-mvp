@@ -26,10 +26,17 @@ export function quietLine(offer: RewindOffer): string {
   )} of quiet.`;
 }
 
-/** the primary button: "remove 17m · clock becomes 14:00" */
-export function removeLabel(candidate: RewindCandidate): string {
-  return `remove ${amountLabel(candidate.removed_seconds)} · clock becomes ${clockLabel(
-    candidate.credited_seconds,
+/** the primary button: "remove 17m · clock becomes 14:00". the caller
+ * supplies creditedSeconds LIVE for an active offer (the local clock
+ * keeps running while the question is deferred - a stale server value
+ * would promise "14:00" and deliver "24:00"); a frozen offer's server
+ * value is already exact. */
+export function removeLabel(
+  removedSeconds: number,
+  creditedSeconds: number,
+): string {
+  return `remove ${amountLabel(removedSeconds)} · clock becomes ${clockLabel(
+    creditedSeconds,
   )}`;
 }
 

@@ -13,6 +13,9 @@ export const SIDECAR_URL: string =
  * `frozen` lists unbanked runs stopped by an unresolved correction. */
 export interface FocusState {
   running: boolean;
+  /** the active run's sidecar id - resolutions riding a transition must
+   * belong to it (a held run's question resolves on the card instead) */
+  run_id?: number;
   task_id?: number | null;
   label?: string | null;
   target_minutes?: number;
@@ -160,7 +163,10 @@ export const finishFocus = (resolution?: Resolution) =>
   });
 
 /** answer the open question in place (no transition): remove a candidate
- * boundary or keep all time. if the run was frozen, the answer banks it. */
+ * boundary or keep all time. if the run was frozen, the answer banks it.
+ * `offer` in the response is the NEXT authoritative open question -
+ * another held block may still be waiting - so client state comes from
+ * it, never from an assumed null. */
 export const resolveRewind = (
   offerUuid: string,
   action: "remove" | "keep",
@@ -168,7 +174,8 @@ export const resolveRewind = (
 ) =>
   request<{
     focus: FocusState;
-    offer: { offer_uuid: string; status: string };
+    resolved: { offer_uuid: string; status: string };
+    offer: RewindOffer | null;
     run: { reason: string; seconds: number } | null;
     line: string | null;
   }>("/v1/focus/rewind", {

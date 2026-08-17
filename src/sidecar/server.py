@@ -73,12 +73,17 @@ class SidecarService:
         self.ledger = ActivityLedger()
         self.offers = RewindOffers(store, self.ledger,
                                    clock=self.engine.clock)
-        # restart hydration: an open question on the live run means the
-        # drift episode is already mid-flight - re-detecting it fresh
-        # would re-ask what was already asked
+        # restart hydration: an open question on the live run WITHOUT a
+        # recorded return means the drift episode is still mid-flight -
+        # resume it so the check-in isn't re-asked. an offer that already
+        # returned must NOT re-arm the episode: the restart's first
+        # active sample would fire a second return and fold legitimate
+        # post-return work into the proposed removal
         active = self.store.active_run()
-        if active and self.store.open_offer_for_run(active["id"]):
-            self.drift.hydrate_in_drift()
+        if active:
+            open_offer = self.store.open_offer_for_run(active["id"])
+            if open_offer and not open_offer.get("returned_at"):
+                self.drift.hydrate_in_drift()
         self._sockets: Set[web.WebSocketResponse] = set()
         self._last_line: Optional[str] = None
         # the posture (blocked, drifting) as of the LAST broadcast - the
@@ -294,8 +299,12 @@ class SidecarService:
 
     def _apply_resolution(self, body) -> Optional[web.Response]:
         """the combined buttons ride the transition: resolve the offer
-        first, atomically from the caller's view. returns an error
-        response, or None when there was nothing to do / it worked."""
+        first, atomically from the caller's view. the offer must belong
+        to the ACTIVE run - a frozen run's question resolves through
+        /v1/focus/rewind, which also banks it; resolving it here would
+        leave the frozen run terminal-questioned but never closed, an
+        invisible permanently-unbanked run. returns an error response, or
+        None when there was nothing to do / it worked."""
         resolution = body.get("resolution") if isinstance(body, dict) \
             else None
         if resolution is None:
@@ -305,6 +314,13 @@ class SidecarService:
                 or resolution.get("action") not in ("remove", "keep"):
             return _error("resolution needs offer_uuid and "
                           "action ('remove' or 'keep')")
+        target = self.store.get_offer(resolution["offer_uuid"])
+        active = self.store.active_run()
+        if target is None:
+            return _error("no such offer")
+        if active is None or target["run_id"] != active["id"]:
+            return _error("that question belongs to a held block - "
+                          "answer it on the card instead")
         try:
             offer = self.offers.resolve(
                 resolution["offer_uuid"], resolution["action"],
@@ -420,12 +436,14 @@ class SidecarService:
                 else "focus_pause")
         else:
             await self._broadcast(self._world())
+        # `offer` is the NEXT authoritative open question (another held
+        # block may still be waiting) - the client must set its state
+        # from this, not assume null
         return web.json_response({
             "focus": self.engine.state(),
-            "offer": {"offer_uuid": offer["offer_uuid"],
-                      "status": offer["status"],
-                      "excised_start": offer.get("excised_start"),
-                      "excised_end": offer.get("excised_end")},
+            "resolved": {"offer_uuid": offer["offer_uuid"],
+                         "status": offer["status"]},
+            "offer": self.offers.payload(),
             "run": run_summary,
             "line": line,
         })

@@ -317,11 +317,17 @@ export default function DeerWindow() {
     }
   }
 
+  // only the ACTIVE run's question may ride a transition - a held run's
+  // question resolves on the card, which also banks it (a transition
+  // resolution against it would orphan the frozen run unbanked)
+  const offerOnActiveRun =
+    offer !== null && focus.running && offer.run_id === focus.run_id;
+
   async function onPause() {
     if (busy) return;
     // an open question rides the transition: the pause button becomes the
     // combined choice instead of quietly banking contested time
-    if (offer && focus.running && !confirmingPause) {
+    if (offerOnActiveRun && !confirmingPause) {
       setConfirmingPause(true);
       setConfirmingFinish(false);
       return;
@@ -352,7 +358,7 @@ export default function DeerWindow() {
   async function onFinish() {
     if (busy) return;
     // an open question or an early landing deserves one gentle "you sure?"
-    if ((offer || runSeconds < targetSeconds) && !confirmingFinish) {
+    if ((offerOnActiveRun || runSeconds < targetSeconds) && !confirmingFinish) {
       setConfirmingFinish(true);
       setConfirmingPause(false);
       return;
@@ -369,7 +375,9 @@ export default function DeerWindow() {
     try {
       const result = await resolveRewind(resolved.offer_uuid, action, at);
       setFocus(result.focus);
-      setOffer(null);
+      // the next authoritative question, straight from the response -
+      // another held block's card must not be lost to a broadcast race
+      setOffer(result.offer ?? null);
       if (result.line) showLine(result.line);
       if (action === "remove" && !result.run) {
         // in-run apply: show the resting state with its undo
@@ -487,7 +495,18 @@ export default function DeerWindow() {
                   onClick={() => doResolve("remove")}
                   disabled={busy}
                 >
-                  {removeLabel(offer.candidates[0])}
+                  {removeLabel(
+                    offer.candidates[0].removed_seconds,
+                    // live for an active offer: the clock keeps running
+                    // while the question is deferred, and the promise
+                    // must match what applying actually produces
+                    offerOnActiveRun
+                      ? Math.max(
+                          0,
+                          runSeconds - offer.candidates[0].removed_seconds,
+                        )
+                      : offer.candidates[0].credited_seconds,
+                  )}
                 </button>
               )}
               <button
@@ -551,7 +570,7 @@ export default function DeerWindow() {
             />
           </div>
           <div className="deer-controls">
-            {confirmingPause && offer ? (
+            {confirmingPause && offerOnActiveRun && offer ? (
               <>
                 <button
                   className="deer-pause"
@@ -581,7 +600,7 @@ export default function DeerWindow() {
                   keep going
                 </button>
               </>
-            ) : confirmingFinish && offer ? (
+            ) : confirmingFinish && offerOnActiveRun && offer ? (
               <>
                 <button
                   className="deer-finish confirm"

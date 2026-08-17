@@ -53,11 +53,14 @@ class RewindOffers:
 
     def on_drift(self, run: dict) -> Optional[dict]:
         """drift detected on a running run: mint the question, or extend
-        the run's open one (one unresolved correction per run - a second
-        drift recomputes candidates over the whole tail, never stacks a
-        second ask). returns the offer, or None when the ledger has
-        nothing to ask (no candidates - e.g. a mid-run restart that
-        witnessed nothing)."""
+        the run's open one (one unresolved correction per run). a REAL
+        second episode - the previous quiet already ended in a return -
+        closes that episode's interval into the offer's `segments`, so
+        the single question accumulates every unresolved gap and 'remove'
+        excises their union; re-detection of the same still-running quiet
+        just recomputes candidates. returns the offer, or None when the
+        ledger has nothing to ask (no candidates - e.g. a mid-run restart
+        that witnessed nothing)."""
         now = self.clock()
         candidates = rewind_candidates(
             self.ledger.moments(), now, _parse(run["started_at"]),
@@ -67,20 +70,38 @@ class RewindOffers:
         existing = self.store.open_offer_for_run(run["id"])
         if existing is not None:
             if serialized:
-                self.store.extend_offer(existing["offer_uuid"], serialized)
+                segments = list(existing["segments"])
+                if existing.get("returned_at") and existing["candidates"]:
+                    # the previous episode closed at its return: its
+                    # interval (recommended boundary -> return) joins the
+                    # question rather than being silently forgotten
+                    segments.append([existing["candidates"][0]["at"],
+                                     existing["returned_at"]])
+                self.store.extend_offer(existing["offer_uuid"], serialized,
+                                        segments)
+                if len(segments) > len(existing["segments"]):
+                    self._emit_offered(existing["offer_uuid"], run,
+                                       candidates[0].at, now, segments)
             return self.store.get_offer(existing["offer_uuid"])
         if not serialized:
             return None
         offer_uuid = str(uuid_mod.uuid4())
         self.store.insert_offer(offer_uuid, run["id"], now.isoformat(),
                                 serialized)
+        self._emit_offered(offer_uuid, run, candidates[0].at, now, [])
+        return self.store.get_offer(offer_uuid)
+
+    def _emit_offered(self, offer_uuid: str, run: dict, boundary, now,
+                      segments: list) -> None:
+        """rewind.offered, (re-)emitted whenever the question's span
+        grows - contested LENGTH only, boundaries stay on-device."""
+        contested = (self._segment_seconds(segments)
+                     + removal_impact(boundary, now))
         self.store.enqueue(
             "rewind.offered",
             {"offer_uuid": offer_uuid, "task_id": run["task_id"],
-             "label": run["label"],
-             "contested_seconds": removal_impact(candidates[0].at, now)},
+             "label": run["label"], "contested_seconds": contested},
             occurred_at=now.isoformat())
-        return self.store.get_offer(offer_uuid)
 
     def on_return(self, run: dict) -> Optional[dict]:
         """the person is back: stamp the end of the quiet (the excision
@@ -106,14 +127,15 @@ class RewindOffers:
         run = self.store.run(offer["run_id"])
         if run is None or run["ended_at"] is not None:
             return None                      # banked runs are beyond reach
-        # the removal anchors to the end of the quiet (typing after the
-        # return never inflates "remove 17m"), but "clock becomes" is
-        # live - credited keeps growing while the person works
+        # the removal anchors to the ends of the quiet stretches (typing
+        # after a return never inflates "remove 17m"), but "clock becomes"
+        # is live - credited keeps growing while the person works
         quiet_end = self._quiet_end(offer, run)
         credited_now = self._credited(run, self.clock())
+        seg_total = self._segment_seconds(offer["segments"])
         candidates = []
         for c in offer["candidates"]:
-            removed = removal_impact(_parse(c["at"]), quiet_end)
+            removed = seg_total + removal_impact(_parse(c["at"]), quiet_end)
             candidates.append({
                 **c,
                 "removed_seconds": removed,
@@ -170,14 +192,17 @@ class RewindOffers:
                              "question's candidates")
         boundary = _parse(matched["at"])
         end = max(boundary, self._quiet_end(offer, run))
+        # the union: every closed segment plus the current episode - the
+        # question covered all of them, so the answer does too
+        intervals = list(offer["segments"])
+        intervals.append([boundary.isoformat(), end.isoformat()])
         resolution["at"] = boundary.isoformat()
         self.store.resolve_offer(offer_uuid, "applied", resolution,
-                                 excised_start=boundary.isoformat(),
-                                 excised_end=end.isoformat())
+                                 excised=intervals)
         self.store.enqueue(
             "rewind.applied",
             {"offer_uuid": offer_uuid, "surface": surface,
-             "removed_seconds": removal_impact(boundary, end)},
+             "removed_seconds": self._segment_seconds(intervals)},
             occurred_at=now.isoformat())
         return self.store.get_offer(offer_uuid)
 
@@ -193,8 +218,7 @@ class RewindOffers:
         if run is None or run["ended_at"] is not None:
             raise OfferError("that run is already banked - "
                              "corrections touch live clocks only")
-        restored = removal_impact(_parse(offer["excised_start"]),
-                                  _parse(offer["excised_end"]))
+        restored = self._segment_seconds(offer.get("excised") or [])
         self.store.reopen_offer(offer_uuid)
         self.store.enqueue(
             "rewind.undone",
@@ -203,6 +227,13 @@ class RewindOffers:
         return self.store.get_offer(offer_uuid)
 
     # --- shared arithmetic ---------------------------------------------------
+
+    @staticmethod
+    def _segment_seconds(segments: list) -> int:
+        total = 0.0
+        for start, end in segments:
+            total += max(0.0, (_parse(end) - _parse(start)).total_seconds())
+        return int(total)
 
     def _quiet_end(self, offer: dict, run: dict) -> datetime:
         """where the contested quiet stops: the return if one happened,

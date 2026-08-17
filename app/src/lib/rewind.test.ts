@@ -44,8 +44,14 @@ describe("amounts and clocks", () => {
 
 describe("the card's language is impact, never inference", () => {
   it("states the removal and the resulting clock", () => {
-    expect(removeLabel(candidate(1020, 848))).toBe(
-      "remove 17m · clock becomes 14:08",
+    expect(removeLabel(1020, 848)).toBe("remove 17m · clock becomes 14:08");
+  });
+
+  it("takes the credited value from the caller - live for active offers", () => {
+    // sol #71 finding 5: ten more minutes of work while the card waits
+    // must show in the promise ("clock becomes 24:08", not a stale 14:08)
+    expect(removeLabel(1020, 848 + 600)).toBe(
+      "remove 17m · clock becomes 24:08",
     );
   });
 

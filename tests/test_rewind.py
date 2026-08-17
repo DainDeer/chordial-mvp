@@ -738,3 +738,176 @@ def test_the_offer_rides_the_wire(tmp_path):
             await client.close()
     asyncio.run(flow())
     store.close()
+
+
+# --- sol's slice-B review round (PR #71) -------------------------------------
+
+
+def test_a_second_drift_joins_the_first_unresolved_gap(rig):
+    """sol #71 finding 1: return -> work -> second drift. the single
+    question accumulates BOTH gaps as segments; 'remove' excises their
+    union - the first unresolved gap never silently credits. the grown
+    span re-emits rewind.offered."""
+    store, clock, ledger, engine, offers = rig
+    _start_and_type(rig)                            # typing 0..14
+    clock.advance(minutes=10)                       # quiet 14..24
+    offer = offers.on_drift(store.active_run())
+    clock.advance(minutes=1)
+    ledger.observe(clock.now, 1.0)                  # the return at 25
+    offers.on_return(store.active_run())
+    _type_through(ledger, clock, 15)                # work 25..40
+    clock.advance(minutes=10)                       # quiet again 40..50
+    extended = offers.on_drift(store.active_run())
+
+    assert extended["offer_uuid"] == offer["offer_uuid"]
+    assert len(extended["segments"]) == 1           # [14, 25] joined the ask
+    assert _outbox_types(store).count("rewind.offered") == 2
+    grown = [e for e in store.pending()
+             if e["type"] == "rewind.offered"][-1]
+    assert grown["payload"]["contested_seconds"] == 21 * 60  # 11 + 10 so far
+
+    clock.advance(minutes=1)
+    ledger.observe(clock.now, 1.0)                  # second return at 51
+    offers.on_return(store.active_run())
+    payload = offers.payload()
+    assert payload["contested_seconds"] == 22 * 60  # 11 + 11, the union
+
+    offers.resolve(offer["offer_uuid"], "remove")
+    assert engine.state()["run_seconds"] == 29 * 60  # exactly the typing
+    applied = [e for e in store.pending()
+               if e["type"] == "rewind.applied"][0]
+    assert applied["payload"]["removed_seconds"] == 22 * 60
+
+
+def test_undo_restores_every_gap_of_the_union(rig):
+    """undo after a multi-segment apply lifts the WHOLE union and the
+    re-opened question still covers both gaps."""
+    store, clock, ledger, engine, offers = rig
+    _start_and_type(rig)
+    clock.advance(minutes=10)
+    offer = offers.on_drift(store.active_run())
+    clock.advance(minutes=1)
+    ledger.observe(clock.now, 1.0)
+    offers.on_return(store.active_run())
+    _type_through(ledger, clock, 15)
+    clock.advance(minutes=10)
+    offers.on_drift(store.active_run())
+    clock.advance(minutes=1)
+    ledger.observe(clock.now, 1.0)
+    offers.on_return(store.active_run())
+    offers.resolve(offer["offer_uuid"], "remove")
+    assert engine.state()["run_seconds"] == 29 * 60
+
+    reopened = offers.undo(offer["offer_uuid"])
+    assert engine.state()["run_seconds"] == 51 * 60      # all restored
+    assert len(reopened["segments"]) == 1                # still covering
+    assert offers.payload()["contested_seconds"] == 22 * 60
+    undone = [e for e in store.pending()
+              if e["type"] == "rewind.undone"][0]
+    assert undone["payload"]["restored_seconds"] == 22 * 60
+
+
+def test_hydration_respects_a_recorded_return(rig):
+    """sol #71 finding 3: an offer whose return already happened must not
+    re-arm the drift episode on restart - the re-detected return would
+    fold legitimate post-return work into the proposed removal. the
+    store guard backs it: a recorded return is never overwritten."""
+    from src.sidecar.server import SidecarService
+    store, clock, ledger, engine, offers = rig
+    _start_and_type(rig)
+    clock.advance(minutes=10)
+    offer = offers.on_drift(store.active_run())
+    offers.on_return(store.active_run())
+    returned = store.get_offer(offer["offer_uuid"])["returned_at"]
+
+    service = SidecarService(store, engine=FocusEngine(store, clock=clock))
+    assert service.drift.drifting is False               # not re-armed
+
+    clock.advance(minutes=30)
+    store.mark_offer_returned(offer["offer_uuid"], clock.now.isoformat())
+    assert store.get_offer(offer["offer_uuid"])["returned_at"] == returned
+
+
+def test_hydration_resumes_an_unreturned_episode(rig):
+    """...while a restart mid-quiet (no return yet) still resumes the
+    episode so the check-in isn't re-asked."""
+    from src.sidecar.server import SidecarService
+    store, clock, ledger, engine, offers = rig
+    _start_and_type(rig)
+    clock.advance(minutes=10)
+    offers.on_drift(store.active_run())
+    service = SidecarService(store, engine=FocusEngine(store, clock=clock))
+    assert service.drift.drifting is True
+
+
+def test_a_held_blocks_question_cannot_ride_another_runs_transition(tmp_path):
+    """sol #71 findings 2 + 4, on the wire: after a switch, the held
+    run's question must not resolve through the new run's pause (that
+    would orphan the frozen run unbanked forever) - and resolving the
+    active run's own question hands back the held block's question as
+    the next authoritative offer."""
+    from src.sidecar.server import SidecarService
+
+    store = SidecarStore(tmp_path / "sidecar.db")
+    clock = Clock()
+    service = SidecarService(store, engine=FocusEngine(store, clock=clock))
+
+    async def flow():
+        client = TestClient(TestServer(service.build_app()))
+        await client.start_server()
+        try:
+            # run 1: type, drift, question minted
+            await client.post("/v1/focus/start",
+                              json={"task_id": 7, "label": "novel"})
+            for _ in range(10):
+                clock.advance(minutes=1)
+                await client.post("/v1/activity", json={"idle_seconds": 0})
+            clock.advance(minutes=10)
+            offer1 = service.offers.on_drift(store.active_run())
+
+            # the switch: run 1 freezes with its question open
+            resp = await client.post("/v1/focus/start",
+                                     json={"task_id": 9, "label": "stems"})
+            assert resp.status == 200
+            held = store.frozen_runs()
+            assert len(held) == 1 and held[0]["frozen_reason"] == "switched"
+
+            # finding 2: run 2's pause must refuse run 1's question
+            resp = await client.post("/v1/focus/pause", json={
+                "resolution": {"offer_uuid": offer1["offer_uuid"],
+                               "action": "keep"}})
+            assert resp.status == 400
+            assert "held block" in (await resp.json())["error"]
+            assert store.get_offer(offer1["offer_uuid"])["status"] == "open"
+            assert service.engine.state()["running"] is True   # untouched
+
+            # run 2 earns its own question
+            for _ in range(10):
+                clock.advance(minutes=1)
+                await client.post("/v1/activity", json={"idle_seconds": 0})
+            clock.advance(minutes=10)
+            offer2 = service.offers.on_drift(store.active_run())
+
+            # finding 4: resolving run 2's question surfaces run 1's as
+            # the next authoritative offer - no broadcast race, no
+            # invisible held run
+            resp = await client.post("/v1/focus/rewind", json={
+                "offer_uuid": offer2["offer_uuid"], "action": "keep"})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["resolved"]["status"] == "kept"
+            assert body["offer"] is not None
+            assert body["offer"]["offer_uuid"] == offer1["offer_uuid"]
+            assert body["offer"]["frozen"] is True
+
+            # and the held question, answered on the card, banks its run
+            resp = await client.post("/v1/focus/rewind", json={
+                "offer_uuid": offer1["offer_uuid"], "action": "remove"})
+            body = await resp.json()
+            assert body["run"]["reason"] == "switched"
+            assert store.frozen_runs() == []
+            assert body["offer"] is None                   # nothing left
+        finally:
+            await client.close()
+    asyncio.run(flow())
+    store.close()

@@ -99,6 +99,7 @@ class FocusEngine:
         target_seconds = int(active["target_minutes"] * 60)
         return {
             "running": True,
+            "run_id": active["id"],
             "task_id": active["task_id"],
             "label": active["label"],
             "target_minutes": active["target_minutes"],
@@ -240,9 +241,13 @@ class FocusEngine:
         uncontested = self._credited_seconds(active)
         offer = self.store.open_offer_for_run(active["id"])
         if offer is not None and offer["candidates"]:
-            # contested = the offer's quiet span [boundary, return-or-now]:
-            # clamped at the return, so fresh work with the chip still
-            # open keeps counting toward an honest ding
+            # contested = every closed segment plus the current episode's
+            # quiet [boundary, return-or-now]: clamped at the return, so
+            # fresh work with the chip still open keeps counting toward
+            # an honest ding
+            for seg_start, seg_end in offer.get("segments", []):
+                uncontested -= max(0, int(
+                    (_parse(seg_end) - _parse(seg_start)).total_seconds()))
             boundary = _parse(offer["candidates"][0]["at"])
             end = _parse(offer["returned_at"]) if offer.get("returned_at") \
                 else self.clock()
