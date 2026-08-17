@@ -989,6 +989,10 @@ class RewindDecision(Base):
     user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
                        index=True)
     offer_uuid = Column(String, nullable=False, unique=True)
+    # the device the offer lives on. offer_uuids are device-local, so
+    # presence must be too: a return on the laptop says nothing about the
+    # desktop whose card is still waiting in an empty room.
+    device_id = Column(Integer, ForeignKey('devices.id'), nullable=True)
     label = Column(String, nullable=True)          # task label, for the copy
     contested_seconds = Column(Integer, nullable=False, default=0)
     offered_at = Column(DateTime, nullable=False)  # latest rewind.offered

@@ -279,13 +279,90 @@ def test_the_ping_speaks_impact_with_todays_estimate(device):
     ping = router.sent[0]
     assert "quiet about 40m" in ping["message"]
     assert '"novel"' in ping["message"]
+    # sol #72 finding 2: both doors pause, so both doors SAY so - the
+    # transition is never a surprise rider on "keep"
+    assert "pause the block" in ping["message"]
     labels = [c["label"] for c in ping["choices"]]
-    assert labels == ["remove ~40m & pause", "keep all time"]
+    assert labels == ["remove ~40m & pause", "keep all time & pause"]
     assert [c["data"] for c in ping["choices"]] == \
         ["rw:o1:remove", "rw:o1:keep"]
     # neutral copy: quiet is observed, never judged
     for banned in ("wandered", "left", "distracted", "working?"):
         assert banned not in ping["message"]
+
+
+def test_a_return_on_another_device_does_not_silence_the_tether(device):
+    """sol #72 finding 1: offer_uuids are device-local, so presence must
+    be too. typing on the laptop says nothing about the desktop whose
+    card still waits in an empty room - the ping stays due."""
+    device_id, _ = device
+    laptop_uuid, _ = _link(U1, "laptop")
+    with db_mod.get_db() as db:
+        from src.database.models import Device
+        laptop_id = db.query(Device.id).filter(
+            Device.device_uuid == laptop_uuid).scalar()
+    _offered(device_id, "o1", NOON - timedelta(minutes=40))
+    _land(laptop_id, "return.detected", {}, NOON - timedelta(minutes=28))
+    router = FakeRouter()
+    assert _run(_tether(router).sweep_once()) == 1
+    assert len(router.sent) == 1
+    # the desktop's own return still suppresses (the card is showing)
+    _offered(device_id, "o2", NOON - timedelta(minutes=40))
+    _land(device_id, "return.detected", {}, NOON - timedelta(minutes=27))
+    assert _run(_tether(router).sweep_once()) == 0
+    assert len(router.sent) == 1
+
+
+def test_the_claim_repeats_eligibility_in_the_atomic_update(device):
+    """sol #72 finding 3: anything landing between the eligibility read
+    and the claim - an answer, a resolution, a return, a re-arm - must
+    make the claim miss, never yield a stale ping."""
+    device_id, _ = device
+    _offered(device_id, "o1", NOON - timedelta(minutes=30))
+
+    def stale_claim(mutate):
+        with db_mod.get_db() as db:
+            row = db.query(RewindDecision).filter(
+                RewindDecision.offer_uuid == "o1").first()
+            snapshot_id, snapshot_offered = row.id, row.offered_at
+            mutate(db, row)          # the rival lands "concurrently"
+            db.commit()
+
+            class Snapshot:
+                id = snapshot_id
+                offered_at = snapshot_offered
+            took = RewindTether._claim_row(db, Snapshot, NOON)
+            db.commit()
+            return took
+
+    def reset(db):
+        db.query(RewindDecision).filter(
+            RewindDecision.offer_uuid == "o1").update({
+                RewindDecision.choice: None, RewindDecision.closed_at: None,
+                RewindDecision.returned_at: None,
+                RewindDecision.pinged_at: None,
+                RewindDecision.offered_at: NOON - timedelta(minutes=30)})
+
+    # a phone answer won first
+    assert stale_claim(lambda db, r: setattr(r, "choice", "keep")) is False
+    with db_mod.get_db() as db:
+        reset(db); db.commit()
+    # the desk resolved first
+    assert stale_claim(lambda db, r: setattr(r, "closed_at", NOON)) is False
+    with db_mod.get_db() as db:
+        reset(db); db.commit()
+    # the person came back
+    assert stale_claim(
+        lambda db, r: setattr(r, "returned_at", NOON)) is False
+    with db_mod.get_db() as db:
+        reset(db); db.commit()
+    # a newer offered re-armed the away clock
+    assert stale_claim(
+        lambda db, r: setattr(r, "offered_at", NOON)) is False
+    with db_mod.get_db() as db:
+        reset(db); db.commit()
+    # and with no rival, the same claim lands
+    assert stale_claim(lambda db, r: None) is True
 
 
 def test_a_failed_send_unclaims_for_another_try(device):
@@ -334,6 +411,34 @@ def test_a_tap_is_tenant_checked(device):
                                               "rw:o1:remove")
     assert "can't find" in ack
     assert _row("o1").choice is None
+
+
+def test_a_losing_tap_learns_the_actual_winner(device, monkeypatch):
+    """sol #72 finding 4: when the conditional claim loses a race, the
+    ack must describe the answer that WON - re-read the row, never echo
+    the losing tap's own choice."""
+    device_id, _ = device
+    _offered(device_id, "o1", NOON - timedelta(minutes=30))
+    assert "got it" in rewind_tether.record_decision_token(
+        "telegram", "555", "rw:o1:keep")
+
+    # replay the race: the pre-check ran before the rival landed (returns
+    # None once), so the tap falls through to the claim - which misses -
+    # and must compose its ack from the row's actual state
+    real = rewind_tether._settled_ack
+    calls = {"n": 0}
+
+    def prechecked_before_the_rival(row):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real(row)
+
+    monkeypatch.setattr(rewind_tether, "_settled_ack",
+                        prechecked_before_the_rival)
+    ack = rewind_tether.record_decision_token("telegram", "555",
+                                              "rw:o1:remove")
+    assert "keeping every minute" in ack       # the winner's answer
+    assert "quiet comes off" not in ack        # never the loser's
+    assert _row("o1").choice == "keep"
 
 
 def test_the_desk_beats_a_late_tap(device):

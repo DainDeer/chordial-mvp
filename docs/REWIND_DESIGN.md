@@ -411,8 +411,11 @@ tracking row per offer (`rewind_decisions`): `rewind.offered` opens or
 re-arms the row (a re-emit means the span grew, so the away clock restarts),
 `rewind.applied`/`rewind.kept` close it, `rewind.undone` re-opens it fresh
 (new away clock, new single ping — undo happens at the desk, so the person
-is marked present), and `return.detected` stamps `returned_at` on every open
-row. The row is a shadow, never the truth — the sidecar owns the offer.
+is marked present), and `return.detected` stamps `returned_at` on the open
+rows of **its own device** — presence is device-scoped (sol's slice-C
+review): offer_uuids are device-local, and a return on the laptop says
+nothing about the desktop whose card still waits in an empty room. The row
+is a shadow, never the truth — the sidecar owns the offer.
 
 **The ping.** A watcher task (supervised beside the pulse; it has the
 router's outbound reach, which the web server deliberately doesn't) sweeps
@@ -421,9 +424,13 @@ every 60s for rows that are: unresolved, undecided, past the away threshold
 means the card is showing — one gentle surface, no phone ping on top),
 **opted in**, outside the user's quiet hours, and not stale (older than
 **6 h** never pings — yesterday's quiet is the chip's business). `pinged_at`
-is claimed atomically *before* the send: losing a ping to a crash is
-acceptable, sending two is not. A transient send failure un-claims for
-another sweep; a permanent one deactivates the link via the router.
+is claimed atomically *before* the send, and the claim **repeats every
+mutable eligibility predicate** (undecided, unclosed, un-re-armed, no
+return since the offered) so a resolution, answer, return, or re-arm
+landing between the eligibility read and the claim kills the ping rather
+than letting a stale one out (sol's slice-C review). Losing a ping to a
+crash is acceptable, sending two is not. A transient send failure un-claims
+for another sweep; a permanent one deactivates the link via the router.
 
 - **opt-in, separately** (sol's review): `"rewind_tether": true` in
   schedule_preferences, set through conversation (the set_preference tool)
@@ -431,16 +438,22 @@ another sweep; a permanent one deactivates the link via the router.
 - the copy is impact language with an honest estimate: the quiet has run
   uninterrupted since the offer (the returned-check guarantees it), so
   *"quiet about 40m"* = contested-at-mint + elapsed; buttons are
-  **remove ~40m & pause** / **keep all time** (inline keyboard on telegram,
-  component buttons on discord; taps are handled by custom-id prefix `rw:`
-  so they survive restarts)
+  **remove ~40m & pause** / **keep all time & pause** — BOTH doors name the
+  pause, because both pause (sol's slice-C review: the away transition must
+  never be a surprise rider on "keep"); the message says so too. (inline
+  keyboard on telegram, component buttons on discord; taps are handled by
+  custom-id prefix `rw:` so they survive restarts)
 - a tap lands via `record_decision_token`: tenant-checked against the
   tapping account's linked user, **first answer wins** by conditional
-  UPDATE; a tap after the desk already resolved is told so, gently
+  UPDATE; a tap after the desk already resolved is told so, gently — and a
+  tap that *loses a race* is answered from the row's actual outcome, never
+  from the losing tap's own choice
 - **the return channel piggybacks on the pump**: while (and only while) the
   sidecar has an open offer, its 15s sync loop also asks
   `GET /api/v1/sync/decisions` (device bearer auth, read-only, idempotent);
-  an answer is applied through the same machinery as a card tap
+  an answer is applied through the same machinery as a card tap. A 401
+  parks the pump exactly like the push path — a revoked sidecar never
+  keeps knocking
 - **presence-aware transitions**: "remove & pause" pauses the clock only
   while the quiet is still running (no return, not frozen) — the away case
   the tether exists for. If the person is back at the desk and working, the

@@ -1104,3 +1104,41 @@ def test_the_pump_polls_only_while_a_question_is_open(tmp_path):
             store.close()
             await server.close()
     asyncio.run(flow())
+
+
+def test_a_revoked_decision_poll_parks_the_pump(tmp_path):
+    """sol #72 finding 5: a 401 on the decision poll parks exactly like
+    the push path - a revoked sidecar with an open offer and an empty
+    outbox must not keep knocking every cycle."""
+    from aiohttp import web as aioweb
+
+    from src.sidecar.sync import OutboxPump
+
+    async def revoked(request):
+        return aioweb.json_response({"error": "revoked"}, status=401)
+
+    async def flow():
+        app = aioweb.Application()
+        app.router.add_get("/api/v1/sync/decisions", revoked)
+        server = TestServer(app)
+        await server.start_server()
+        store = SidecarStore(tmp_path / "pump.db")
+        try:
+            store.put("device_token", "dev.tok")
+            store.put("server_url", str(server.make_url("")).rstrip("/"))
+            pump = OutboxPump(store)
+            pump.offer_gate = lambda: True
+
+            async def apply(decision):
+                raise AssertionError("nothing to apply on a 401")
+
+            pump.decision_apply = apply
+            assert await pump.pull_decisions() == 0
+            # parked: the run loop's sync_error check now backs off, and
+            # only a fresh handshake un-parks
+            assert store.get("sync_error")
+            await pump.close()
+        finally:
+            store.close()
+            await server.close()
+    asyncio.run(flow())

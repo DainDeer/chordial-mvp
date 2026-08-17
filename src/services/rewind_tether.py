@@ -39,6 +39,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import or_
+
 from config import Config
 from src.database.database import get_db
 from src.database.models import PlatformIdentity, RewindDecision, User
@@ -77,10 +79,14 @@ def fold_event(db, row) -> None:
     payload = row.payload or {}
 
     if row.event_type == "return.detected":
-        # the person is back at the desk: every open question of theirs is
-        # now the card's business, not the phone's
+        # the person is back at THIS device's desk: its open questions are
+        # now the card's business, not the phone's. presence is scoped to
+        # the device (sol's #72 review): offer_uuids are device-local, and
+        # a return on the laptop says nothing about the desktop whose card
+        # is still waiting in an empty room.
         db.query(RewindDecision).filter(
             RewindDecision.user_uuid == row.user_uuid,
+            RewindDecision.device_id == row.device_id,
             RewindDecision.closed_at.is_(None),
         ).update({RewindDecision.returned_at: at},
                  synchronize_session=False)
@@ -104,6 +110,7 @@ def fold_event(db, row) -> None:
         if tracked is None:
             db.add(RewindDecision(
                 user_uuid=row.user_uuid, offer_uuid=offer_uuid,
+                device_id=row.device_id,
                 label=label, contested_seconds=max(0, contested),
                 offered_at=at))
         elif tracked.closed_at is None:
@@ -122,7 +129,7 @@ def fold_event(db, row) -> None:
             # row already closed so the offered can never arm a ping
             db.add(RewindDecision(
                 user_uuid=row.user_uuid, offer_uuid=offer_uuid,
-                offered_at=at, closed_at=at))
+                device_id=row.device_id, offered_at=at, closed_at=at))
         else:
             tracked.closed_at = at
         return
@@ -190,10 +197,9 @@ def record_decision_token(platform: str, platform_user_id: str,
             RewindDecision.offer_uuid == offer_uuid).first()
         if tracked is None or tracked.user_uuid != identity.user_uuid:
             return "i can't find that question anymore."
-        if tracked.closed_at is not None:
-            return "this one's already settled - the desk answered first."
-        if tracked.choice is not None:
-            return _held_ack(tracked.choice)
+        settled = _settled_ack(tracked)
+        if settled is not None:
+            return settled
         claimed = db.query(RewindDecision).filter(
             RewindDecision.id == tracked.id,
             RewindDecision.choice.is_(None),
@@ -204,17 +210,32 @@ def record_decision_token(platform: str, platform_user_id: str,
                  synchronize_session=False)
         db.commit()
         if not claimed:
-            return _held_ack(choice)
+            # lost the race between the read and the claim (sol's #72
+            # review): describe the answer that actually WON, not the tap
+            # that lost - re-read and let the row speak for itself
+            db.expire_all()
+            fresh = db.query(RewindDecision).filter(
+                RewindDecision.id == tracked.id).first()
+            settled = _settled_ack(fresh) if fresh is not None else None
+            return settled or "that question just settled another way."
         if choice == "remove":
             return ("got it - the quiet comes off the clock and the "
                     "block rests. the desk makes it official.")
-        return "got it - keeping every minute. the desk makes it official."
+        return ("got it - keeping every minute, and the block pauses. "
+                "the desk makes it official.")
 
 
-def _held_ack(first_choice: str) -> str:
-    kept = "keeping every minute" if first_choice == "keep" \
-        else "the quiet comes off"
-    return f"holding to your first answer - {kept}."
+def _settled_ack(row: RewindDecision) -> Optional[str]:
+    """the ack for a row that already has its outcome - composed from the
+    row's actual state, never from the tap that arrived late. None while
+    the question is still open."""
+    if row.closed_at is not None:
+        return "this one's already settled - the desk answered first."
+    if row.choice is not None:
+        kept = "keeping every minute" if row.choice == "keep" \
+            else "the quiet comes off"
+        return f"holding to your first answer - {kept}."
+    return None
 
 
 # --- the watcher ------------------------------------------------------------
@@ -280,12 +301,7 @@ class RewindTether:
                     continue        # the tether is separately opt-in
                 if _in_quiet_hours(user.timezone, now):
                     continue        # unclaimed; retried until stale
-                took = db.query(RewindDecision).filter(
-                    RewindDecision.id == row.id,
-                    RewindDecision.pinged_at.is_(None),
-                ).update({RewindDecision.pinged_at: now},
-                         synchronize_session=False)
-                if took:
+                if self._claim_row(db, row, now):
                     claimed.append({
                         "id": row.id,
                         "user_uuid": row.user_uuid,
@@ -296,6 +312,26 @@ class RewindTether:
                     })
             db.commit()
         return claimed
+
+    @staticmethod
+    def _claim_row(db, row, now) -> bool:
+        """the atomic one-ping claim. every MUTABLE eligibility predicate
+        is repeated inside the conditional update (sol's #72 review) - a
+        desk resolution, a phone answer, a return, or a re-arm landing
+        between the eligibility read and the claim must make the claim
+        miss, never yield a stale ping."""
+        return bool(db.query(RewindDecision).filter(
+            RewindDecision.id == row.id,
+            RewindDecision.pinged_at.is_(None),
+            RewindDecision.choice.is_(None),
+            RewindDecision.closed_at.is_(None),
+            # a newer rewind.offered re-armed the away clock
+            RewindDecision.offered_at == row.offered_at,
+            # a return since the offered hands the question to the card
+            or_(RewindDecision.returned_at.is_(None),
+                RewindDecision.returned_at < RewindDecision.offered_at),
+        ).update({RewindDecision.pinged_at: now},
+                 synchronize_session=False))
 
     async def _ping(self, item: dict) -> bool:
         """one ping for one claimed row. impact language, estimated: the
@@ -319,13 +355,13 @@ class RewindTether:
         what = f'"{label}"' if isinstance(label, str) and label.strip() \
             else "your block"
         text = (f"the clock is still running on {what}, but it's been "
-                f"quiet about {minutes}m. want me to take the quiet off "
-                "the clock, or keep it all?")
+                f"quiet about {minutes}m. either way i'll pause the block "
+                "- the question is what the clock keeps.")
         choices = [
             {"data": f"rw:{item['offer_uuid']}:remove",
              "label": f"remove ~{minutes}m & pause"},
             {"data": f"rw:{item['offer_uuid']}:keep",
-             "label": "keep all time"},
+             "label": "keep all time & pause"},
         ]
         ok = await self.router.deliver_choice_as(
             platform, platform_user_id, text, choices, speaker=CHAIR_ID)

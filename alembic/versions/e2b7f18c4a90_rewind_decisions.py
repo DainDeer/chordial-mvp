@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('user_uuid', sa.String(), nullable=False),
         sa.Column('offer_uuid', sa.String(), nullable=False),
+        sa.Column('device_id', sa.Integer(), nullable=True),
         sa.Column('label', sa.String(), nullable=True),
         sa.Column('contested_seconds', sa.Integer(), nullable=False,
                   server_default=sa.text('0')),
@@ -37,6 +38,7 @@ def upgrade() -> None:
         sa.Column('source', sa.String(), nullable=True),
         sa.Column('closed_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['user_uuid'], ['users.uuid']),
+        sa.ForeignKeyConstraint(['device_id'], ['devices.id']),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('offer_uuid'),
     )

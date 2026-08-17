@@ -163,6 +163,13 @@ class OutboxPump:
         except Exception as e:
             logger.warning("decision poll failed (will retry): %s", e)
             return 0
+        if resp.status == 401:
+            # revoked device: park, exactly like the push path - a revoked
+            # sidecar with an open offer and an empty outbox must not keep
+            # knocking every cycle
+            self.store.put("sync_error", "device token rejected (401)")
+            logger.warning("decision poll parked: device token rejected")
+            return 0
         if resp.status != 200:
             logger.warning("decision poll got %s: %s", resp.status, body)
             return 0
