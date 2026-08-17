@@ -1,9 +1,10 @@
 # chordial: rewind (the retroactive pause)
 
-*designed 2026-08-17 · revised same day after sol's review (lifecycle,
-deferral, undo, copy, data minimization) · builds on docs/ROOMS_DESIGN.md §5
-(presence & focus) and §6 (the honesty model) · status: design locked, not
-yet built*
+*designed 2026-08-17 · revised same day after sol's design review (lifecycle,
+deferral, undo, copy, data minimization) and again after sol's slice-A code
+review on PR #70 (the witness rule, impact at resolution time,
+freeze-don't-refuse) · builds on docs/ROOMS_DESIGN.md §5 (presence & focus)
+and §6 (the honesty model) · status: design locked, slice A built*
 
 ## 1. what this is
 
@@ -64,6 +65,22 @@ honest data the arc depends on.
   travel only to deliver an opted-in tether ping
 - **one gentle surface per episode** — the card carries the welcome; pip
   does not comment on corrections
+
+### from sol's slice-A code review (PR #70, applied)
+
+- **the ledger is a witness, not a judge** — the whole-block fallback is
+  recommended only when the ledger's coverage provably reaches the run's
+  start; a ledger restarted mid-run prefers the edges it observed, or asks
+  nothing at all
+- **boundaries persist, amounts don't** — a candidate carries no
+  `removed_seconds`; the impact is computed at ask time and again at apply
+  time, so a question answered late states today's truth
+- **a pause attempt always stops the clock** — the safety net for an
+  unresolved offer *freezes* the run unbanked instead of refusing the
+  transition; a guard must never keep a runaway timer running
+- **moments outside `[floor, now]` are clipped** — a future moment (clock
+  rollback, malformed sample) can never place a boundary past `now` and
+  reverse an excision interval
 
 ## 2. principles
 
@@ -188,25 +205,39 @@ candidates:
 ```
 
 **The candidate struct** (labels and kinds from day one — the extensibility
-decision). Note the framing: a candidate is fundamentally a *removal amount*
-shown by its impact; the boundary timestamp is mechanics, not copy:
+decision). A candidate is a **boundary, never an amount**:
 
 ```
 {
   "at": <utc iso>,              # the boundary (mechanics; stays on-device in v1)
   "kind": "run_end",            # or "session_start"; later: "lock", "app_boundary"
-  "removed_seconds": 1020,      # what choosing this candidate excises
-  "credited_seconds": 840,      # what the clock becomes (ui renders "clock becomes 14:00")
   "rank": 0,
 }
 ```
 
+The *displayed* framing is still impact ("remove 17m · clock becomes
+14:00") — but those numbers are **derived at ask time and again at apply
+time** via `removal_impact(boundary, upto)`, never persisted (sol's slice-A
+review): a candidate minted when drift was detected at ten quiet minutes
+must not still say "remove 10m" when the person returns at thirty. The
+card recomputes on render; the excision recomputes on application.
+
 **When the tail holds no strong run at all** (the block was quiet from the
 start, save perhaps a jiggle), weak evidence must not earn the
-recommendation: rank 0 falls back to the start of the block itself
-(`kind: "session_start"` — starting a block is an intentional act, the last
-*certain* moment of engagement), with the most recent micro edge as the
-disclosure alternative.
+recommendation — but the fallback needs a **witness** (sol's slice-A
+review). The ledger tracks `covers_from`, the earliest instant it can speak
+for — its first sample `(t, idle)` proves quiet across `[t − idle, t]`, so
+the OS idle counter even carries the witness across a sidecar restart when
+the whole gap was quiet. Then:
+
+- **coverage reaches the run's start** → rank 0 falls back to the block's
+  start (`kind: "session_start"` — starting a block is an intentional act,
+  the last *certain* engagement), most recent micro edge as the disclosure
+- **coverage begins mid-run** (the sidecar restarted after real work the
+  ledger never saw) → the fallback is **suppressed**: the most recent
+  *observed* edge is recommended instead, and with nothing observed at all
+  there are **no candidates** — the offer layer has nothing to ask, which
+  is the safe answer. The ledger must never indict time it did not witness.
 
 At most **2 candidates** surface (the list supports n), and only rank 0 gets
 a primary button — the alternative sits behind an unobtrusive disclosure, so
@@ -243,8 +274,10 @@ review; principle 2). The lifecycle:
    chip persists for the life of the run.
 3. **resolution at the stopping transition** — pausing, finishing, or
    switching with an open offer *asks as part of stopping*. The deer's
-   pause control becomes the combined choice; a bare transition request is
-   refused promptably (below). The run cannot silently bank contested time.
+   pause control becomes the combined choice; a bare transition request
+   still **stops the clock immediately** (the run freezes, unbanked — see
+   below) while the question stays open. The run cannot silently bank
+   contested time, and no guard ever keeps a runaway timer running.
 
 **The card, canonically** (impact language; neutral observation; no
 inference the person must confirm or deny):
@@ -288,13 +321,21 @@ formerly-contested minutes count and the ding fires honestly.
 
 **Transitions while an offer is open:** `POST /v1/focus/pause|finish|start`
 accept an optional `resolution` (`{offer_uuid, action: "remove"|"keep",
-at?}`) applied atomically before the transition. A transition arriving
-*without* one while an offer is open is refused with 409 and a promptable
-message ("there's 17 minutes of quiet to review on this block — the deer is
-holding the question"), which the existing verbatim-error surfaces (deer,
-cycle panel) already display. Deer surfaces always send the resolution; the
-409 is the safety net for any caller that forgot, so no path can bank
-contested time silently.
+at?}`) applied atomically before the transition — the deer's combined
+buttons always send one, and that's the primary path.
+
+The safety net **freezes, never refuses** (sol's slice-A review — a 409
+that leaves the timer running would worsen the exact runaway-timer problem
+rewind exists to fix). A bare transition arriving without a resolution
+while an offer is open still *acts on time immediately*: the run
+**freezes** — `frozen_at` stamps the instant, no further seconds accrue —
+but does not bank. The response reports the pending question; the
+correction stays open; the chip persists. Resolution then closes and banks
+the frozen run with `ended_at = frozen_at` (the answer's own timestamp
+never inflates the run). A frozen run is not a running one, so a bare
+*start* still begins the new block immediately — the old run simply waits,
+frozen and unbanked, for its answer. No path can bank contested time
+silently, and no path can keep a clock running against the person's will.
 
 ## 7. the wire
 
@@ -400,6 +441,7 @@ sidecar's CORS allowlist; no other windows work is implied.
 | micro-run floor | < 3 moments or < 60 s | run mass below which an edge is a rank-1 disclosure candidate |
 | candidates surfaced | ≤ 2 | struct supports n; only rank 0 gets a primary button |
 | card → chip | ~45 s | unanswered card collapses to the quiet chip (never expires) |
+| coverage slack | 30 s | how late the ledger's witness may begin and still count as covering the run's start |
 | away threshold | 25 min | unresolved offer earns one opted-in tether ping |
 | decision poll | 15 s | the pump's existing cadence, only while an offer is open |
 
@@ -418,9 +460,21 @@ sidecar's CORS allowlist; no other windows work is implied.
 - `test_thinking_pauses_dont_split_the_run` — sub-`gap_break` quiet stays
   inside one run
 - `test_pause_never_banks_contested_time` — bare pause with an open offer
-  → 409; pause-with-resolution banks the chosen truth
+  freezes the run unbanked; pause-with-resolution banks the chosen truth
+- `test_a_bare_pause_still_stops_the_clock` — the safety net freezes,
+  never refuses; no guard keeps a runaway timer running
+- `test_a_frozen_run_banks_at_its_freeze_instant` — a late answer never
+  inflates the run past `frozen_at`
 - `test_switch_is_a_stopping_transition_too` — starting another task rides
-  the same rule
+  the same rule (old run freezes, new block starts immediately)
+- `test_a_restarted_ledger_never_recommends_the_session_start` ✓ slice A —
+  the witness rule; observed edges or nothing
+- `test_the_idle_counter_carries_coverage_across_restarts` ✓ slice A — a
+  restart during pure quiet loses no truth
+- `test_impact_is_computed_at_resolution_time` ✓ slice A — boundaries
+  persist, amounts derive at ask/apply
+- `test_future_moments_are_not_evidence` ✓ slice A — nothing past `now`
+  places a boundary
 - `test_the_chip_outlives_the_card` — collapse is deferral, not expiry
 - `test_the_ding_rearms` — a correction under target → target announces
   again
