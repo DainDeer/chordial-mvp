@@ -13,11 +13,15 @@ chain, in order:
   person showing up for the review has called the evidence question, and
   a watermark meant for absent devices must not hold their retro hostage.
   completeness is never waived: no sealed cycle, no retro.
-- edwin's presentation is seeded exactly once, at room creation: an
-  authored frame around a deterministic render of the ALREADY-FILED card
-  (scores from arithmetic, prose edwin wrote at scoring time). no new
-  model call, no invented numbers - the same discipline as the deer's
-  authored lines.
+- edwin's presentation is seeded exactly once per card, and REPAIRED on
+  every open: an authored frame around a deterministic render of the
+  ALREADY-FILED card (scores from arithmetic, prose edwin wrote at
+  scoring time). no new model call, no invented numbers - the same
+  discipline as the deer's authored lines. a durable marker in the
+  event's metadata is the presented/not-presented state, so a retro that
+  first opened cardless (scoring failed, no scorer wired) or crashed
+  between creation and seeding presents the card on a LATER open - the
+  "arithmetic will catch up" note is a promise this module keeps.
 - the planning door seeds nothing. its context arrives through hydration
   (the retro summary + the card render); the first voice in a planning
   room is the person's.
@@ -29,6 +33,7 @@ api doors.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from src.database.database import get_db
@@ -39,13 +44,25 @@ from src.services.workspace import vocab
 
 logger = logging.getLogger(__name__)
 
-# edwin's authored frame around the rendered card. the render is the
-# ledger's; these two lines are the character's, fixed here so the voice
+# edwin's authored frames around the rendered card. the render is the
+# ledger's; these lines are the character's, fixed here so the voice
 # never drifts with a model. no question-ending (council voice rule).
+# the LATE frame is for a card presented on a repair pass - the room
+# already heard "the arithmetic will catch up", and now it has.
 _PRESENTATION_OPEN = "*opens the ledger* the record for '{title}', as filed."
+_PRESENTATION_LATE = ("*returns with the ledger* the card for '{title}', "
+                      "now written - as promised.")
 _PRESENTATION_CLOSE = ("the numbers are arithmetic from the ledger; the "
                        "prose is mine. i'm most interested in what the "
                        "record doesn't show.")
+
+# durable presentation state, carried in the seeded event's metadata: the
+# repair pass looks for the presentation marker, so a crash between room
+# creation and seeding - or a card that files after a cardless first open -
+# still ends with exactly one presented card. the pending note carries its
+# own marker and never counts as a presentation.
+_PRESENTED = "scorecard_presentation"
+_PENDING_NOTE = "scorecard_pending"
 
 
 class CycleRooms:
@@ -56,6 +73,10 @@ class CycleRooms:
     def __init__(self, scorer=None, room_store: Optional[RoomStore] = None):
         self.scorer = scorer
         self.rooms = room_store or get_room_store()
+        # serializes the presented-check + seed pair within this process
+        # (the single-writer deployment); the metadata marker is the
+        # durable state it checks
+        self._present_lock = threading.Lock()
 
     # --- the read model -------------------------------------------------------
 
@@ -78,9 +99,12 @@ class CycleRooms:
     # --- the doors --------------------------------------------------------------
 
     async def open_retro(self, user_uuid: str) -> Optional[dict]:
-        """get-or-create the retro room for the latest sealed cycle,
-        scoring on demand when the card isn't filed yet. returns
-        {room, cycle, created} or None when no sealed cycle exists."""
+        """get-or-create-or-reopen the retro room for the latest sealed
+        cycle, scoring on demand when the card isn't filed yet, and
+        repairing the presentation on EVERY open - a room that first
+        opened cardless (or crashed before seeding) presents the card the
+        moment one exists. returns {room, cycle, created} or None when no
+        sealed cycle exists."""
         brief = self._latest_sealed(user_uuid)
         if brief is None:
             return None
@@ -100,9 +124,8 @@ class CycleRooms:
 
         room, created = self.rooms.open_cycle_room(
             user_uuid, "cycle_retro", subject_id)
-        if created:
-            self._seed_presentation(user_uuid, room["room_uuid"],
-                                    brief, assessment)
+        self._ensure_presented(user_uuid, room["room_uuid"],
+                               brief, assessment)
         return {"room": _public(room), "cycle": brief, "created": created}
 
     async def open_planning(self, user_uuid: str) -> Optional[dict]:
@@ -144,26 +167,58 @@ class CycleRooms:
                               if row.closed_at else None),
             }
 
-    def _seed_presentation(self, user_uuid: str, room_uuid: str,
-                           brief: dict, assessment: Optional[dict]) -> None:
-        """edwin's one seeded message: the filed card, framed. runs only on
-        room creation (the unique subject index makes creation happen once,
-        so the presentation can't double). a retro that opened cardless
-        (scorer absent or the cycle reopened mid-flight) gets an honest
-        note instead of silence."""
+    def _ensure_presented(self, user_uuid: str, room_uuid: str,
+                          brief: dict, assessment: Optional[dict]) -> None:
+        """edwin's presentation, made durable and repairable. the seeded
+        event carries a metadata marker; every open checks the marker and
+        seeds whatever is missing:
+
+        - card filed, never presented -> present it (with the first-visit
+          frame on a quiet room, the 'now written - as promised' frame
+          when the room already heard the pending note)
+        - no card, no note yet -> the honest pending note, once
+        - already presented -> nothing (walking back in reseeds nothing)
+
+        the markers are the state, not the created flag - so a crash
+        between room creation and seeding, or a card that only files after
+        a cardless first open, still converges on exactly one note and
+        exactly one presented card."""
         title = brief.get("title") or brief["public_id"]
-        if assessment is not None:
-            body = cycle_scorer.render_assessment(assessment)
-            content = "\n\n".join([
-                _PRESENTATION_OPEN.format(title=title),
-                body,
-                _PRESENTATION_CLOSE,
-            ])
-        else:
-            content = (f"*taps the ledger* the card for '{title}' isn't "
-                       "written yet, i'm afraid. the record of the "
-                       "conversation still counts - we can look back "
-                       "properly, and the arithmetic will catch up.")
+        with self._present_lock:
+            with get_db() as db:
+                rows = db.query(ConversationEvent).filter(
+                    ConversationEvent.stream_id == room_uuid,
+                    ConversationEvent.author == cycle_scorer.SCORER_ID,
+                    ConversationEvent.kind == "message",
+                ).all()
+                notes = {(r.event_metadata or {}).get("note_type")
+                         for r in rows}
+            if assessment is not None:
+                if _PRESENTED in notes:
+                    return
+                frame = (_PRESENTATION_LATE if _PENDING_NOTE in notes
+                         else _PRESENTATION_OPEN)
+                content = "\n\n".join([
+                    frame.format(title=title),
+                    cycle_scorer.render_assessment(assessment),
+                    _PRESENTATION_CLOSE,
+                ])
+                self._speak(user_uuid, room_uuid, content, _PRESENTED)
+                logger.info("edwin presented %s in retro room %s",
+                            brief["public_id"], room_uuid)
+                return
+            if _PENDING_NOTE not in notes:
+                self._speak(
+                    user_uuid, room_uuid,
+                    f"*taps the ledger* the card for '{title}' isn't "
+                    "written yet, i'm afraid. the record of the "
+                    "conversation still counts - we can look back "
+                    "properly, and the arithmetic will catch up.",
+                    _PENDING_NOTE)
+
+    @staticmethod
+    def _speak(user_uuid: str, room_uuid: str, content: str,
+               note_type: str) -> None:
         with get_db() as db:
             db.add(ConversationEvent(
                 user_uuid=user_uuid,
@@ -174,10 +229,9 @@ class CycleRooms:
                 kind="message",
                 content=content,
                 message_type="conversation",
+                event_metadata={"note_type": note_type},
             ))
             db.commit()
-        logger.info("edwin presented %s in retro room %s",
-                    brief["public_id"], room_uuid)
 
 
 def _public(room: Optional[dict]) -> Optional[dict]:

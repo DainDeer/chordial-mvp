@@ -170,9 +170,12 @@ class ChatService:
                 if room_override:
                     room = await asyncio.to_thread(
                         get_room_store().get_by_uuid, room_override)
+                    # OPEN, not merely not-closed: a 'closing' room's digest
+                    # is already compressing - a turn slipping in now would
+                    # be missing from the summary the next room hydrates
                     if (room is None
                             or room["user_uuid"] != user_uuid
-                            or room["status"] == "closed"):
+                            or room["status"] != "open"):
                         return CLOSED_ROOM_REPLY
                     stream_id = room_override
                 else:

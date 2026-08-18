@@ -7,6 +7,13 @@ the invariants under test:
   opening one cycle room closes the user's other open cycle rooms - that
   close is what writes the summary planning hydrates. daily rooms are
   untouched by any of it.
+- walking back into a settled cycle room REOPENS it (never a locked door
+  with a composer painted on), and the reopened conversation's new
+  exchanges recompress into the summary on the next close. the settle
+  runs after the open commits, so a two-open race repairs instead of
+  persisting.
+- a room in 'closing' refuses turns at both boundaries: mid-digest is
+  not open.
 - THE RETRO IS A SUBPOENA: opening it scores the cycle on demand, waiving
   only the grace period - never the completeness requirement. the card
   records it sealed by the retro.
@@ -180,6 +187,78 @@ def test_walking_back_into_your_open_room_closes_nothing(env):
     assert store.get_by_uuid(retro["room_uuid"])["status"] == "open"
 
 
+def test_walking_back_into_a_settled_room_reopens_it(env):
+    # planning -> retro -> planning: the pair is one conversation
+    # revisited, never a locked door with a composer painted on
+    store = RoomStore()
+    planning, _ = store.open_cycle_room(U1, "cycle_planning", "c1")
+    store.open_cycle_room(U1, "cycle_retro", "c1")
+    assert store.get_by_uuid(planning["room_uuid"])["status"] == "closed"
+    again, created = store.open_cycle_room(U1, "cycle_planning", "c1")
+    assert created is False
+    assert again["room_uuid"] == planning["room_uuid"]
+    assert again["status"] == "open"
+    # and the retro settled closed in turn
+    retro = store.cycle_rooms_for(U1, "c1")["cycle_retro"]
+    assert retro["status"] == "closed"
+
+
+def test_a_reopened_conversation_reaches_the_summary(env):
+    # the exchange added after a reopen must recompress into the summary
+    # planning hydrates - a stale first digest would drop it
+    store = RoomStore()
+    retro, _ = store.open_cycle_room(U1, "cycle_retro", "c1")
+    store.open_cycle_room(U1, "cycle_planning", "c1")     # retro closes, empty
+    assert "0 user messages" in store.summary_of(U1, "cycle_retro", "c1")
+    store.open_cycle_room(U1, "cycle_retro", "c1")        # reopen
+    with db_mod.SessionLocal() as s:
+        s.add(ConversationEvent(
+            user_uuid=U1, stream_id=retro["room_uuid"], platform="app",
+            author_type="user", author="user", kind="message",
+            content="one more thing about tuesday"))
+        s.commit()
+    store.open_cycle_room(U1, "cycle_planning", "c1")     # retro closes again
+    assert "1 user messages" in store.summary_of(U1, "cycle_retro", "c1")
+
+
+def test_the_settle_repairs_a_two_open_race(env):
+    # sol reproduced two devices opening different doors concurrently and
+    # both rooms ending open. the settle now runs AFTER the open commits,
+    # so whichever open lands later closes the other - and any two-open
+    # state that ever exists repairs on the next walk-in
+    store = RoomStore()
+    retro, _ = store.open_cycle_room(U1, "cycle_retro", "c1")
+    planning, _ = store.open_cycle_room(U1, "cycle_planning", "c1")
+    from src.database.models import Room
+    with db_mod.SessionLocal() as s:                  # force the bad state
+        s.query(Room).filter(Room.room_uuid == retro["room_uuid"]).update(
+            {"status": "open", "closed_at": None})
+        s.commit()
+    mine, _ = store.open_cycle_room(U1, "cycle_retro", "c1")
+    assert store.get_by_uuid(mine["room_uuid"])["status"] == "open"
+    assert store.get_by_uuid(planning["room_uuid"])["status"] == "closed"
+    open_rooms = [r for r in store.cycle_rooms_for(U1, "c1").values()
+                  if r and r["status"] == "open"]
+    assert len(open_rooms) == 1
+
+
+def test_a_late_line_in_a_closed_retro_reaches_planning(env):
+    # a turn that raced the close (or landed while closing) folds into the
+    # summary before planning hydration reads it - open_cycle_room runs
+    # the stale-summary sweep first
+    store = RoomStore()
+    retro, _ = store.open_cycle_room(U1, "cycle_retro", "c1")
+    store.open_cycle_room(U1, "cycle_planning", "c1")     # retro closes
+    with db_mod.SessionLocal() as s:
+        s.add(ConversationEvent(
+            user_uuid=U1, stream_id=retro["room_uuid"], platform="app",
+            author_type="user", author="user", kind="message",
+            content="wait, one more thing"))
+        s.commit()
+    store.open_cycle_room(U1, "cycle_planning", "c1")
+    assert "1 user messages" in store.summary_of(U1, "cycle_retro", "c1")
+
+
 def test_daily_rooms_are_untouched_by_the_cycle_lifecycle(env):
     store = RoomStore()
     daily = store.current_room(U1, TODAY)
@@ -271,6 +350,41 @@ def test_a_cardless_retro_says_so_instead_of_pretending(env):
     assert assessment_for(U1, f"c{result['cycle']['id']}") is None
 
 
+def test_the_presentation_catches_up_when_the_card_files_late(env):
+    # scoring failed at first open (no scorer wired). a later open with a
+    # working scorer must present the eventual card - the "arithmetic will
+    # catch up" note is a promise, and the metadata marker is the durable
+    # state that keeps it
+    _committed_cycle(env)
+    result = _run(CycleRooms(scorer=None).open_retro(U1))
+    room_uuid = result["room"]["id"]
+    assert len(_messages(room_uuid)) == 1               # the pending note
+
+    repaired = _run(CycleRooms(scorer=_scorer()).open_retro(U1))
+    assert repaired["room"]["id"] == room_uuid
+    rows = _messages(room_uuid)
+    assert len(rows) == 2
+    assert "now written - as promised" in rows[1].content
+    assert "execution 0.75" in rows[1].content
+
+    _run(CycleRooms(scorer=_scorer()).open_retro(U1))   # idempotent
+    assert len(_messages(room_uuid)) == 2
+
+
+def test_a_crash_between_creation_and_seeding_repairs_on_open(env):
+    # the room exists but nothing was ever seeded (the process died between
+    # the two writes). the next open finds no marker and presents.
+    cyc = _committed_cycle(env)
+    RoomStore().open_cycle_room(U1, "cycle_retro", f"c{cyc['id']}")
+    doors = CycleRooms(scorer=_scorer())
+    result = _run(doors.open_retro(U1))
+    assert result["created"] is False
+    rows = _messages(result["room"]["id"])
+    assert len(rows) == 1
+    assert "execution 0.75" in rows[0].content
+    assert "opens the ledger" in rows[0].content        # first-visit frame
+
+
 def test_completeness_is_never_waived_at_the_door(env):
     # an active cycle - however overdue - has no seal, so there is no door
     _ended_cycle(status="active", ended_days_ago=5)
@@ -337,6 +451,27 @@ def test_a_daily_room_never_hydrates_a_retro_summary(env):
     ctx = ChordialContext(user_manager=None)
     ambient = ctx._compose_ambient(U1, stream_id=daily["room_uuid"])
     assert ambient is None or "retrospective" not in ambient
+
+
+def test_a_cardless_retro_briefing_never_claims_a_card(env):
+    # the briefing must match the transcript: when no card filed, the
+    # model is told there is NO scorecard - not that edwin presented one
+    _committed_cycle(env)
+    retro = _run(CycleRooms(scorer=None).open_retro(U1))
+    ctx = ChordialContext(user_manager=None)
+    ambient = ctx._compose_ambient(U1, stream_id=retro["room"]["id"])
+    assert "NO scorecard has been filed" in ambient
+    assert "edwin presented" not in ambient
+    assert "on the table" not in ambient
+
+
+def test_a_cardless_planning_briefing_never_claims_a_card(env):
+    _committed_cycle(env)
+    planning = _run(CycleRooms(scorer=None).open_planning(U1))
+    ctx = ChordialContext(user_manager=None)
+    ambient = ctx._compose_ambient(U1, stream_id=planning["room"]["id"])
+    assert "NO scorecard has been filed" in ambient
+    assert "as filed" not in ambient
 
 
 # --- the director ------------------------------------------------------------
@@ -463,6 +598,25 @@ def test_a_turn_bound_to_someone_elses_room_refuses(env):
     assert orch.stimuli == []
 
 
+def test_a_room_mid_close_refuses_turns(env):
+    # 'closing' means the digest is already compressing: a turn slipping
+    # in now would be missing from the summary the next room hydrates
+    from src.database.models import Room
+    orch = CapturingOrchestrator()
+    svc = ChatService(orchestrator=orch)
+    user_uuid = _run(_known_user())
+    retro, _ = RoomStore().open_cycle_room(user_uuid, "cycle_retro", "c1")
+    with db_mod.SessionLocal() as s:
+        s.query(Room).filter(Room.room_uuid == retro["room_uuid"]).update(
+            {"status": "closing"})
+        s.commit()
+
+    reply = _run(svc.process_message(_bound_message(retro["room_uuid"])))
+
+    assert reply == CLOSED_ROOM_REPLY
+    assert orch.stimuli == []
+
+
 # --- the api doors -----------------------------------------------------------
 
 
@@ -535,10 +689,17 @@ def test_the_retro_endpoint_404s_with_nothing_to_look_back_on(env):
 
 
 def test_sends_into_foreign_or_closed_rooms_refuse(env):
+    from src.database.models import Room
     store = RoomStore()
     mine, _ = store.open_cycle_room(U1, "cycle_retro", "c1")
     store.close_room(mine["id"])
     theirs, _ = store.open_cycle_room(U2, "cycle_retro", "c1")
+    mid_close, _ = store.open_cycle_room(U1, "cycle_planning", "c1")
+    with db_mod.SessionLocal() as s:
+        s.query(Room).filter(
+            Room.room_uuid == mid_close["room_uuid"]).update(
+            {"status": "closing"})
+        s.commit()
     token = _device_token()
 
     async def flow(client):
@@ -548,6 +709,10 @@ def test_sends_into_foreign_or_closed_rooms_refuse(env):
             f"/api/v1/rooms/{mine['room_uuid']}/messages",
             headers=headers, json=body)
         assert closed.status == 409
+        closing = await client.post(
+            f"/api/v1/rooms/{mid_close['room_uuid']}/messages",
+            headers=headers, json=body)
+        assert closing.status == 409         # mid-digest is not open
         foreign = await client.post(
             f"/api/v1/rooms/{theirs['room_uuid']}/messages",
             headers=headers, json=body)

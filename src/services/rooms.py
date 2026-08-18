@@ -19,12 +19,15 @@ backfilled with, so history, resolution, and archives all line up for free.
 
 cycle rooms (phase 6b) are the undated members of the family: a
 'cycle_retro' and a 'cycle_planning' room per sealed cycle, anchored by
-(subject_type='cycle', subject_id='cy12') instead of a date. their
+(subject_type='cycle', subject_id='c12') instead of a date. their
 lifecycle trigger is each other - opening any cycle room closes the
 user's other open cycle rooms (one cycle conversation at a time), and
 that close is what writes the retro summary the planning room hydrates.
-a cycle room nobody follows up on simply stays open; nothing downstream
-needs its summary until something does follow.
+walking back into a settled cycle room REOPENS it (the pair is one
+conversation revisited, never a locked door with a composer painted on);
+the summary recompresses on the next close. a cycle room nobody follows
+up on simply stays open; nothing downstream needs its summary until
+something does follow.
 """
 from __future__ import annotations
 
@@ -101,17 +104,30 @@ class RoomStore:
 
     def open_cycle_room(self, user_uuid: str, room_type: str,
                         subject_id: str) -> tuple[dict, bool]:
-        """get-or-create the cycle room for one sealed cycle (phase 6b).
-        `room_type` is 'cycle_retro' or 'cycle_planning'; `subject_id` is
-        the cycle's public id ('cy12'). returns (room, created).
+        """get-or-create-or-REOPEN the cycle room for one sealed cycle
+        (phase 6b). `room_type` is 'cycle_retro' or 'cycle_planning';
+        `subject_id` is the cycle's public id ('c12'). returns
+        (room, created) - created=True only on first creation (it keys
+        edwin's presentation seed, which repair-on-open backstops anyway).
 
-        creating a cycle room first closes the user's other OPEN cycle
-        rooms - one cycle conversation at a time, and that close is what
-        compresses a retro into the summary its planning room hydrates.
-        re-opening an existing room (created=False) closes nothing: walking
-        back into a room you already hold is not a lifecycle event."""
+        walking back into a settled cycle room REOPENS it: the retro and
+        the planning room are one conversation revisited, not an archive -
+        a reopened room's new exchanges recompress into its summary on the
+        next close (close_room refreshes an existing summary). opening or
+        reopening then SETTLES the family: every other open cycle room of
+        the user closes, AFTER this room's own open committed - so the
+        concurrent-doors race (two devices opening retro and planning at
+        once) converges to at most one open room instead of two. in the
+        pathological same-instant case each side may settle the other
+        closed (zero open) - never two open, and the next walk-in reopens.
+
+        stale summaries are folded first, so a late line that landed in a
+        closed cycle room reaches the summary before planning hydrates."""
         if room_type not in CYCLE_ROOM_TYPES:
             raise ValueError(f"not a cycle room type: {room_type!r}")
+        self._refresh_stale_summaries(user_uuid)
+        created = False
+        room = None
         with get_db() as db:
             row = db.query(Room).filter(
                 Room.user_uuid == user_uuid,
@@ -119,34 +135,44 @@ class RoomStore:
                 Room.subject_id == subject_id,
             ).first()
             if row is not None:
-                return self._detach(row), False
+                if row.status != "open":
+                    row.status = "open"
+                    row.closed_at = None
+                    db.commit()
+                    logger.info("%s room reopened for %s (%s)",
+                                room_type, user_uuid, subject_id)
+                room = self._detach(row)
+        if room is None:
+            try:
+                with get_db() as db:
+                    row = Room(user_uuid=user_uuid, room_type=room_type,
+                               subject_type="cycle", subject_id=subject_id)
+                    db.add(row)
+                    db.commit()
+                    logger.info("%s room created for %s (%s)",
+                                room_type, user_uuid, subject_id)
+                    room = self._detach(row)
+                    created = True
+            except IntegrityError:
+                # the get-or-create race: someone else won; read their room
+                with get_db() as db:
+                    row = db.query(Room).filter(
+                        Room.user_uuid == user_uuid,
+                        Room.room_type == room_type,
+                        Room.subject_id == subject_id,
+                    ).one()
+                    room = self._detach(row)
+        self._close_open_cycle_rooms(user_uuid, except_id=room["id"])
+        return room, created
 
-        self._close_open_cycle_rooms(user_uuid)
-        try:
-            with get_db() as db:
-                row = Room(user_uuid=user_uuid, room_type=room_type,
-                           subject_type="cycle", subject_id=subject_id)
-                db.add(row)
-                db.commit()
-                logger.info("%s room created for %s (%s)",
-                            room_type, user_uuid, subject_id)
-                return self._detach(row), True
-        except IntegrityError:
-            # the get-or-create race: someone else won; read their room
-            with get_db() as db:
-                row = db.query(Room).filter(
-                    Room.user_uuid == user_uuid,
-                    Room.room_type == room_type,
-                    Room.subject_id == subject_id,
-                ).one()
-                return self._detach(row), False
-
-    def _close_open_cycle_rooms(self, user_uuid: str) -> None:
+    def _close_open_cycle_rooms(self, user_uuid: str,
+                                except_id: Optional[int] = None) -> None:
         with get_db() as db:
             stale = [r.id for r in db.query(Room).filter(
                 Room.user_uuid == user_uuid,
                 Room.room_type.in_(CYCLE_ROOM_TYPES),
                 Room.status != "closed",
+                Room.id != (except_id if except_id is not None else -1),
             ).all()]
         for room_id in stale:
             self.close_room(room_id)
@@ -174,7 +200,17 @@ class RoomStore:
                                        user_uuid=room.user_uuid,
                                        content=digest))
             except IntegrityError:
-                pass  # a previous close already wrote it; keep theirs
+                # a summary already exists: an earlier close's, or - for a
+                # REOPENED cycle room closing again - one that predates the
+                # revisit. refresh it with the digest just computed; it is
+                # deterministic over the same rows, so between racing
+                # closers last-write-wins is harmless, and a reopened
+                # conversation's new exchanges reach the summary that
+                # planning hydrates
+                db.query(RoomSummary).filter(
+                    RoomSummary.room_id == room.id,
+                ).update({"content": digest, "created_at": utc_now()},
+                         synchronize_session=False)
             room.status = "closed"
             room.closed_at = utc_now()
             db.commit()

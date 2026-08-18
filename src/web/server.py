@@ -889,7 +889,10 @@ class WebService:
             room = get_room_store().get_by_uuid(room_uuid)
             if room is None or room["user_uuid"] != identity.user_uuid:
                 return "missing"
-            if room["status"] == "closed":
+            # OPEN, not merely not-closed: 'closing' means the digest is
+            # already compressing, and a turn slipping in now would miss
+            # the summary the next room hydrates
+            if room["status"] != "open":
                 return "closed"
             return None
         problem = await asyncio.to_thread(check)

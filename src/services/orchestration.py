@@ -422,10 +422,21 @@ class ChordialContext:
             title = self._cycle_title(user_uuid, subject_id) or subject_id
 
         if room["room_type"] == "cycle_retro":
+            # the briefing must match the transcript: only claim a card is
+            # on the table when one actually filed (a cardless retro exists
+            # when scoring failed or no scorer is wired)
+            if assessment is not None:
+                return (f"this room is the retrospective for cycle "
+                        f"'{title}' ({subject_id}) - a look back at what "
+                        f"actually happened, with the filed scorecard on "
+                        f"the table. edwin presented the card when the "
+                        f"room opened.")
             return (f"this room is the retrospective for cycle "
                     f"'{title}' ({subject_id}) - a look back at what "
-                    f"actually happened, with the filed scorecard on the "
-                    f"table. edwin presented the card when the room opened.")
+                    f"actually happened. NO scorecard has been filed for "
+                    f"this cycle yet - never invent, estimate, or imply "
+                    f"one; speak from the conversation and the ledger "
+                    f"tools only.")
 
         parts = [f"this room is the planning that follows cycle "
                  f"'{title}' ({subject_id}) - the next cycle gets shaped "
@@ -437,6 +448,9 @@ class ChordialContext:
         if assessment is not None:
             parts.append("the scorecard, as filed:\n"
                          + cycle_scorer.render_assessment(assessment))
+        else:
+            parts.append("NO scorecard has been filed for this cycle - "
+                         "never invent or estimate one.")
         digest = (self.agenda_service.get_digest(user_uuid)
                   if include_agenda and self.agenda_service else None)
         if digest:

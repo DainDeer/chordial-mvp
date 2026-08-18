@@ -218,20 +218,39 @@ constraint on `room_summaries.room_id`).
   Planning anchors to the cycle *just lived* on purpose: the
   conversation shapes the next cycle, but its evidence base — the retro
   summary, the filed scorecard — belongs to the last one.
-- **Opening a cycle room closes the user's other open cycle rooms.**
-  One cycle conversation at a time, and that close is what compresses a
-  retro into the summary the planning room hydrates. Daily rooms are
-  untouched; a cycle room nobody follows up on simply stays open.
+- **Opening a cycle room closes the user's other open cycle rooms** —
+  and walking back into a settled one REOPENS it. One cycle
+  conversation at a time; the pair is one conversation revisited, never
+  a locked door with a composer painted on. The close compresses a
+  retro into the summary the planning room hydrates, and a reopened
+  room's new exchanges recompress into that summary on the next close
+  (`close_room` refreshes an existing summary with the fresh digest).
+  The settle runs AFTER the open commits, so two devices opening
+  different doors concurrently converge to at most one open room; in
+  the pathological same-instant case both may settle each other closed
+  (never two open), self-healing on the next walk-in. Both send
+  boundaries require status `open` — a room mid-`closing` refuses
+  turns, because its digest is already compressing; a turn that raced
+  the close anyway is folded in by the stale-summary sweep, which
+  `open_cycle_room` runs before planning hydration reads anything.
+  Daily rooms are untouched; a cycle room nobody follows up on simply
+  stays open.
 - **The retro is a subpoena.** Opening it scores the cycle on demand
   when no card is filed, waiving only the grace watermark — the person
   showing up for the review has called the evidence question — never
   the completeness requirement (no seal, no retro). The card records
   which way it sealed (`detail.cycle.scored_by: sweep | retro`).
-- **Edwin presents the filed card, exactly once, at room creation**: an
-  authored frame around a deterministic render of the assessment he
-  already wrote at scoring time. No new model call, no invented number —
-  the deer's authored-lines discipline applied to the owl. A retro that
-  opens cardless gets an honest "not written yet" note.
+- **Edwin presents the filed card, exactly once per card, repaired on
+  every open**: an authored frame around a deterministic render of the
+  assessment he already wrote at scoring time. No new model call, no
+  invented number — the deer's authored-lines discipline applied to the
+  owl. A metadata marker on the seeded event is the durable
+  presented/not-presented state: a retro that first opened cardless
+  (scoring failed, no scorer wired) gets an honest "not written yet"
+  note, and a later open presents the eventual card ("now written — as
+  promised"); a crash between room creation and seeding repairs the
+  same way. The briefing matches the transcript in both states — a
+  cardless room is briefed as cardless, never as presented.
 - **Hydration is family-shaped.** `latest_summary` filters to
   daily/legacy so a retro closing last never becomes "previously:" in
   tomorrow's daily room; planning hydrates *its* cycle's retro summary
