@@ -90,17 +90,22 @@ def aware_utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def checkin_rhythm() -> TaggedRhythm:
+def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
     """the regular check-in beat. anchored on the last MESSAGE from anyone:
     a fresh user reply restarts the clock, and so does our own outreach -
     with the backoff gate stretching the effective wait on ignored chains
     exactly as before. no anchor at all = first contact, due now (still
-    behind quiet hours: an imported user's first hello never lands at 3am)."""
+    behind quiet hours: an imported user's first hello never lands at 3am).
+
+    `every_minutes` is the taper's seam (phase 6c): steady scorecards
+    stretch this beat per user - earned quiet - while the backoff gate
+    keeps stretching ignored chains on top of whatever beat is set."""
     return TaggedRhythm(
         rhythm_id=CHECKIN_RHYTHM,
         kind="scheduled_tick",
         rhythm=Interval(
-            every=timedelta(minutes=Config.DM_INTERVAL_MINUTES),
+            every=timedelta(
+                minutes=every_minutes or Config.DM_INTERVAL_MINUTES),
             anchor=ANY_MESSAGE,
         ),
     )
@@ -121,14 +126,30 @@ class ChordialPulseSource:
     """who is ambient this cycle. re-read every cycle, so joining/leaving
     needs no registration dance - exactly the old per-cycle user scan."""
 
-    def __init__(self, user_manager: UserManager, curator=None):
+    def __init__(self, user_manager: UserManager, curator=None,
+                 checkin_minutes=None):
         self.user_manager = user_manager
         self.curator = curator
+        # the taper's read: user_uuid -> stretched interval in minutes
+        # (sync, run off-loop). None = the flat base beat for everyone.
+        self.checkin_minutes = checkin_minutes
+
+    async def _beat(self, user_uuid: str) -> Optional[int]:
+        """the taper must never stall the pulse: any failure here is the
+        flat base beat, exactly what the pre-taper source handed out."""
+        if self.checkin_minutes is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.checkin_minutes, user_uuid)
+        except Exception:
+            logger.exception("taper read failed for %s; base beat", user_uuid)
+            return None
 
     async def streams(self):
         rhythms: dict[str, list[TaggedRhythm]] = {}
         for user_uuid in await self.user_manager.get_scheduled_users():
-            rhythms.setdefault(user_uuid, []).append(checkin_rhythm())
+            rhythms.setdefault(user_uuid, []).append(
+                checkin_rhythm(await self._beat(user_uuid)))
         if self.curator is not None:
             try:
                 for user_uuid in await self.curator.find_users_needing_curation():
@@ -264,7 +285,11 @@ def build_pulse(
     the don't-nag gate stack (onboarding -> quiet hours -> backoff, first
     denial wins). the pulse store is in-memory: horizons rebuild from the
     event log after a restart, so nothing user-visible is lost (a durable
-    PulseStore is a later phase, alongside the other SQL adapters)."""
+    PulseStore is a later phase, alongside the other SQL adapters).
+
+    the check-in beat is per-user since 6c: the taper stretches it as
+    scorecard history earns quiet (src/services/taper.py)."""
+    from src.services import taper
     gates = [
         ScheduledOnly(OnboardingGate(user_manager)),
         ScheduledOnly(QuietHoursGate(
@@ -281,7 +306,8 @@ def build_pulse(
         )),
     ]
     return Pulse(
-        source=ChordialPulseSource(user_manager, curator=curator),
+        source=ChordialPulseSource(user_manager, curator=curator,
+                                   checkin_minutes=taper.checkin_minutes),
         factory=ChordialStimulusFactory(user_manager, platforms=platforms, now=now),
         engine=orchestrator,
         store=store or InMemoryPulseStore(),

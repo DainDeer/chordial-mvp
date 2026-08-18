@@ -177,6 +177,22 @@ export interface CycleDoorsPayload {
   chat_available: boolean;
 }
 
+/** GET /api/v1/arc - the taper's read model (phase 6c): the arc posture
+ * and the check-in beat the scorecard history has earned */
+export interface ArcState {
+  posture: "settling in" | "building" | "rhythm" | "keeping watch";
+  streak: number;
+  multiplier: number;
+  base_minutes: number;
+  checkin_minutes: number;
+  judged: {
+    subject_id: string | null;
+    title: string;
+    verdict: "steady" | "wobbly" | "unjudged";
+    reasons: string[];
+  }[];
+}
+
 /** POST /api/v1/rooms/cycle/{retro|planning} */
 export interface OpenCycleRoomResult {
   room: CycleRoomInfo;

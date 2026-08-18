@@ -394,6 +394,43 @@ This is the covenant answer to "does it create dependency?": the product's
 success metric is how quiet it gets to be — while remaining the barrier between
 the user and the slide back.
 
+### the taper, as built (phase 6c)
+
+The arc's arithmetic spine, in `src/services/taper.py`. The scorecard ledger
+(§8) is the evidence base; the taper reads the recent cycle cards — ordered by
+the cycle's **seal**, never by when a backfilled card happened to be filed —
+and answers one question: how much quiet has this person earned?
+
+- **The steady test.** A cycle is steady when its card's consistency and
+  execution both clear their floors (`TAPER_STEADY_CONSISTENCY`,
+  `TAPER_STEADY_EXECUTION`, default 0.6 — v1 guesses, flagged tunable) and
+  sustainability, when computable, isn't poor (`TAPER_MIN_SUSTAINABILITY`,
+  0.5): unsustainable bursts never earn quiet, even with perfect numbers.
+- **The inverted backoff.** Each consecutive steady cycle (newest-first)
+  doubles the check-in interval; the streak breaks at the first cycle that
+  isn't steady. A wobbly cycle resets to full coaching. An **unjudged** cycle
+  (scores that couldn't be computed — nothing planned, never frozen) earns
+  nothing either: absence of evidence never extends the quiet.
+- **Never to zero.** The multiplier caps (`TAPER_MAX_MULTIPLIER`, 8×) — the
+  sentinel keeps its post. The postures map onto the arithmetic: no cards yet
+  = *settling in*, streak zero = *building*, earned quiet = *rhythm*, at the
+  cap = *keeping watch*.
+- **Applied at the pulse.** `ChordialPulseSource` computes the beat per user
+  each cycle (guarded: a taper failure is the flat base beat, never a stalled
+  check-in). It composes with the backoff gate, not replaces it: the taper
+  sets the beat from earned evidence, the backoff still stretches ignored
+  chains on top. First contact stays due-now; quiet hours still hold.
+- **Visible, honestly.** `GET /api/v1/arc` reads the same numbers the pulse
+  uses (posture, streak, per-cycle verdicts with reasons); the app states it
+  as one quiet line. The council's ambient briefing gains a posture line
+  **only once quiet is earned** — an untapered user's prompt bytes are exactly
+  the pre-6c bytes.
+
+Deferred, not faked: per-routine nudges lost "one by one" (exactly one
+proactive rhythm exists today — the check-in beat — so the taper stretches
+that one) and Edwin's retire-this-tracking recommendations; both arrive when
+there are more nudges to lose.
+
 ---
 
 ## 8. edwin & the scorecard
@@ -700,7 +737,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
-| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built); 6c taper remains |
+| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
 | **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
 
 ### explicitly deferred

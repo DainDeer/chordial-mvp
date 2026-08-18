@@ -165,6 +165,7 @@ class WebService:
         app.router.add_get("/api/v1/today", self._api_v1_today)
         app.router.add_get("/api/v1/cycle", self._api_v1_cycle)
         app.router.add_get("/api/v1/scorecards", self._api_v1_scorecards)
+        app.router.add_get("/api/v1/arc", self._api_v1_arc)
         app.router.add_get("/api/v1/council", self._api_council)
         # tasks are canonical HERE - the deer window lists/adds/finishes
         # them through these; the sidecar only ever owns the clock
@@ -651,6 +652,18 @@ class WebService:
             recent_assessments, identity.user_uuid,
             subject_type=request.query.get("subject_type"), limit=limit)
         return web.json_response({"assessments": rows})
+
+    async def _api_v1_arc(self, request: web.Request) -> web.Response:
+        """the taper's read model (ROOMS_DESIGN section 7): the arc
+        posture, the steady streak, and the check-in beat it has earned.
+        pure arithmetic over the filed scorecards - same numbers the
+        pulse uses."""
+        identity = await self._device(request)
+        from config import Config
+        from src.services import taper
+        state = await asyncio.to_thread(
+            taper.state_for, identity.user_uuid, Config.DM_INTERVAL_MINUTES)
+        return web.json_response({"arc": state})
 
     async def _api_v1_task_create(self, request: web.Request) -> web.Response:
         """a quick-add from the deer window: title only, scheduled today.

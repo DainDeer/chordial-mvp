@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  fetchArc,
   fetchArchive,
   fetchCycleDoors,
   fetchToday,
@@ -9,6 +10,7 @@ import {
 } from "../api/client";
 import type {
   ArchivedRoom,
+  ArcState,
   CycleDoorsPayload,
   TaskRow,
   TodayPayload,
@@ -30,6 +32,15 @@ function greeting(now: Date): string {
   if (h < 12) return "good morning";
   if (h < 18) return "good afternoon";
   return "good evening";
+}
+
+/** minutes as a human beat — mirrors the server's render ("2 hours") */
+function formatBeat(minutes: number): string {
+  if (minutes > 0 && minutes % 60 === 0) {
+    const h = minutes / 60;
+    return h === 1 ? "1 hour" : `${h} hours`;
+  }
+  return `${minutes} minutes`;
 }
 
 function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
@@ -65,6 +76,7 @@ export default function Home({
   const [today, setToday] = useState<TodayPayload | null>(null);
   const [pastDays, setPastDays] = useState<ArchivedRoom[]>([]);
   const [doors, setDoors] = useState<CycleDoorsPayload | null>(null);
+  const [arc, setArc] = useState<ArcState | null>(null);
   const [opening, setOpening] = useState<"retro" | "planning" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -96,6 +108,14 @@ export default function Home({
       .catch((e) => {
         if (!cancelled && isAuthError(e)) onAuthLost();
         // no doors is a fine state, not a banner
+      });
+    fetchArc(token)
+      .then((body) => {
+        if (!cancelled) setArc(body.arc);
+      })
+      .catch((e) => {
+        if (!cancelled && isAuthError(e)) onAuthLost();
+        // the arc line is a grace note, never a banner
       });
     return () => {
       cancelled = true;
@@ -176,6 +196,15 @@ export default function Home({
         pomMinutes={today?.pom_minutes ?? 25}
         onAuthLost={onAuthLost}
       />
+
+      {arc && arc.multiplier > 1 && (
+        <p className="arc-line">
+          the house is {arc.posture === "keeping watch" ? "" : "in "}
+          {arc.posture} — {arc.streak} steady{" "}
+          {arc.streak === 1 ? "cycle has" : "cycles have"} stretched
+          check-ins to about every {formatBeat(arc.checkin_minutes)} 🌿
+        </p>
+      )}
 
       {doors?.doors && (
         <section className="cycle-doors">

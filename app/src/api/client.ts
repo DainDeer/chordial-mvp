@@ -3,6 +3,7 @@
 // which the app treats as "return to the link screen".
 
 import type {
+  ArcState,
   ArchivedRoom,
   CouncilMember,
   CycleDoorsPayload,
@@ -116,6 +117,11 @@ export function openCyclePlanning(
   token: string,
 ): Promise<OpenCycleRoomResult> {
   return request("/api/v1/rooms/cycle/planning", { method: "POST", token });
+}
+
+/** the arc's posture: how much quiet the scorecard history has earned */
+export function fetchArc(token: string): Promise<{ arc: ArcState }> {
+  return request("/api/v1/arc", { token });
 }
 
 /** quick-add from the deer window: title only, lands scheduled-today */

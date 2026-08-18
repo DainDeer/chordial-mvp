@@ -398,6 +398,13 @@ class ChordialContext:
                       if include_agenda and self.agenda_service else None)
             if digest:
                 parts.append(digest)
+            # the arc's posture (phase 6c): present only once quiet has
+            # been EARNED - untapered users (every fresh user) get their
+            # exact pre-6c prompt bytes
+            from src.services import taper
+            posture = taper.ambient_line_for(user_uuid)
+            if posture:
+                parts.append(posture)
             return "\n\n".join(parts) if parts else None
         except Exception:
             logger.exception("failed composing ambient context; continuing without")
