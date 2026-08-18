@@ -375,32 +375,51 @@ The scorer splits judgment from arithmetic, hard — the cadenza lesson
   five components from the projection (baseline + scope changes + progress)
   and the session ledger: execution = landed share of the plan (overshoot
   clamps at 1.0 — estimation judges the gap, execution never punishes it
-  twice); prioritization = priority-weighted share of *attributed* time
-  (unprioritized and unattributed time is neither credit nor blame);
-  estimation = mean per-commitment accuracy against the **frozen** baseline
-  (released commitments stay in — releasing moved scope honestly, but the
-  estimate was still an estimate); consistency = active days over elapsed
-  days (the denominator stops at "today", so an early-closed cycle isn't
-  blamed for unlived days); sustainability = the daylight share of focus
-  time (late-night window 23:00–06:00). A component that can't be honestly
+  twice); prioritization = weighted share of *attributed* time against the
+  priorities **as frozen** in the baseline (a priority edited after the
+  freeze can't recast earlier blocks; time on commitments with no frozen
+  priority — unprioritized at the freeze, or added afterward — is neither
+  credit nor blame); estimation = mean per-commitment accuracy against the
+  **frozen** baseline (released commitments stay in — releasing moved
+  scope honestly, but the estimate was still an estimate); consistency =
+  active days over elapsed days (the denominator stops at the **seal
+  date**, so an early-closed cycle — or one scored after downtime — is
+  judged on the days it lived); sustainability = the daylight share of
+  focus time (late-night window 23:00–06:00). Sessions are judged as
+  user-local **intervals** `[ended_at − seconds, ended_at]`, split at
+  midnight for day counting, split at the late-window edges, and clipped
+  to the cycle window — a block ending at 06:00 ran through the late
+  hours, and a run straddling the boundary contributes exactly its inside
+  part. Events without a device wall clock fall back to their apply stamp
+  (same coalesce as the projection). A component that can't be honestly
   computed is `score: null` with the reason in its evidence. There is
   deliberately no overall grade.
 - **The model writes only prose.** The shared utility model (curator /
   reconciler / decider pattern, `role="scorer"`, billed to edwin) produces
   a short summary and at most six findings; every finding must cite
   evidence refs (`cm:<uuid>`, `sc:<id>`, `ob:<id>`, `component:<name>`)
-  that the validator resolves against the rows actually gathered. A claim
-  pointing at nothing is structurally unrecordable — dropped and counted.
-  A dead, absent, or garbling model degrades to a deterministic summary;
-  the scorecard files either way.
-- **Exactly once, and the ledger starts now.** One assessment per
-  (user, `cycle`, public id), enforced by a unique index + the focus_flow
-  insert discipline; scoring is a moment — late-arriving events never
-  silently rewrite a filed card. Discovery (a supervised watcher beside
-  the pulse, `CYCLE_SCORER_SWEEP_SECONDS`) finds cycles whose window is
-  over — status complete, or active with the end date behind the user's
-  local today — inside `CYCLE_SCORER_BACKFILL_DAYS`; pre-phase-6 history
-  is left unscored rather than judged on evidence never collected.
+  that the validator resolves against the rows actually gathered — and
+  the observation pool itself admits only rows whose **user-local date**
+  falls inside the cycle, so an adjacent cycle's noticing never becomes
+  citable. A claim pointing at nothing is structurally unrecordable —
+  dropped and counted. A dead, absent, or garbling model degrades to a
+  deterministic summary; the scorecard files either way.
+- **The close is the seal — exactly once, and the ledger starts now.**
+  Only cycles the person **closed** (status complete) are scored, and only
+  after `CYCLE_SCORER_GRACE_HOURS` (default 24) have passed since the
+  close — the grace is the evidence watermark, giving an offline device's
+  outbox its window to drain before the card seals. An active cycle,
+  however overdue, is never scored: it can still be extended and still be
+  worked. One assessment per (user, `cycle`, public id), enforced by a
+  unique index + the focus_flow insert discipline; the gather pass
+  re-checks the seal, so a cycle reopened between discovery and filing
+  gets no card. Accepted residuals, stated rather than hidden: a device
+  offline longer than the grace loses representation in the card, and a
+  cycle reopened *after* its card filed keeps the card it earned as
+  closed. Discovery (a supervised watcher beside the pulse,
+  `CYCLE_SCORER_SWEEP_SECONDS`) looks back `CYCLE_SCORER_BACKFILL_DAYS`;
+  pre-phase-6 history is left unscored rather than judged on evidence
+  never collected.
 - **Reading is chat, writing is not.** `list_assessments` (edwin's card,
   plus the chair via the full registry) and `GET /api/v1/scorecards` are
   read-only; the scorer is the sole writer. Edwin *presenting* a scorecard

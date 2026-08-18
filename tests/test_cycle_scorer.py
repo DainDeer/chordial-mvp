@@ -1,16 +1,21 @@
 """edwin's cycle scorer (phase 6, ROOMS_DESIGN.md section 8).
 
 the honesty contract under test:
-- discovery finds cycles whose window is OVER (complete, or active with
-  the end date behind the user's local today) and never the still-running,
-  the never-run, or the ancient (backfill window)
+- THE CLOSE IS THE SEAL: only cycles the person closed (status complete)
+  are scored, and only after the grace period gave offline devices their
+  window to sync - never the still-running (however overdue), the
+  never-run, or the ancient (backfill window). a cycle reopened between
+  discovery and filing gets no card.
 - the scores in a filed assessment are byte-identical to the deterministic
-  scorecard - the model's only contribution is prose
+  scorecard - the model's only contribution is prose - and prioritization
+  judges the FROZEN priorities, so a late edit cannot recast the card
 - a finding citing a ref that doesn't resolve against the gathered rows is
-  structurally unrecordable: dropped and counted, never filed
+  structurally unrecordable: dropped and counted, never filed - and an
+  adjacent cycle's observation never enters the citable pool
 - a dead or absent model still files the scorecard, with the deterministic
   summary - arithmetic never waits on prose
 - exactly one assessment per (user, 'cycle', public_id), whatever races
+- a session without a device wall clock still counts (applied_at fallback)
 - the model's spend lands on edwin's ledger (role='scorer')
 - GET /api/v1/scorecards is device-authed and tenant-scoped
 """
@@ -32,7 +37,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import src.database.database as db_mod
-from src.database.models import Assessment, Base, DeviceEvent, User
+from src.database.models import (Assessment, Base, Cycle, DeviceEvent,
+                                 Observation, User)
 from src.services.cycle_scorer import (CycleScorer, recent_assessments)
 from src.services.cycles import CycleStore
 from src.services.workspace import get_store
@@ -98,16 +104,27 @@ def _scorer(provider=None, recorder=None):
                        clock=lambda: NOW)
 
 
-def _ended_cycle(user=U1, *, days=14, ended_days_ago=1, status="complete",
-                 **kw):
-    """a cycle whose window closed `ended_days_ago` days before NOW."""
+def _ended_cycle(user=U1, *, days=14, ended_days_ago=2, status="complete",
+                 closed_hours_ago=None, **kw):
+    """a cycle whose window ended `ended_days_ago` days before NOW.
+    complete cycles get closed_at stamped - at the window's end by
+    default, or `closed_hours_ago` before NOW for the grace tests."""
     end = TODAY - timedelta(days=ended_days_ago)
     start = end - timedelta(days=days - 1)
     defaults = dict(status=status, start_date=start.isoformat(),
                     end_date=end.isoformat(), theme="steady",
                     capacity_blocks=12)
     defaults.update(kw)
-    return get_store().create_cycle(user, "cycle t", **defaults)
+    cyc = get_store().create_cycle(user, "cycle t", **defaults)
+    if status == "complete":
+        closed = (NOW - timedelta(hours=closed_hours_ago)
+                  if closed_hours_ago is not None
+                  else NOW - timedelta(days=ended_days_ago))
+        with db_mod.SessionLocal() as s:
+            s.query(Cycle).filter(Cycle.id == cyc["id"]).update(
+                {"closed_at": closed})
+            s.commit()
+    return cyc
 
 
 _SEQ = iter(range(1, 10_000))
@@ -123,13 +140,18 @@ def _device_pk(env, user=U1):
     return pk, token
 
 
-def _bank(env, user, device_pk, *, task_id, seconds, when):
+def _bank(env, user, device_pk, *, task_id, seconds, when,
+          on_device_clock=True):
+    """a landed session.ended event; on_device_clock=False models a device
+    that omitted its wall clock (the apply stamp is all there is)."""
+    stamps = (dict(occurred_at=when) if on_device_clock
+              else dict(occurred_at=None, applied_at=when))
     with env() as s:
         s.add(DeviceEvent(
             event_uuid=str(uuid_mod.uuid4()), device_id=device_pk,
             user_uuid=user, seq=next(_SEQ), event_type="session.ended",
             payload={"task_id": task_id, "seconds": seconds},
-            occurred_at=when, rejected=False))
+            rejected=False, **stamps))
         s.commit()
 
 
@@ -155,28 +177,32 @@ def _committed_cycle(env, cs=None, **cycle_kw):
 # --- discovery ---------------------------------------------------------------
 
 
-def test_discovery_finds_ended_unassessed_cycles_only(env):
-    ended = _ended_cycle()                                    # complete -> due
+def test_discovery_finds_sealed_unassessed_cycles_only(env):
+    sealed = _ended_cycle()                                   # closed -> due
     _ended_cycle(status="active", ended_days_ago=-5)          # still running
     _ended_cycle(status="upcoming")                           # never ran
     due = _scorer().cycles_due()
-    assert due == [(U1, ended["id"])]
+    assert due == [(U1, sealed["id"])]
 
 
-def test_an_active_cycle_past_its_end_date_is_due(env):
-    lingering = _ended_cycle(status="active", ended_days_ago=2)
-    due = _scorer().cycles_due()
-    assert due == [(U1, lingering["id"])]
+def test_an_overdue_active_cycle_waits_for_the_close(env):
+    # however overdue, an active cycle can still be extended and still be
+    # worked - the person's close is the seal, never the calendar alone
+    _ended_cycle(status="active", ended_days_ago=5)
+    assert _scorer().cycles_due() == []
+
+
+def test_a_fresh_close_sits_in_grace_until_evidence_can_land(env):
+    # closed an hour ago: an offline device's outbox still gets its day
+    fresh = _ended_cycle(closed_hours_ago=1)
+    assert _scorer().cycles_due() == []
+    aged = _ended_cycle(closed_hours_ago=25)
+    assert _scorer().cycles_due() == [(U1, aged["id"])]
+    assert fresh["id"] != aged["id"]
 
 
 def test_the_backfill_window_leaves_ancient_cycles_unscored(env):
-    from src.database.models import Cycle
-    ancient = _ended_cycle(ended_days_ago=40)
-    with db_mod.SessionLocal() as s:      # closed back when it actually ended
-        s.query(Cycle).filter(Cycle.id == ancient["id"]).update(
-            {"closed_at": NOW - timedelta(days=40)})
-        s.commit()
-    _ended_cycle(status="active", ended_days_ago=40)   # no closed_at at all
+    _ended_cycle(ended_days_ago=40)     # closed_at stamped 40 days back
     assert _scorer().cycles_due() == []
 
 
@@ -186,6 +212,19 @@ def test_an_assessed_cycle_is_never_rediscovered(env):
     (user, cycle_id), = scorer.cycles_due()
     assert _run(scorer.score_cycle(user, cycle_id)) is not None
     assert scorer.cycles_due() == []
+
+
+def test_a_cycle_reopened_before_filing_gets_no_card(env):
+    # the toctou seam: due at discovery, reopened before scoring runs
+    cyc = _committed_cycle(env)
+    scorer = _scorer()
+    assert scorer.cycles_due() == [(U1, cyc["id"])]
+    with db_mod.SessionLocal() as s:
+        s.query(Cycle).filter(Cycle.id == cyc["id"]).update(
+            {"status": "active"})
+        s.commit()
+    assert _run(scorer.score_cycle(U1, cyc["id"])) is None
+    assert recent_assessments(U1) == []
 
 
 # --- scoring + filing --------------------------------------------------------
@@ -295,6 +334,75 @@ def test_the_scorers_spend_lands_on_edwins_ledger(env):
     assert call["role"] == "scorer"
     assert call["helper_id"] == "edwin"
     assert call["user_uuid"] == U1
+
+
+def test_a_priority_flip_after_the_freeze_cannot_recast_the_card(env):
+    # frozen low, all the work banked, flipped to high before scoring:
+    # prioritization judges the frozen priority (weight 0.4), not the edit
+    cs = CycleStore()
+    ws = get_store()
+    cyc = _ended_cycle()
+    task = ws.create_task(U1, "bounce stems")
+    row = cs.create_commitment(U1, cyc["id"], "mix track one",
+                               priority="low", blocks_planned=4,
+                               task_id=task["id"])
+    cs.freeze_baseline(U1, cyc["id"])
+    device_pk, _ = _device_pk(env)
+    start = date.fromisoformat(cyc["start_date"])
+    _bank(env, U1, device_pk, task_id=task["id"], seconds=1500,
+          when=datetime.combine(start, datetime.min.time())
+          + timedelta(hours=14))
+    cs.update_commitment(U1, row["id"], priority="high")
+    filed = _run(_scorer().score_cycle(U1, cyc["id"]))
+    comp = filed["detail"]["components"]["prioritization"]
+    assert comp["score"] == 0.4
+
+
+def test_a_session_without_a_device_clock_still_counts(env):
+    cyc = _committed_cycle(env)          # 3 clocked sessions, 4500s
+    device_pk, _ = _device_pk(env)
+    start = date.fromisoformat(cyc["start_date"])
+    _bank(env, U1, device_pk, task_id=None, seconds=1500,
+          when=datetime.combine(start + timedelta(days=3),
+                                datetime.min.time()) + timedelta(hours=14),
+          on_device_clock=False)
+    filed = _run(_scorer().score_cycle(U1, cyc["id"]))
+    numbers = filed["detail"]["numbers"]
+    assert numbers["session_seconds"] == 6000
+    assert numbers["active_days"] == 4
+
+
+def test_an_adjacent_cycles_observation_is_not_citable(env):
+    cs = CycleStore()
+    cyc = _committed_cycle(env, cs=cs)
+    start = date.fromisoformat(cyc["start_date"])
+    noon = timedelta(hours=12)
+    with db_mod.SessionLocal() as s:
+        outside = Observation(
+            user_uuid=U1, helper_id="pip", kind="context",
+            content="the previous cycle's crunch",
+            created_at=datetime.combine(start - timedelta(days=1),
+                                        datetime.min.time()) + noon)
+        inside = Observation(
+            user_uuid=U1, helper_id="pip", kind="progress",
+            content="steady blocks all week",
+            created_at=datetime.combine(start + timedelta(days=1),
+                                        datetime.min.time()) + noon)
+        s.add_all([outside, inside])
+        s.commit()
+        outside_id, inside_id = outside.id, inside.id
+    reply = json.dumps({
+        "summary": "one citation resolves, one does not.",
+        "findings": [
+            {"claim": "in-window evidence", "evidence": [f"ob:{inside_id}"]},
+            {"claim": "borrowed evidence", "evidence": [f"ob:{outside_id}"]},
+        ],
+    })
+    filed = _run(_scorer(provider=FakeProvider(text=reply))
+                 .score_cycle(U1, cyc["id"]))
+    detail = filed["detail"]
+    assert [f["claim"] for f in detail["findings"]] == ["in-window evidence"]
+    assert detail["dropped_findings"] == 1
 
 
 def test_a_sweep_scores_everything_due(env):

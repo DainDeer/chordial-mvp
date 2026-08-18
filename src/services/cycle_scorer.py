@@ -13,9 +13,19 @@ the honesty contract, in build order:
   resolves against the rows actually gathered. a claim pointing at nothing
   is structurally unrecordable: dropped and counted, never filed. (the
   cadenza scorer lesson: enforce the shape in the handler, not the prompt.)
+- THE CLOSE IS THE SEAL. only cycles the person has CLOSED (status
+  complete) are scored, and only after CYCLE_SCORER_GRACE_HOURS have
+  passed since the close - the grace is the evidence watermark, giving an
+  offline device's outbox time to drain before the card seals. an active
+  cycle, however overdue, is never scored: it can still be extended, still
+  be worked, and a card filed against it would be a judgment of a moving
+  target. a device offline longer than the grace loses representation in
+  the card - that residual is accepted and documented, not hidden.
 - EXACTLY ONCE. one assessment per (user, 'cycle', public_id), guarded by
   a unique index plus an IntegrityError-swallowing insert - the focus_flow
-  discipline. scoring is a moment: late-arriving events do not reopen it.
+  discipline. scoring is a moment: late-arriving events do not reopen it,
+  and _gather re-checks the seal so a cycle reopened between discovery and
+  filing simply isn't filed.
 - THE LEDGER STARTS NOW. discovery only looks back
   CYCLE_SCORER_BACKFILL_DAYS - ancient completed cycles (whose data
   predates the projection) are left unscored rather than judged on
@@ -35,6 +45,7 @@ from datetime import datetime, time as dtime, timedelta
 from typing import Optional
 
 from dainframe.providers.types import AIRequest, ChatTurn, SystemBlock
+from sqlalchemy import func
 
 from config import Config
 from src.database.database import get_db
@@ -128,29 +139,21 @@ class CycleScorer:
     # --- discovery ----------------------------------------------------------
 
     def cycles_due(self) -> list[tuple[str, int]]:
-        """cycles whose window is over and whose scorecard is not filed:
-        status complete, or active with an end date behind the user's local
-        today. 'upcoming' never ran, so it is never scored. the backfill
-        window keeps history's pre-phase-6 cycles out of the ledger."""
+        """sealed cycles whose scorecard is not filed. sealed = the person
+        closed it (status complete) AND the grace period has passed since
+        the close, so offline devices had their window to sync. active and
+        upcoming cycles are never due - one can still change, the other
+        never ran. the backfill window keeps history's pre-phase-6 cycles
+        out of the ledger."""
         now = self.clock()
         horizon = now - timedelta(days=Config.CYCLE_SCORER_BACKFILL_DAYS)
         due: list[tuple[str, int]] = []
         with get_db() as db:
-            rows = db.query(Cycle, User).join(
-                User, User.uuid == Cycle.user_uuid,
-            ).filter(
-                Cycle.status.in_(("active", "complete")),
-            ).all()
-            for cycle, user in rows:
-                tz_name = user.timezone or "UTC"
-                local_today = to_user_timezone(now, tz_name).date()
-                if cycle.status == "active":
-                    if cycle.end_date is None or cycle.end_date >= local_today:
-                        continue
-                ended = cycle.closed_at
-                if ended is None and cycle.end_date is not None:
-                    ended = datetime.combine(cycle.end_date, dtime.min)
-                if ended is None or ended < horizon:
+            rows = db.query(Cycle).filter(
+                Cycle.status == "complete").all()
+            for cycle in rows:
+                seal = self._seal(cycle, now)
+                if seal is None or seal < horizon:
                     continue
                 subject_id = vocab.public_id("cycle", cycle.id)
                 exists = db.query(Assessment.id).filter(
@@ -161,6 +164,26 @@ class CycleScorer:
                 if exists is None:
                     due.append((cycle.user_uuid, cycle.id))
         return due
+
+    @staticmethod
+    def _seal(cycle, now: datetime) -> Optional[datetime]:
+        """when the cycle sealed, or None while it hasn't (not complete, or
+        still inside the grace period). closed_at is the seal moment; a
+        complete cycle missing one (hand-edited rows) falls back to the end
+        of its end date - approximated in utc, an error the grace period
+        dwarfs."""
+        if cycle.status != "complete":
+            return None
+        sealed_at = cycle.closed_at
+        if sealed_at is None and cycle.end_date is not None:
+            sealed_at = datetime.combine(
+                cycle.end_date + timedelta(days=1), dtime.min)
+        if sealed_at is None:
+            return None
+        if now - sealed_at < timedelta(
+                hours=Config.CYCLE_SCORER_GRACE_HOURS):
+            return None
+        return sealed_at
 
     # --- scoring ------------------------------------------------------------
 
@@ -192,14 +215,25 @@ class CycleScorer:
 
     def _gather(self, user_uuid: str, cycle_id: int) -> Optional[dict]:
         """everything scoring needs, in one sync pass: the projection, the
-        session slices on the user's local calendar, the observation pool,
-        and the evidence-ref universe findings may cite."""
+        session spans on the user's local calendar, the observation pool,
+        and the evidence-ref universe findings may cite. the seal is
+        RE-CHECKED here - a cycle reopened between discovery and filing
+        must not get a card - and its moment becomes the scoring 'today',
+        so consistency's denominator stops at the close, not at whenever
+        the sweep happened to run."""
         projection = self.cycles.projection(user_uuid, cycle_id)
         if projection is None:
             return None
         subject_id = projection["cycle"]["public_id"]
         now = self.clock()
         with get_db() as db:
+            cycle_row = db.query(Cycle).filter(
+                Cycle.id == cycle_id,
+                Cycle.user_uuid == user_uuid).first()
+            sealed_at = (self._seal(cycle_row, now)
+                         if cycle_row is not None else None)
+            if sealed_at is None:
+                return None
             exists = db.query(Assessment.id).filter(
                 Assessment.user_uuid == user_uuid,
                 Assessment.subject_type == SUBJECT_TYPE,
@@ -209,13 +243,24 @@ class CycleScorer:
                 return None
             user = db.query(User).filter(User.uuid == user_uuid).first()
             tz_name = (user.timezone if user and user.timezone else "UTC")
-            sessions = self._session_slices(db, user_uuid,
-                                            projection["cycle"], tz_name)
+            sessions = self._session_spans(db, user_uuid,
+                                           projection["cycle"], tz_name)
             observations = self._observation_pool(db, user_uuid,
-                                                  projection["cycle"])
-        today = to_user_timezone(now, tz_name).date()
+                                                  projection["cycle"],
+                                                  tz_name)
+        # the frozen priorities ride on the commitments so prioritization
+        # judges the plan as frozen, never a priority edited after the fact
+        baseline = self.cycles.baseline(user_uuid, cycle_id)
+        frozen_priority = {}
+        if baseline is not None:
+            frozen_priority = {
+                c["uuid"]: c.get("priority")
+                for c in baseline["snapshot"].get("commitments", [])}
+        for c in projection["commitments"]:
+            c["baseline_priority"] = frozen_priority.get(c["uuid"])
+        score_today = to_user_timezone(min(sealed_at, now), tz_name).date()
         card = scorecard.compute_scorecard(
-            projection, sessions, today=today,
+            projection, sessions, today=score_today,
             block_seconds=Config.POM_MINUTES * 60)
         allowed = {f"component:{name}" for name in scorecard.COMPONENTS}
         allowed.update(f"cm:{c['uuid']}" for c in projection["commitments"])
@@ -234,32 +279,37 @@ class CycleScorer:
                 "title": cycle["title"], "theme": cycle["theme"],
                 "status": cycle["status"], "start_date": cycle["start_date"],
                 "end_date": cycle["end_date"],
+                "sealed_at": sealed_at.isoformat(),
                 "frozen": projection["frozen"],
             },
         }
 
     @staticmethod
-    def _session_slices(db, user_uuid: str, cycle: dict,
-                        tz_name: str) -> list[scorecard.SessionSlice]:
-        """session.ended events inside the cycle window, converted to the
-        user's local calendar - the same coarse-sql / exact-local-check
-        convention as the projection's progress pass."""
+    def _session_spans(db, user_uuid: str, cycle: dict,
+                       tz_name: str) -> list[scorecard.SessionSpan]:
+        """session.ended events near the cycle window as user-local
+        intervals [ended_at - seconds, ended_at] - the scorecard clips and
+        splits them, so a run straddling midnight or the cycle boundary
+        contributes exactly its inside part. coarse sql bounds on
+        coalesce(occurred_at, applied_at): an event without a device wall
+        clock still happened (the projection counts it), so this ledger
+        must see it too."""
         start = scorecard._parse_date(cycle.get("start_date"))
         end = scorecard._parse_date(cycle.get("end_date"))
+        when_col = func.coalesce(DeviceEvent.occurred_at,
+                                 DeviceEvent.applied_at)
         q = db.query(DeviceEvent).filter(
             DeviceEvent.user_uuid == user_uuid,
             DeviceEvent.rejected.is_(False),
             DeviceEvent.event_type == "session.ended",
         )
         if start is not None:
-            q = q.filter(DeviceEvent.occurred_at
-                         >= datetime.combine(start - timedelta(days=1),
-                                             dtime.min))
+            q = q.filter(when_col >= datetime.combine(
+                start - timedelta(days=1), dtime.min))
         if end is not None:
-            q = q.filter(DeviceEvent.occurred_at
-                         < datetime.combine(end + timedelta(days=2),
-                                            dtime.min))
-        slices = []
+            q = q.filter(when_col < datetime.combine(
+                end + timedelta(days=2), dtime.min))
+        spans = []
         for ev in q.all():
             payload = ev.payload or {}
             secs = payload.get("seconds")
@@ -269,21 +319,19 @@ class CycleScorer:
             when = ev.occurred_at or ev.applied_at
             if when is None:
                 continue
-            local = to_user_timezone(when, tz_name)
-            if start is not None and local.date() < start:
-                continue
-            if end is not None and local.date() > end:
-                continue
-            slices.append(scorecard.SessionSlice(
-                seconds=int(secs), local_date=local.date(),
-                local_hour=local.hour))
-        return slices
+            spans.append(scorecard.SessionSpan(
+                start=to_user_timezone(when - timedelta(seconds=int(secs)),
+                                       tz_name),
+                end=to_user_timezone(when, tz_name)))
+        return spans
 
     @staticmethod
-    def _observation_pool(db, user_uuid: str, cycle: dict) -> list[dict]:
+    def _observation_pool(db, user_uuid: str, cycle: dict,
+                          tz_name: str) -> list[dict]:
         """the council's noticings from the cycle window - the qualitative
-        half of the evidence. coarse utc bounds (a day of slack each side)
-        are fine here: an observation is context, not arithmetic."""
+        half of the evidence. coarse utc bounds keep the scan cheap; the
+        exact user-local date check is what admits a row, so an adjacent
+        cycle's observation can never become citable evidence here."""
         start = scorecard._parse_date(cycle.get("start_date"))
         end = scorecard._parse_date(cycle.get("end_date"))
         q = db.query(Observation).filter(
@@ -298,8 +346,17 @@ class CycleScorer:
                                             dtime.min))
         rows = q.order_by(Observation.id.desc()).limit(
             _OBSERVATION_LIMIT).all()
-        return [{"id": r.id, "helper_id": r.helper_id, "kind": r.kind,
-                 "content": r.content} for r in rows]
+        pool = []
+        for r in rows:
+            if r.created_at is not None:
+                local_date = to_user_timezone(r.created_at, tz_name).date()
+                if start is not None and local_date < start:
+                    continue
+                if end is not None and local_date > end:
+                    continue
+            pool.append({"id": r.id, "helper_id": r.helper_id,
+                         "kind": r.kind, "content": r.content})
+        return pool
 
     # --- the prose pass -----------------------------------------------------
 
@@ -349,7 +406,9 @@ class CycleScorer:
         lines.append("commitments:")
         for c in proj["commitments"]:
             lines.append(
-                f"- cm:{c['uuid']} {c['title']!r} priority={c['priority']} "
+                f"- cm:{c['uuid']} {c['title']!r} "
+                f"frozen_priority={c.get('baseline_priority')} "
+                f"priority_now={c['priority']} "
                 f"status={c['status']} planned={c['blocks_planned']} "
                 f"baseline={c['baseline_blocks']} done={c['blocks_done']}")
         if proj["scope_changes"]:
