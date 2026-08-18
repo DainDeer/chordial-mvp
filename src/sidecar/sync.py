@@ -8,6 +8,14 @@ only jobs are honesty and persistence: never invent an ACK, never stop
 retrying on transient failure, and never crash the sidecar over a network
 that will come back.
 
+the pump also carries the rewind tether's return channel (REWIND_DESIGN
+section 8): while - and only while - an offer is open, each cycle also asks
+GET /api/v1/sync/decisions and hands any phone answers to the server's
+apply hook. the sidecar is authoritative: a decision it can't honor (the
+question already answered, the run banked) is simply skipped, and the
+offer's terminal event closes the loop server-side. both hooks are injected
+by the sidecar server; without them the pump is exactly what it was.
+
 a 401 means the device was revoked or the token is stale - the pump parks
 (kv 'sync_error') until a new handshake replaces the credentials.
 """
@@ -15,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import aiohttp
 
@@ -34,6 +42,11 @@ class OutboxPump:
         self.store = store
         self._session = session
         self._owns_session = session is None
+        # the tether hooks, injected by the sidecar server: poll only while
+        # a question is open, and apply through the same machinery as a
+        # card tap. None + None = no decision channel (tests, bare pumps).
+        self.offer_gate: Optional[Callable[[], bool]] = None
+        self.decision_apply: Optional[Callable[[dict], Awaitable[bool]]] = None
 
     async def _client(self) -> aiohttp.ClientSession:
         if self._session is None:
@@ -127,6 +140,50 @@ class OutboxPump:
                            rejection.get("id"), rejection.get("error"))
         return body
 
+    async def pull_decisions(self) -> int:
+        """the tether's return channel, one poll: fetch pending phone
+        answers and hand each to the apply hook. gated hard on an open
+        offer - a sidecar with no question outstanding never even asks.
+        returns decisions applied; failures are logged and left for the
+        next cycle (the endpoint is idempotent)."""
+        if self.offer_gate is None or self.decision_apply is None:
+            return 0
+        if not self.offer_gate():
+            return 0
+        token = self.store.get("device_token")
+        server = self.store.get("server_url")
+        if not token or not server:
+            return 0
+        client = await self._client()
+        try:
+            resp = await client.get(
+                f"{server}/api/v1/sync/decisions",
+                headers={"Authorization": f"Bearer {token}"})
+            body = await resp.json(content_type=None)
+        except Exception as e:
+            logger.warning("decision poll failed (will retry): %s", e)
+            return 0
+        if resp.status == 401:
+            # revoked device: park, exactly like the push path - a revoked
+            # sidecar with an open offer and an empty outbox must not keep
+            # knocking every cycle
+            self.store.put("sync_error", "device token rejected (401)")
+            logger.warning("decision poll parked: device token rejected")
+            return 0
+        if resp.status != 200:
+            logger.warning("decision poll got %s: %s", resp.status, body)
+            return 0
+        applied = 0
+        for decision in body.get("decisions", []):
+            if not isinstance(decision, dict):
+                continue
+            try:
+                if await self.decision_apply(decision):
+                    applied += 1
+            except Exception:
+                logger.exception("applying tether decision failed")
+        return applied
+
     async def run(self) -> None:
         """the forever loop: push when there's work, breathe when there
         isn't, back off after failures. cancelled at shutdown."""
@@ -138,6 +195,7 @@ class OutboxPump:
                     continue
                 had_work = bool(self.store.pending(1))
                 result = await self.push_once()
+                await self.pull_decisions()
                 if had_work and result is None:
                     await asyncio.sleep(_ERROR_BACKOFF)
                 else:

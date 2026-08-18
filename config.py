@@ -264,6 +264,18 @@ class Config:
     SYNC_DAILY_EVENT_CAP = int(os.getenv("SYNC_DAILY_EVENT_CAP", "5000"))
     SYNC_MAX_BATCH = int(os.getenv("SYNC_MAX_BATCH", "500"))
 
+    # the rewind tether (docs/REWIND_DESIGN.md section 8): an unresolved
+    # offer earns one opted-in phone ping after AWAY_MINUTES; an offer older
+    # than STALE_HOURS never pings (yesterday's quiet is the chip's business,
+    # not a notification's). numbers live in the design doc's section 11 -
+    # change them there first.
+    REWIND_TETHER_AWAY_MINUTES = int(
+        os.getenv("REWIND_TETHER_AWAY_MINUTES", "25"))
+    REWIND_TETHER_STALE_HOURS = float(
+        os.getenv("REWIND_TETHER_STALE_HOURS", "6"))
+    REWIND_TETHER_SWEEP_SECONDS = float(
+        os.getenv("REWIND_TETHER_SWEEP_SECONDS", "60"))
+
     # browser origins allowed to call /api/v1 (the tauri webview's origins:
     # production shell + vite dev server). the api is bearer-token'd - no
     # cookies - so CORS here is about letting OUR app in, not csrf defense.

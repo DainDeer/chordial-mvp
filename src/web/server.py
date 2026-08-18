@@ -154,6 +154,7 @@ class WebService:
         app.router.add_post("/api/v1/devices/revoke", self._api_device_revoke)
         app.router.add_post("/api/v1/sync/events", self._api_sync_events)
         app.router.add_get("/api/v1/sync/cursor", self._api_sync_cursor)
+        app.router.add_get("/api/v1/sync/decisions", self._api_sync_decisions)
         app.router.add_get("/api/v1/today", self._api_v1_today)
         app.router.add_get("/api/v1/cycle", self._api_v1_cycle)
         app.router.add_get("/api/v1/council", self._api_council)
@@ -591,6 +592,17 @@ class WebService:
                     Device.id == identity.id).scalar() or 0
         return web.json_response(
             {"acked_seq": await asyncio.to_thread(read)})
+
+    async def _api_sync_decisions(self, request: web.Request) -> web.Response:
+        """the tether's return channel (REWIND_DESIGN section 8): decisions
+        answered on a phone, waiting for the sidecar to apply or refuse
+        them. read-only and idempotent - the sidecar is authoritative, and
+        the offer's terminal event is what clears a row from this list."""
+        identity = await self._device(request)
+        from src.services import rewind_tether
+        decisions = await asyncio.to_thread(
+            rewind_tether.pending_decisions, identity.user_uuid)
+        return web.json_response({"decisions": decisions})
 
     async def _api_v1_today(self, request: web.Request) -> web.Response:
         identity = await self._device(request)

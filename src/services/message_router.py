@@ -125,6 +125,40 @@ class MessageRouter:
             await self._user_manager.deactivate_platform_identity(platform, target_id)
             return False
 
+    async def deliver_choice_as(
+        self,
+        platform: str,
+        target_id: str,
+        message: str,
+        choices: list,
+        speaker: str,
+    ) -> bool:
+        """send a message with inline choices (the rewind tether's ping) as
+        `speaker`. same resolution and same deactivate-on-permanent-failure
+        contract as deliver_as; interfaces without an interactive surface
+        return False and the link stays active."""
+        interface = self._resolve(platform, speaker)
+        if interface is None:
+            logger.error(
+                "no interface registered for platform '%s' (speaker=%s)",
+                platform,
+                speaker,
+            )
+            return False
+        try:
+            return await interface.send_choice(target_id, message, choices,
+                                               speaker=speaker)
+        except UndeliverableError as e:
+            logger.warning(
+                "permanent delivery failure for %s:%s (speaker=%s) - %s; deactivating link",
+                platform,
+                target_id,
+                speaker,
+                e,
+            )
+            await self._user_manager.deactivate_platform_identity(platform, target_id)
+            return False
+
     async def deliver(self, platform: str, platform_user_id: str, message: str) -> bool:
         """send `message` to `platform_user_id` on `platform`, as the chair.
         the legacy 3-arg hook the scheduler and the orchestrator's

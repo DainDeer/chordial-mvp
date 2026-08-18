@@ -73,6 +73,11 @@ class SidecarService:
         self.ledger = ActivityLedger()
         self.offers = RewindOffers(store, self.ledger,
                                    clock=self.engine.clock)
+        # the tether's return channel rides the pump (REWIND_DESIGN
+        # section 8): poll only while a question is open, apply through
+        # the same machinery as a card tap. the sidecar stays authoritative.
+        self.pump.offer_gate = lambda: self.offers.payload() is not None
+        self.pump.decision_apply = self._apply_tether_decision
         # restart hydration: an open question on the live run WITHOUT a
         # recorded return means the drift episode is still mid-flight -
         # resume it so the check-in isn't re-asked. an offer that already
@@ -463,6 +468,56 @@ class SidecarService:
             "focus": self.engine.state(),
             "offer": self.offers.payload(),
         })
+
+    async def _apply_tether_decision(self, decision: dict) -> bool:
+        """one phone answer from the decision poll. the sidecar is
+        authoritative: anything it can't honor - the question already
+        answered at the desk (first answer wins), the run banked, a foreign
+        offer_uuid from another device - is skipped without ceremony; the
+        offer's terminal event closes the server's loop either way.
+
+        the transition half is presence-aware: 'remove & pause' pauses the
+        clock only while the quiet is still running (the away case the
+        tether exists for). if the person is back at the desk and working,
+        the answer resolves the question and the clock keeps going -
+        stopping live work because a phone tap arrived late would be the
+        correction becoming the interruption."""
+        offer_uuid = decision.get("offer_uuid")
+        action = decision.get("action") or decision.get("choice")
+        if not isinstance(offer_uuid, str) or action not in ("remove", "keep"):
+            return False
+        offer = self.store.get_offer(offer_uuid)
+        if offer is None or offer["status"] != "open":
+            return False               # stale or foreign: the desk won
+        run = self.store.run(offer["run_id"])
+        if run is None or run["ended_at"] is not None:
+            return False               # banked runs are beyond reach
+        still_quiet = (offer.get("returned_at") is None
+                       and not run.get("frozen_at"))
+        try:
+            self.offers.resolve(offer_uuid, action, surface="tether")
+        except OfferError as e:
+            logger.info("tether decision refused: %s", e)
+            return False
+        if action == "remove":
+            self.engine.rearm_after_excision(offer["run_id"])
+        if run.get("frozen_at"):
+            # a held block's question answered from the phone: banks at its
+            # freeze instant, wearing the transition it owed - same as the
+            # card path
+            summary = self.engine.close_frozen(offer["run_id"])
+            await self._announce(
+                "task_finished" if summary["reason"] == "finished"
+                else "focus_pause")
+        elif still_quiet:
+            active = self.store.active_run()
+            if active is not None and active["id"] == run["id"]:
+                self.engine.pause()    # resolved above, so this banks
+                await self._announce("focus_pause")
+        await self._broadcast({"type": "rewind_offer",
+                               "offer": self.offers.payload()})
+        await self._broadcast(self._world())
+        return True
 
     async def _ws(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30)

@@ -6,6 +6,7 @@ import logging
 
 from .base import BaseInterface, UndeliverableError
 from config import Config
+from src.services import rewind_tether
 from src.utils.string_utils import chunk_message
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,37 @@ class DiscordInterface(BaseInterface):
             # Ignore messages from the bot itself
             if message.author == self.bot.user:
                 return
-            
+
             # Handle DMs
             if isinstance(message.channel, discord.DMChannel):
                 await self.handle_incoming_message(message)
-            
+
             # Process commands
             await self.bot.process_commands(message)
+
+        @self.bot.event
+        async def on_interaction(interaction: discord.Interaction):
+            # the rewind tether's inline answers (REWIND_DESIGN section 8).
+            # handled raw (by custom_id prefix) rather than via a View so
+            # taps still land after a restart - a View object doesn't
+            # survive the process, the custom_id does.
+            data = interaction.data or {}
+            custom_id = data.get("custom_id") or ""
+            if not custom_id.startswith("rw:"):
+                return
+            ack = await asyncio.to_thread(
+                rewind_tether.record_decision_token,
+                "discord", str(interaction.user.id), custom_id)
+            try:
+                original = interaction.message.content \
+                    if interaction.message else ""
+                await interaction.response.edit_message(
+                    content=f"{original}\n\n{ack}".strip(), view=None)
+            except discord.HTTPException:
+                try:
+                    await interaction.response.send_message(ack)
+                except discord.HTTPException:
+                    logger.warning("could not acknowledge tether tap")
     
     async def start(self):
         """Start the Discord bot"""
@@ -101,6 +126,37 @@ class DiscordInterface(BaseInterface):
             logger.error(f"transient error sending discord message to {platform_user_id}: {e}")
             return False
     
+    async def send_choice(self, platform_user_id: str, content: str,
+                          choices: list, **kwargs) -> bool:
+        """one DM with component buttons (the rewind tether's ping). the
+        View carries only custom_ids - taps are handled raw in
+        on_interaction, so they survive restarts. failure mapping mirrors
+        send_message."""
+        try:
+            user = await self.bot.fetch_user(int(platform_user_id))
+            if not user:
+                raise UndeliverableError(f"discord user {platform_user_id} not found")
+            view = discord.ui.View(timeout=None)
+            for choice in choices:
+                view.add_item(discord.ui.Button(
+                    label=choice["label"][:80],
+                    custom_id=choice["data"],
+                    style=discord.ButtonStyle.secondary,
+                ))
+            await user.send(content, view=view)
+            return True
+        except discord.NotFound as e:
+            raise UndeliverableError(f"discord user {platform_user_id} not found") from e
+        except discord.Forbidden as e:
+            raise UndeliverableError(
+                f"discord user {platform_user_id} has DMs disabled/blocked"
+            ) from e
+        except ValueError as e:
+            raise UndeliverableError(f"invalid discord user id '{platform_user_id}'") from e
+        except Exception as e:
+            logger.error(f"transient error sending discord choice to {platform_user_id}: {e}")
+            return False
+
     async def handle_incoming_message(self, message: discord.Message):
         """Handle incoming Discord messages"""
         # Convert Discord message to a format the chat service understands

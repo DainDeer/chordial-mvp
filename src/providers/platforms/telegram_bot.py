@@ -29,11 +29,13 @@ import re
 from collections import OrderedDict
 from typing import Optional
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -42,6 +44,7 @@ from telegram.ext import (
 
 from .base import BaseInterface, UndeliverableError
 from config import Config
+from src.services import rewind_tether
 from src.services.platform_link_service import LinkResult
 from src.utils.string_utils import chunk_message
 
@@ -195,6 +198,12 @@ class TelegramInterface(BaseInterface):
                 filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
                 self._on_group_message,
             )
+        )
+        # the rewind tether's inline answers (REWIND_DESIGN section 8).
+        # registered on every helper bot: whichever bot carried the ping
+        # receives the tap.
+        self.app.add_handler(
+            CallbackQueryHandler(self._on_rewind_choice, pattern=r"^rw:")
         )
 
     # --- lifecycle -----------------------------------------------------------
@@ -529,6 +538,63 @@ class TelegramInterface(BaseInterface):
             # transient (network, 5xx, a RetryAfter retry that failed again...)
             logger.error(f"transient telegram error sending to {platform_user_id}: {e}")
             return False
+
+    async def send_choice(self, platform_user_id: str, content: str,
+                          choices: list, **kwargs) -> bool:
+        """one message with inline buttons (the rewind tether's ping). the
+        ping is short by construction - no chunking; the buttons must ride
+        the same message they answer. failure mapping mirrors send_message."""
+        try:
+            chat_id = int(platform_user_id)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(c["label"], callback_data=c["data"])]
+                for c in choices
+            ])
+            await self.app.bot.send_message(
+                chat_id=chat_id, text=content, reply_markup=keyboard)
+            return True
+        except Forbidden as e:
+            raise UndeliverableError(
+                f"telegram user {platform_user_id} blocked the bot"
+            ) from e
+        except BadRequest as e:
+            if "chat not found" in str(e).lower():
+                raise UndeliverableError(
+                    f"telegram chat {platform_user_id} not found (never started?)"
+                ) from e
+            logger.error(f"telegram bad request sending choice to {platform_user_id}: {e}")
+            return False
+        except ValueError as e:
+            raise UndeliverableError(
+                f"invalid telegram user id '{platform_user_id}'"
+            ) from e
+        except TelegramError as e:
+            logger.error(f"transient telegram error sending choice to {platform_user_id}: {e}")
+            return False
+
+    async def _on_rewind_choice(
+        self, update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """a tap on a tether ping's button. the decision lands server-side
+        (first answer wins, tenant-checked); the buttons are then replaced
+        with the ack so the question can't be tapped twice by accident.
+        the sidecar remains authoritative - this only records the answer."""
+        query = update.callback_query
+        if query is None or not query.data or update.effective_chat is None:
+            return
+        ack = await asyncio.to_thread(
+            rewind_tether.record_decision_token,
+            "telegram", str(update.effective_chat.id), query.data)
+        try:
+            await query.answer()
+        except TelegramError:
+            pass
+        try:
+            base_text = query.message.text if query.message \
+                and query.message.text else ""
+            await query.edit_message_text(f"{base_text}\n\n{ack}".strip())
+        except TelegramError as e:
+            logger.warning(f"could not edit tether ping after tap: {e}")
 
     async def _send_chunk(self, chat_id: int, chunk: str) -> None:
         """one sendMessage with a single honored retry on rate limiting."""

@@ -399,35 +399,73 @@ gentle feature into a conspicuous one). The gross-vs-credited texture rides
 `session.ended` into the data edwin eventually reads; if pip ever remarks on
 rewind patterns it's at retrospective cadence, never per-event.
 
-## 8. the tether fallback (second surface)
+## 8. the tether fallback (second surface) — slice C, as built
 
 The desktop card only fires on *return* — if you never come back to the
 desk, no card ever shows and the block runs unattended. That's exactly the
 case a phone ping covers.
 
-- **opt-in, separately** (sol's review): the tether surface is its own
-  consent — linking telegram does not by itself export candidate data
-- server-side, a watcher sees `rewind.offered`: if the offer is still
-  unresolved after the away threshold (**25 min**) and the user opted the
-  tether in, it requests the candidate impact-framings from the device path
-  and sends one ping with inline choices: *"your block's still running but
-  it's been quiet a while — remove 25m and pause, or keep it all?"*
-- the answer lands server-side as a **pending decision**
-  `{offer_uuid, choice, decided_at, source}`
+**The fold.** The server never queries event payloads on a timer. Instead,
+focus_flow's exactly-once processor folds the rewind event stream into one
+tracking row per offer (`rewind_decisions`): `rewind.offered` opens or
+re-arms the row (a re-emit means the span grew, so the away clock restarts),
+`rewind.applied`/`rewind.kept` close it, `rewind.undone` re-opens it fresh
+(new away clock, new single ping — undo happens at the desk, so the person
+is marked present), and `return.detected` stamps `returned_at` on the open
+rows of **its own device** — presence is device-scoped (sol's slice-C
+review): offer_uuids are device-local, and a return on the laptop says
+nothing about the desktop whose card still waits in an empty room. The row
+is a shadow, never the truth — the sidecar owns the offer.
+
+**The ping.** A watcher task (supervised beside the pulse; it has the
+router's outbound reach, which the web server deliberately doesn't) sweeps
+every 60s for rows that are: unresolved, undecided, past the away threshold
+(**25 min** since the latest offered), **not returned since** (a return
+means the card is showing — one gentle surface, no phone ping on top),
+**opted in**, outside the user's quiet hours, and not stale (older than
+**6 h** never pings — yesterday's quiet is the chip's business). `pinged_at`
+is claimed atomically *before* the send, and the claim **repeats every
+mutable eligibility predicate** (undecided, unclosed, un-re-armed, no
+return since the offered) so a resolution, answer, return, or re-arm
+landing between the eligibility read and the claim kills the ping rather
+than letting a stale one out (sol's slice-C review). Losing a ping to a
+crash is acceptable, sending two is not. A transient send failure un-claims
+for another sweep; a permanent one deactivates the link via the router.
+
+- **opt-in, separately** (sol's review): `"rewind_tether": true` in
+  schedule_preferences, set through conversation (the set_preference tool)
+  — linking a phone platform never by itself turns pings on
+- the copy is impact language with an honest estimate: the quiet has run
+  uninterrupted since the offer (the returned-check guarantees it), so
+  *"quiet about 40m"* = contested-at-mint + elapsed; buttons are
+  **remove ~40m & pause** / **keep all time & pause** — BOTH doors name the
+  pause, because both pause (sol's slice-C review: the away transition must
+  never be a surprise rider on "keep"); the message says so too. (inline
+  keyboard on telegram, component buttons on discord; taps are handled by
+  custom-id prefix `rw:` so they survive restarts)
+- a tap lands via `record_decision_token`: tenant-checked against the
+  tapping account's linked user, **first answer wins** by conditional
+  UPDATE; a tap after the desk already resolved is told so, gently — and a
+  tap that *loses a race* is answered from the row's actual outcome, never
+  from the losing tap's own choice
 - **the return channel piggybacks on the pump**: while (and only while) the
   sidecar has an open offer, its 15s sync loop also asks
-  `GET /api/v1/sync/decisions`; an answer is applied through the same code
-  path as a card tap — for the away case, as
-  rewind-and-pause / keep-and-pause
-- **first answer wins, the sidecar is authoritative.** If the run already
-  ended when a decision arrives, the decision is refused as stale (live
-  runs only) and the offer's terminal state stands. The eventual
-  `rewind.applied`/`rewind.kept` event closes the loop server-side.
-
-Staging: v1 ships the desktop card/chip only — but the offer object, event
-types, and impact-framed candidates are the full design, so the tether
-surface bolts on (with phase 7's tether work, or earlier via the existing
-bots) without touching the sidecar's core.
+  `GET /api/v1/sync/decisions` (device bearer auth, read-only, idempotent);
+  an answer is applied through the same machinery as a card tap. A 401
+  parks the pump exactly like the push path — a revoked sidecar never
+  keeps knocking
+- **presence-aware transitions**: "remove & pause" pauses the clock only
+  while the quiet is still running (no return, not frozen) — the away case
+  the tether exists for. If the person is back at the desk and working, the
+  answer resolves the question and the clock keeps going: stopping live
+  work because a phone tap arrived late would make the correction the
+  interruption. A held block's answer banks at its freeze instant, same as
+  the card path.
+- **first answer wins, the sidecar is authoritative.** A decision the
+  sidecar can't honor (question already answered, run banked, foreign
+  offer_uuid) is skipped without ceremony; the offer's eventual
+  `rewind.applied`/`rewind.kept` event is what closes the tracking row —
+  never the decision itself.
 
 ## 9. platforms
 
@@ -476,6 +514,8 @@ sidecar's CORS allowlist; no other windows work is implied.
 | card → chip | ~45 s | unanswered card collapses to the quiet chip (never expires) |
 | coverage slack | 30 s | how late the ledger's witness may begin and still count as covering the run's start |
 | away threshold | 25 min | unresolved offer earns one opted-in tether ping |
+| tether sweep | 60 s | how often the server watcher looks for due pings |
+| tether staleness | 6 h | an offer older than this never pings (the chip still holds it) |
 | decision poll | 15 s | the pump's existing cadence, only while an offer is open |
 
 ## 12. building it
@@ -484,7 +524,7 @@ sidecar's CORS allowlist; no other windows work is implied.
 |---|---|---|
 | **A · the ledger & the question** | `ActivityLedger` (input-moment reconstruction), `rewind_candidates()` pure fn, synthetic-stream tests | no behavior change; pure + testable |
 | **B · the offer & the card** | offers table + `DriftWatch` integration + hydration-on-boot, excision intervals + credited/uncontested-time arithmetic + ding logic, undo, `resolution` on the focus transitions + 409 safety net, deer card/chip UI + neutral-copy pass (incl. the `"you wandered"` caption), 4 event types server-side, `session.ended` gross/excised | **the v1 ship line** |
-| **C · the second door** | tether opt-in, server offer watcher + ping, pending decisions + `GET /api/v1/sync/decisions`, stale-decision refusal | rides phase 7's tether (or the existing bots sooner) |
+| **C · the second door** | tether opt-in, server offer watcher + ping, pending decisions + `GET /api/v1/sync/decisions`, stale-decision refusal | **built** — rides the existing bots (inline buttons, custom-id `rw:` intake); presence-aware pause |
 
 **The test list** (names first, the usual way):
 
@@ -529,7 +569,16 @@ sidecar's CORS allowlist; no other windows work is implied.
 - `test_candidate_timestamps_stay_home` — `rewind.offered` carries length,
   not forensics
 - `test_a_banked_run_is_beyond_reach` — stale decisions refused
-- `test_first_answer_wins` — card tap vs tether answer race
+- `test_first_answer_wins` ✓ slice C — card tap vs tether answer race
+- `test_the_tether_is_separately_opt_in` ✓ slice C — a linked phone alone
+  never earns a ping
+- `test_a_return_hands_the_question_back_to_the_desk` ✓ slice C — one
+  gentle surface: no phone ping while the card is showing
+- `test_one_ping_never_two` ✓ slice C — the claim stamp; quiet hours and
+  the 6 h staleness ceiling hold it
+- `test_a_phone_answer_after_the_return_keeps_the_clock_running`
+  ✓ slice C — the correction never becomes the interruption
+- `test_the_pump_polls_only_while_a_question_is_open` ✓ slice C
 - `test_sleep_reads_as_one_long_gap` — lid-close → boundary at the lock
 - `test_excisions_accumulate_across_episodes` — resolved drift, later
   drift, one run, disjoint intervals
