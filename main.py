@@ -160,7 +160,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def _run_services(interfaces, pulse, router, tether=None):
+async def _run_services(interfaces, pulse, router, tether=None, scorer=None):
     """Supervise long-running services as one failure domain.
 
     A platform task returning normally is still unexpected while the process
@@ -178,6 +178,8 @@ async def _run_services(interfaces, pulse, router, tether=None):
         logger.info("the pulse started")
     if tether is not None:
         named_tasks[asyncio.create_task(tether.run())] = "rewind tether"
+    if scorer is not None:
+        named_tasks[asyncio.create_task(scorer.run())] = "cycle scorer"
 
     try:
         done, _ = await asyncio.wait(named_tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -423,6 +425,20 @@ async def main():
         tether = RewindTether(router, user_manager)
         logger.info("rewind tether watcher enabled")
 
+    # edwin's cycle scorer (ROOMS_DESIGN.md section 8, phase 6): a slow
+    # sweep that files one assessment per ended cycle. the scores are
+    # arithmetic, so the watcher runs even without a utility model - the
+    # model only upgrades the prose (summary + evidence-checked findings).
+    from src.services.cycle_scorer import CycleScorer
+
+    scorer = CycleScorer(
+        provider=utility_provider,
+        provider_name=provider_name,
+        usage_recorder=UsageRecorder(),
+    )
+    logger.info("cycle scorer enabled (%s prose)",
+                "model" if utility_provider is not None else "deterministic")
+
     pulse = None
     if orchestrator is not None:
         pulse = build_pulse(
@@ -438,7 +454,7 @@ async def main():
         )
 
     try:
-        await _run_services(interfaces, pulse, router, tether)
+        await _run_services(interfaces, pulse, router, tether, scorer)
     finally:
         logger.info("shutting down chordial...")
         await _close_provider(utility_provider)

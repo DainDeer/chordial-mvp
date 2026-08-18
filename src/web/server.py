@@ -157,6 +157,7 @@ class WebService:
         app.router.add_get("/api/v1/sync/decisions", self._api_sync_decisions)
         app.router.add_get("/api/v1/today", self._api_v1_today)
         app.router.add_get("/api/v1/cycle", self._api_v1_cycle)
+        app.router.add_get("/api/v1/scorecards", self._api_v1_scorecards)
         app.router.add_get("/api/v1/council", self._api_council)
         # tasks are canonical HERE - the deer window lists/adds/finishes
         # them through these; the sidecar only ever owns the clock
@@ -617,6 +618,21 @@ class WebService:
             self.cycles.projection, identity.user_uuid)
         return web.json_response(view if view is not None
                                  else {"cycle": None})
+
+    async def _api_v1_scorecards(self, request: web.Request) -> web.Response:
+        """edwin's filed assessments, newest first (ROOMS_DESIGN section 8):
+        deterministic component scores + evidence-checked findings. read
+        model only - the cycle scorer is the sole writer."""
+        identity = await self._device(request)
+        from src.services.cycle_scorer import recent_assessments
+        try:
+            limit = int(request.query.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        rows = await asyncio.to_thread(
+            recent_assessments, identity.user_uuid,
+            subject_type=request.query.get("subject_type"), limit=limit)
+        return web.json_response({"assessments": rows})
 
     async def _api_v1_task_create(self, request: web.Request) -> web.Response:
         """a quick-add from the deer window: title only, scheduled today.

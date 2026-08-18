@@ -951,8 +951,13 @@ class Observation(Base):
 
 class Assessment(Base):
     """a scored, structured judgment over a bounded subject (a cycle, a
-    week) - edwin's artifact. the table lands with the council layer so the
-    shape is settled early; the scorer that writes rows arrives in phase 6.
+    week) - edwin's artifact. the table landed with the council layer so
+    the shape settled early; the phase-6 scorer (cycle_scorer.py) writes
+    the rows. the unique (user, subject_type, subject_id) index is the
+    exactly-once floor: one subject is scored one time, whatever races -
+    scoring is a moment, and late evidence never silently rewrites it.
+    subject_id may be null for future free-floating assessments; null rows
+    are exempt from the uniqueness (standard sql null semantics).
     """
     __tablename__ = 'assessments'
 
@@ -967,7 +972,9 @@ class Assessment(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        {'sqlite_autoincrement': True}
+        Index('uq_assessments_subject', 'user_uuid', 'subject_type',
+              'subject_id', unique=True),
+        {'sqlite_autoincrement': True},
     )
 
 

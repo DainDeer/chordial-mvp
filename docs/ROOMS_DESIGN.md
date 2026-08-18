@@ -366,6 +366,65 @@ cycle_health:
   sustainability: { score: 0.84 }
 ```
 
+### the scorer, as built (phase 6a)
+
+The scorer splits judgment from arithmetic, hard — the cadenza lesson
+("the scorer proposes, the transcript disposes") applied to cycles:
+
+- **Every score is computed, never generated.** `scorecard.py` derives all
+  five components from the projection (baseline + scope changes + progress)
+  and the session ledger: execution = landed share of the plan (overshoot
+  clamps at 1.0 — estimation judges the gap, execution never punishes it
+  twice); prioritization = weighted share of *attributed* time against the
+  priorities **as frozen** in the baseline (a priority edited after the
+  freeze can't recast earlier blocks; time on commitments with no frozen
+  priority — unprioritized at the freeze, or added afterward — is neither
+  credit nor blame); estimation = mean per-commitment accuracy against the
+  **frozen** baseline (released commitments stay in — releasing moved
+  scope honestly, but the estimate was still an estimate); consistency =
+  active days over elapsed days (the denominator stops at the **seal
+  date**, so an early-closed cycle — or one scored after downtime — is
+  judged on the days it lived); sustainability = the daylight share of
+  focus time (late-night window 23:00–06:00). Sessions are judged as
+  user-local **intervals** `[ended_at − seconds, ended_at]`, split at
+  midnight for day counting, split at the late-window edges, and clipped
+  to the cycle window — a block ending at 06:00 ran through the late
+  hours, and a run straddling the boundary contributes exactly its inside
+  part. Events without a device wall clock fall back to their apply stamp
+  (same coalesce as the projection). A component that can't be honestly
+  computed is `score: null` with the reason in its evidence. There is
+  deliberately no overall grade.
+- **The model writes only prose.** The shared utility model (curator /
+  reconciler / decider pattern, `role="scorer"`, billed to edwin) produces
+  a short summary and at most six findings; every finding must cite
+  evidence refs (`cm:<uuid>`, `sc:<id>`, `ob:<id>`, `component:<name>`)
+  that the validator resolves against the rows actually gathered — and
+  the observation pool itself admits only rows whose **user-local date**
+  falls inside the cycle, so an adjacent cycle's noticing never becomes
+  citable. A claim pointing at nothing is structurally unrecordable —
+  dropped and counted. A dead, absent, or garbling model degrades to a
+  deterministic summary; the scorecard files either way.
+- **The close is the seal — exactly once, and the ledger starts now.**
+  Only cycles the person **closed** (status complete) are scored, and only
+  after `CYCLE_SCORER_GRACE_HOURS` (default 24) have passed since the
+  close — the grace is the evidence watermark, giving an offline device's
+  outbox its window to drain before the card seals. An active cycle,
+  however overdue, is never scored: it can still be extended and still be
+  worked. One assessment per (user, `cycle`, public id), enforced by a
+  unique index + the focus_flow insert discipline; the gather pass
+  re-checks the seal, so a cycle reopened between discovery and filing
+  gets no card. Accepted residuals, stated rather than hidden: a device
+  offline longer than the grace loses representation in the card, and a
+  cycle reopened *after* its card filed keeps the card it earned as
+  closed. Discovery (a supervised watcher beside the pulse,
+  `CYCLE_SCORER_SWEEP_SECONDS`) looks back `CYCLE_SCORER_BACKFILL_DAYS`;
+  pre-phase-6 history is left unscored rather than judged on evidence
+  never collected.
+- **Reading is chat, writing is not.** `list_assessments` (edwin's card,
+  plus the chair via the full registry) and `GET /api/v1/scorecards` are
+  read-only; the scorer is the sole writer. Edwin *presenting* a scorecard
+  is the retro room's job (6b).
+
 ---
 
 ## 9. the tether
@@ -578,7 +637,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
-| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | |
+| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) |
 | **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
 
 ### explicitly deferred
