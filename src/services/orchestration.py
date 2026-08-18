@@ -78,6 +78,16 @@ def chordial_visibility(event: DfEvent, viewer: str) -> bool:
 
 # --- the director (§4.2): rules only this phase -------------------------------
 
+# room types fold into the FAMILY the persona cards speak (card.default_rooms
+# says 'daily'/'cycle'/'project'/'adhoc'): the grandfathered legacy stream is
+# a daily room, and both cycle rooms (retro + planning, phase 6b) are the
+# cycle family - the same cast sits down for looking back and planning ahead.
+_ROOM_FAMILY = {
+    "legacy": "daily",
+    "cycle_retro": "cycle",
+    "cycle_planning": "cycle",
+}
+
 
 class ChordialDirector:
     """casts the script of speakers for one activation, through the
@@ -242,8 +252,7 @@ class ChordialDirector:
         from src.personas import load_personas
 
         room_type = await self._room_type_of(stimulus.stream_id)
-        if room_type == "legacy":
-            room_type = "daily"
+        room_type = _ROOM_FAMILY.get(room_type, room_type)
         deliverable = None
         if self._deliverable_speakers is not None and stimulus.platform:
             try:
@@ -345,7 +354,9 @@ class ChordialContext:
             # starts its second day in a FRESH room with an empty window, and
             # without the summary it would re-introduce itself from scratch
             ambient_context=self._compose_ambient(
-                user_uuid, include_agenda=(briefing_kind != "introduction")
+                user_uuid,
+                stream_id=stimulus.stream_id,
+                include_agenda=(briefing_kind != "introduction"),
             ),
             extras={
                 "user_id": user_uuid,
@@ -356,19 +367,31 @@ class ChordialContext:
         )
 
     def _compose_ambient(self, user_uuid: str,
+                         stream_id: Optional[str] = None,
                          include_agenda: bool = True) -> Optional[str]:
-        """the volatile 'now' zone: the previous room's summary (always -
-        it is shared-channel-only by construction, so it is safe for any
-        helper's prompt) plus the workspace agenda digest (skipped for
-        introductions). pure db reads, fully guarded - any failure degrades
-        to None, i.e. today's exact prompt bytes."""
+        """the volatile 'now' zone, shaped by the room the turn is in.
+        daily rooms hydrate from the day-shaped past (the previous
+        daily/legacy summary - never a retro that happened to close last)
+        plus the agenda digest. cycle rooms (phase 6b) hydrate from the
+        cycle-shaped past instead: an orientation line, and for planning
+        the retro's compressed consequences + the filed scorecard. pure db
+        reads, fully guarded - any failure degrades to None (or to the
+        daily shape), i.e. today's exact prompt bytes."""
         try:
+            from src.services.rooms import get_room_store
+
+            store = get_room_store()
+            room = store.get_by_uuid(stream_id) if stream_id else None
+            if room is not None and room["room_type"] in (
+                    "cycle_retro", "cycle_planning"):
+                return self._compose_cycle_ambient(user_uuid, room,
+                                                   include_agenda)
+
             parts = []
             # yesterday's compressed consequences (ROOMS_DESIGN §4): the new
             # room reads the previous room's summary, never its transcript -
             # hydrated even on deployments without an agenda service
-            from src.services.rooms import get_room_store
-            summary = get_room_store().latest_summary(user_uuid)
+            summary = store.latest_summary(user_uuid)
             if summary and summary["content"]:
                 parts.append("previously:\n" + summary["content"])
             digest = (self.agenda_service.get_digest(user_uuid)
@@ -379,6 +402,74 @@ class ChordialContext:
         except Exception:
             logger.exception("failed composing ambient context; continuing without")
             return None
+
+    def _compose_cycle_ambient(self, user_uuid: str, room: dict,
+                               include_agenda: bool) -> Optional[str]:
+        """a cycle room's briefing zone. the retro stays lean - edwin's
+        presentation of the card is already IN the transcript, so ambient
+        only orients. planning gets the evidence base: the retro's summary
+        (this cycle's, by subject - never whichever retro closed last) and
+        the card render, plus the agenda (planning looks at the live
+        board)."""
+        from src.services import cycle_scorer
+        from src.services.rooms import get_room_store
+
+        subject_id = room.get("subject_id") or ""
+        assessment = cycle_scorer.assessment_for(user_uuid, subject_id)
+        title = ((assessment.get("detail") or {}).get("cycle") or {}
+                 ).get("title") if assessment is not None else None
+        if not title:
+            title = self._cycle_title(user_uuid, subject_id) or subject_id
+
+        if room["room_type"] == "cycle_retro":
+            # the briefing must match the transcript: only claim a card is
+            # on the table when one actually filed (a cardless retro exists
+            # when scoring failed or no scorer is wired)
+            if assessment is not None:
+                return (f"this room is the retrospective for cycle "
+                        f"'{title}' ({subject_id}) - a look back at what "
+                        f"actually happened, with the filed scorecard on "
+                        f"the table. edwin presented the card when the "
+                        f"room opened.")
+            return (f"this room is the retrospective for cycle "
+                    f"'{title}' ({subject_id}) - a look back at what "
+                    f"actually happened. NO scorecard has been filed for "
+                    f"this cycle yet - never invent, estimate, or imply "
+                    f"one; speak from the conversation and the ledger "
+                    f"tools only.")
+
+        parts = [f"this room is the planning that follows cycle "
+                 f"'{title}' ({subject_id}) - the next cycle gets shaped "
+                 f"here, against the evidence of the last one."]
+        retro_summary = get_room_store().summary_of(
+            user_uuid, "cycle_retro", subject_id)
+        if retro_summary:
+            parts.append("the retrospective settled:\n" + retro_summary)
+        if assessment is not None:
+            parts.append("the scorecard, as filed:\n"
+                         + cycle_scorer.render_assessment(assessment))
+        else:
+            parts.append("NO scorecard has been filed for this cycle - "
+                         "never invent or estimate one.")
+        digest = (self.agenda_service.get_digest(user_uuid)
+                  if include_agenda and self.agenda_service else None)
+        if digest:
+            parts.append(digest)
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _cycle_title(user_uuid: str, subject_id: str) -> Optional[str]:
+        from src.database.database import get_db
+        from src.database.models import Cycle
+        from src.services.workspace.vocab import parse_public_id
+
+        parsed = parse_public_id(subject_id)
+        if parsed is None or parsed[0] != "cycle":
+            return None
+        with get_db() as db:
+            return db.query(Cycle.title).filter(
+                Cycle.id == parsed[1],
+                Cycle.user_uuid == user_uuid).scalar()
 
 
 # --- turn hooks (§4.5): the product niceties ----------------------------------
@@ -575,6 +666,10 @@ class ChordialDeliverer(_PacedDeliverer):
             request.target.target_id,
             request.text,
             speaker=request.speaker,
+            # the room this line belongs to (phase 6b): rides the payload on
+            # in-band-attributing platforms so one room's lines never render
+            # inside another room's view
+            stream_id=request.stream_id,
         )
 
 

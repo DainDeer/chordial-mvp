@@ -16,6 +16,18 @@ the pre-rooms world is grandfathered on first touch: a user with legacy
 conversation_events but no rooms gets a room_type='legacy' room whose
 room_uuid IS their user uuid - exactly the stream_id their old rows were
 backfilled with, so history, resolution, and archives all line up for free.
+
+cycle rooms (phase 6b) are the undated members of the family: a
+'cycle_retro' and a 'cycle_planning' room per sealed cycle, anchored by
+(subject_type='cycle', subject_id='c12') instead of a date. their
+lifecycle trigger is each other - opening any cycle room closes the
+user's other open cycle rooms (one cycle conversation at a time), and
+that close is what writes the retro summary the planning room hydrates.
+walking back into a settled cycle room REOPENS it (the pair is one
+conversation revisited, never a locked door with a composer painted on);
+the summary recompresses on the next close. a cycle room nobody follows
+up on simply stays open; nothing downstream needs its summary until
+something does follow.
 """
 from __future__ import annotations
 
@@ -33,6 +45,16 @@ from src.utils.timezone_utils import utc_now
 logger = logging.getLogger(__name__)
 
 _CLIP = 200
+
+# the undated room family (phase 6b): anchored to a sealed cycle by subject
+CYCLE_ROOM_TYPES = ("cycle_retro", "cycle_planning")
+
+# human labels for undated rooms - digests and doors speak these, never the
+# raw type strings
+ROOM_TYPE_LABELS = {
+    "cycle_retro": "retrospective",
+    "cycle_planning": "planning",
+}
 
 
 def _clip(text: str) -> str:
@@ -80,6 +102,81 @@ class RoomStore:
                 ).one()
                 return self._detach(row)
 
+    def open_cycle_room(self, user_uuid: str, room_type: str,
+                        subject_id: str) -> tuple[dict, bool]:
+        """get-or-create-or-REOPEN the cycle room for one sealed cycle
+        (phase 6b). `room_type` is 'cycle_retro' or 'cycle_planning';
+        `subject_id` is the cycle's public id ('c12'). returns
+        (room, created) - created=True only on first creation (it keys
+        edwin's presentation seed, which repair-on-open backstops anyway).
+
+        walking back into a settled cycle room REOPENS it: the retro and
+        the planning room are one conversation revisited, not an archive -
+        a reopened room's new exchanges recompress into its summary on the
+        next close (close_room refreshes an existing summary). opening or
+        reopening then SETTLES the family: every other open cycle room of
+        the user closes, AFTER this room's own open committed - so the
+        concurrent-doors race (two devices opening retro and planning at
+        once) converges to at most one open room instead of two. in the
+        pathological same-instant case each side may settle the other
+        closed (zero open) - never two open, and the next walk-in reopens.
+
+        stale summaries are folded first, so a late line that landed in a
+        closed cycle room reaches the summary before planning hydrates."""
+        if room_type not in CYCLE_ROOM_TYPES:
+            raise ValueError(f"not a cycle room type: {room_type!r}")
+        self._refresh_stale_summaries(user_uuid)
+        created = False
+        room = None
+        with get_db() as db:
+            row = db.query(Room).filter(
+                Room.user_uuid == user_uuid,
+                Room.room_type == room_type,
+                Room.subject_id == subject_id,
+            ).first()
+            if row is not None:
+                if row.status != "open":
+                    row.status = "open"
+                    row.closed_at = None
+                    db.commit()
+                    logger.info("%s room reopened for %s (%s)",
+                                room_type, user_uuid, subject_id)
+                room = self._detach(row)
+        if room is None:
+            try:
+                with get_db() as db:
+                    row = Room(user_uuid=user_uuid, room_type=room_type,
+                               subject_type="cycle", subject_id=subject_id)
+                    db.add(row)
+                    db.commit()
+                    logger.info("%s room created for %s (%s)",
+                                room_type, user_uuid, subject_id)
+                    room = self._detach(row)
+                    created = True
+            except IntegrityError:
+                # the get-or-create race: someone else won; read their room
+                with get_db() as db:
+                    row = db.query(Room).filter(
+                        Room.user_uuid == user_uuid,
+                        Room.room_type == room_type,
+                        Room.subject_id == subject_id,
+                    ).one()
+                    room = self._detach(row)
+        self._close_open_cycle_rooms(user_uuid, except_id=room["id"])
+        return room, created
+
+    def _close_open_cycle_rooms(self, user_uuid: str,
+                                except_id: Optional[int] = None) -> None:
+        with get_db() as db:
+            stale = [r.id for r in db.query(Room).filter(
+                Room.user_uuid == user_uuid,
+                Room.room_type.in_(CYCLE_ROOM_TYPES),
+                Room.status != "closed",
+                Room.id != (except_id if except_id is not None else -1),
+            ).all()]
+        for room_id in stale:
+            self.close_room(room_id)
+
     # --- lifecycle ------------------------------------------------------------
 
     def close_room(self, room_id: int) -> None:
@@ -103,7 +200,17 @@ class RoomStore:
                                        user_uuid=room.user_uuid,
                                        content=digest))
             except IntegrityError:
-                pass  # a previous close already wrote it; keep theirs
+                # a summary already exists: an earlier close's, or - for a
+                # REOPENED cycle room closing again - one that predates the
+                # revisit. refresh it with the digest just computed; it is
+                # deterministic over the same rows, so between racing
+                # closers last-write-wins is harmless, and a reopened
+                # conversation's new exchanges reach the summary that
+                # planning hydrates
+                db.query(RoomSummary).filter(
+                    RoomSummary.room_id == room.id,
+                ).update({"content": digest, "created_at": utc_now()},
+                         synchronize_session=False)
             room.status = "closed"
             room.closed_at = utc_now()
             db.commit()
@@ -205,13 +312,19 @@ class RoomStore:
             return db.query(Room.user_uuid).filter(
                 Room.room_uuid == room_uuid).scalar()
 
-    def latest_summary(self, user_uuid: str) -> Optional[dict]:
-        """the newest closed room's summary - the next room's hydration."""
+    def latest_summary(self, user_uuid: str,
+                       room_types: tuple = ("daily", "legacy"),
+                       ) -> Optional[dict]:
+        """the newest closed room's summary - the next room's hydration.
+        filtered by room family on purpose: a daily room hydrates from
+        the day-shaped past, never from a retro that happened to close
+        more recently (and vice versa)."""
         with get_db() as db:
             row = db.query(RoomSummary, Room.date, Room.room_type).join(
                 Room, Room.id == RoomSummary.room_id,
             ).filter(
                 RoomSummary.user_uuid == user_uuid,
+                Room.room_type.in_(room_types),
             ).order_by(RoomSummary.id.desc()).first()
             if row is None:
                 return None
@@ -219,6 +332,34 @@ class RoomStore:
             return {"content": summary.content,
                     "date": room_date.isoformat() if room_date else None,
                     "room_type": room_type}
+
+    def summary_of(self, user_uuid: str, room_type: str,
+                   subject_id: str) -> Optional[str]:
+        """one subject-anchored room's summary (a planning room hydrates
+        ITS cycle's retro, not whichever retro closed last). None while
+        the room doesn't exist or hasn't closed into a summary yet."""
+        with get_db() as db:
+            return db.query(RoomSummary.content).join(
+                Room, Room.id == RoomSummary.room_id,
+            ).filter(
+                RoomSummary.user_uuid == user_uuid,
+                Room.room_type == room_type,
+                Room.subject_id == subject_id,
+            ).scalar()
+
+    def cycle_rooms_for(self, user_uuid: str,
+                        subject_id: str) -> dict[str, Optional[dict]]:
+        """the door state for one sealed cycle: its retro and planning
+        rooms, where they exist."""
+        out: dict[str, Optional[dict]] = {t: None for t in CYCLE_ROOM_TYPES}
+        with get_db() as db:
+            for row in db.query(Room).filter(
+                Room.user_uuid == user_uuid,
+                Room.room_type.in_(CYCLE_ROOM_TYPES),
+                Room.subject_id == subject_id,
+            ).all():
+                out[row.room_type] = self._detach(row)
+        return out
 
     def recent_rooms(self, user_uuid: str, limit: int = 10) -> list[dict]:
         with get_db() as db:
@@ -236,8 +377,9 @@ class RoomStore:
         the rows themselves - never derived from the free-text digest,
         whose shape may change and whose tail quotes conversation). the
         grandfathered legacy room rides along - it holds the pre-rooms
-        history and belongs in the journal. limit/offset page ALL the way
-        back; forever means reachable."""
+        history and belongs in the journal, as do the cycle rooms (a retro
+        is part of the past too; archives are forever). limit/offset page
+        ALL the way back; forever means reachable."""
         limit = max(1, min(int(limit), 100))
         offset = max(0, int(offset))
         with get_db() as db:
@@ -245,7 +387,7 @@ class RoomStore:
                 RoomSummary, RoomSummary.room_id == Room.id,
             ).filter(
                 Room.user_uuid == user_uuid,
-                Room.room_type.in_(("daily", "legacy")),
+                Room.room_type.in_(("daily", "legacy") + CYCLE_ROOM_TYPES),
             ).order_by(Room.id.desc()).offset(offset).limit(limit).all()
 
             uuids = [room.room_uuid for room, _ in rows]
@@ -302,8 +444,13 @@ class RoomStore:
 
             n_user = sum(1 for r in rows if r.author_type == "user")
             n_agent = sum(1 for r in rows if r.author_type == "agent")
-            label = (room.date.isoformat() if room.date
-                     else f"{room.room_type} room")
+            if room.date:
+                label = room.date.isoformat()
+            elif room.room_type in ROOM_TYPE_LABELS:
+                label = (f"{ROOM_TYPE_LABELS[room.room_type]} "
+                         f"({room.subject_id})")
+            else:
+                label = f"{room.room_type} room"
             lines = [f"{label}: {n_user} user messages, {n_agent} helper "
                      f"replies, {n_actions} actions."]
             last_user = next((r for r in reversed(rows)
@@ -328,6 +475,8 @@ class RoomStore:
             "room_type": row.room_type,
             "status": row.status,
             "date": row.date.isoformat() if row.date else None,
+            "subject_type": row.subject_type,
+            "subject_id": row.subject_id,
         }
 
 

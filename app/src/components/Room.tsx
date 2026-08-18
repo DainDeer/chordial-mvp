@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  fetchArchivedMessages,
   fetchRoomCurrent,
   fetchRoomMessages,
   isAuthError,
@@ -13,16 +14,30 @@ import {
   pendingUserLine,
   reconcileExtras,
   type ChatMessage,
+  type RoomFilter,
 } from "../lib/messages";
 import { memberHue } from "../lib/council";
 import { pickStirring } from "../lib/stirrings";
 import InlineContent from "./InlineContent";
+
+/** a cycle room bound by uuid (phase 6b). when present, the view leaves
+ * the current-daily contract: history and sends go by room uuid, and the
+ * websocket filter turns strict - only lines naming this room render. */
+export interface CycleRoomHandle {
+  id: string;
+  type: "cycle_retro" | "cycle_planning";
+  /** header line, e.g. "retrospective — rewillow v1" */
+  label: string;
+  chatAvailable: boolean;
+}
 
 interface Props {
   token: string;
   council: CouncilMember[];
   onTurnComplete: () => void;
   onAuthLost: () => void;
+  cycleRoom?: CycleRoomHandle;
+  onBack?: () => void;
 }
 
 const STATUS_DOT: Record<SocketStatus, string> = {
@@ -65,9 +80,13 @@ export default function Room({
   council,
   onTurnComplete,
   onAuthLost,
+  cycleRoom,
+  onBack,
 }: Props) {
   const [room, setRoom] = useState<RoomInfo | null>(null);
-  const [chatAvailable, setChatAvailable] = useState(true);
+  const [chatAvailable, setChatAvailable] = useState(
+    cycleRoom ? cycleRoom.chatAvailable : true,
+  );
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [extras, setExtras] = useState<ChatMessage[]>([]);
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("connecting");
@@ -78,14 +97,26 @@ export default function Room({
   const seen = useRef<Set<string>>(new Set());
   const logRef = useRef<HTMLDivElement | null>(null);
   const pinnedToBottom = useRef(true);
+  // the websocket filter reads this ref so the socket never resubscribes
+  // when the room resolves: cycle rooms know their uuid up front, the
+  // daily view learns it from the first fetch
+  const roomIdRef = useRef<string | null>(cycleRoom?.id ?? null);
 
   const refresh = useCallback(async () => {
     try {
+      if (cycleRoom) {
+        const log = await fetchArchivedMessages(token, cycleRoom.id);
+        const rows = log.messages.map(fromHistory);
+        setHistory(rows);
+        setExtras((prev) => reconcileExtras(prev, rows));
+        return;
+      }
       const [current, log] = await Promise.all([
         fetchRoomCurrent(token),
         fetchRoomMessages(token),
       ]);
       setRoom(current.room);
+      roomIdRef.current = current.room.id;
       setChatAvailable(current.chat_available);
       const rows = log.messages.map(fromHistory);
       setHistory(rows);
@@ -93,7 +124,7 @@ export default function Room({
     } catch (e) {
       if (isAuthError(e)) onAuthLost();
     }
-  }, [token, onAuthLost]);
+  }, [token, onAuthLost, cycleRoom]);
 
   useEffect(() => {
     refresh();
@@ -102,9 +133,15 @@ export default function Room({
   useEffect(() => {
     const socket = new RoomSocket(token, {
       // dedupe OUTSIDE the state updater: updaters must stay pure (strict
-      // mode double-invokes them), the seen-set mutation must run once
+      // mode double-invokes them), the seen-set mutation must run once.
+      // the filter keeps rooms apart on the shared per-user socket: a
+      // retro line never renders in the daily view and vice versa
       onPayload: (payload) => {
-        const line = admitLive(seen.current, payload);
+        const filter: RoomFilter = {
+          room: roomIdRef.current,
+          strict: Boolean(cycleRoom),
+        };
+        const line = admitLive(seen.current, payload, filter);
         if (line) setExtras((prev) => [...prev, line]);
       },
       onStatus: (status) => {
@@ -115,7 +152,7 @@ export default function Room({
     });
     socket.start();
     return () => socket.stop();
-  }, [token, refresh, onAuthLost]);
+  }, [token, refresh, onAuthLost, cycleRoom]);
 
   const messages = [...history, ...extras];
 
@@ -145,9 +182,22 @@ export default function Room({
         token,
         mine.content,
         mine.clientMessageId!,
+        cycleRoom?.id,
       );
+      // the POST drains the per-user queue, which can carry another room's
+      // concurrent lines - filter like the socket does. ephemeral copy
+      // (refusals/errors) bypasses the filter: it exists only in this
+      // response, for this send, and never carries a room
+      const filter: RoomFilter = {
+        room: roomIdRef.current,
+        strict: Boolean(cycleRoom),
+      };
       const fresh = result.messages
-        .map((payload) => admitLive(seen.current, payload))
+        .map((payload) =>
+          payload.ephemeral
+            ? admitLive(seen.current, payload)
+            : admitLive(seen.current, payload, filter),
+        )
         .filter((line): line is ChatMessage => line !== null);
       setExtras((prev) => [
         ...prev.map((m) =>
@@ -211,13 +261,29 @@ export default function Room({
         day: "numeric",
       })
     : "";
+  const title = cycleRoom
+    ? cycleRoom.type === "cycle_retro"
+      ? "the retrospective"
+      : "planning the next cycle"
+    : "today’s room";
+  const subtitle = cycleRoom ? cycleRoom.label : dateLine;
+  const emptyCopy = cycleRoom
+    ? cycleRoom.type === "cycle_retro"
+      ? "the ledger is on the table. say what the cycle felt like."
+      : "the next cycle starts as a conversation — say where you want it to go."
+    : "it’s quiet in here. say hi — someone will hear you.";
 
   return (
     <div className="room">
       <header className="room-head">
         <div>
-          <h2>today’s room</h2>
-          <p className="room-date">{dateLine}</p>
+          {onBack && (
+            <button className="room-back" onClick={onBack}>
+              ← back
+            </button>
+          )}
+          <h2>{title}</h2>
+          <p className="room-date">{subtitle}</p>
         </div>
         <span
           className={`ws-dot ${STATUS_DOT[socketStatus]}`}
@@ -227,9 +293,7 @@ export default function Room({
 
       <div className="room-log" ref={logRef} onScroll={onLogScroll}>
         {messages.length === 0 && !sending && (
-          <p className="room-empty">
-            it’s quiet in here. say hi — someone will hear you.
-          </p>
+          <p className="room-empty">{emptyCopy}</p>
         )}
         {messages.map((m, i) => {
           const prev = messages[i - 1];

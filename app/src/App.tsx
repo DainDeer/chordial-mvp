@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import LinkScreen from "./components/LinkScreen";
 import PresenceRail from "./components/PresenceRail";
 import Home from "./components/Home";
-import Room from "./components/Room";
+import Room, { type CycleRoomHandle } from "./components/Room";
 import ArchiveRoom from "./components/ArchiveRoom";
 import { fetchCouncil, isAuthError } from "./api/client";
 import type { ArchivedRoom, CouncilMember } from "./api/types";
 import { clearSession, storedToken, storeSession } from "./lib/session";
 
-type View = "home" | "room" | "archive";
+type View = "home" | "room" | "archive" | "cycle";
 
 /** the shell: link screen until a device token exists, then the rail plus
  * whichever space you're in. losing auth anywhere (revoked device) drops
@@ -18,6 +18,7 @@ export default function App() {
   const [view, setView] = useState<View>("home");
   const [council, setCouncil] = useState<CouncilMember[]>([]);
   const [archiveRoom, setArchiveRoom] = useState<ArchivedRoom | null>(null);
+  const [cycleRoom, setCycleRoom] = useState<CycleRoomHandle | null>(null);
 
   const onAuthLost = useCallback(() => {
     clearSession();
@@ -58,6 +59,10 @@ export default function App() {
           <Home
             token={token}
             onEnterRoom={() => setView("room")}
+            onEnterCycleRoom={(handle) => {
+              setCycleRoom(handle);
+              setView("cycle");
+            }}
             onOpenArchive={(room) => {
               setArchiveRoom(room);
               setView("archive");
@@ -69,6 +74,17 @@ export default function App() {
           <Room
             token={token}
             council={council}
+            onTurnComplete={refreshCouncil}
+            onAuthLost={onAuthLost}
+          />
+        )}
+        {view === "cycle" && cycleRoom && (
+          <Room
+            key={cycleRoom.id}
+            token={token}
+            council={council}
+            cycleRoom={cycleRoom}
+            onBack={() => setView("home")}
             onTurnComplete={refreshCouncil}
             onAuthLost={onAuthLost}
           />

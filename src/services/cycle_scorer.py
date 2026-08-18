@@ -21,6 +21,12 @@ the honesty contract, in build order:
   be worked, and a card filed against it would be a judgment of a moving
   target. a device offline longer than the grace loses representation in
   the card - that residual is accepted and documented, not hidden.
+  ONE caller may waive the grace (never the completeness requirement):
+  the retro door (phase 6b). the person sitting down for the retro has
+  called the evidence question - making them wait out a watermark meant
+  for absent devices would hold the review hostage to a residual they've
+  implicitly accepted by showing up. the card records which way it sealed
+  (detail.cycle.scored_by: 'sweep' | 'retro').
 - EXACTLY ONCE. one assessment per (user, 'cycle', public_id), guarded by
   a unique index plus an IntegrityError-swallowing insert - the focus_flow
   discipline. scoring is a moment: late-arriving events do not reopen it,
@@ -166,12 +172,15 @@ class CycleScorer:
         return due
 
     @staticmethod
-    def _seal(cycle, now: datetime) -> Optional[datetime]:
+    def _seal(cycle, now: datetime,
+              respect_grace: bool = True) -> Optional[datetime]:
         """when the cycle sealed, or None while it hasn't (not complete, or
         still inside the grace period). closed_at is the seal moment; a
         complete cycle missing one (hand-edited rows) falls back to the end
         of its end date - approximated in utc, an error the grace period
-        dwarfs."""
+        dwarfs. `respect_grace=False` is the retro door's waiver: the grace
+        yields to the person calling the question, completeness never
+        does."""
         if cycle.status != "complete":
             return None
         sealed_at = cycle.closed_at
@@ -180,19 +189,23 @@ class CycleScorer:
                 cycle.end_date + timedelta(days=1), dtime.min)
         if sealed_at is None:
             return None
-        if now - sealed_at < timedelta(
+        if respect_grace and now - sealed_at < timedelta(
                 hours=Config.CYCLE_SCORER_GRACE_HOURS):
             return None
         return sealed_at
 
     # --- scoring ------------------------------------------------------------
 
-    async def score_cycle(self, user_uuid: str,
-                          cycle_id: int) -> Optional[dict]:
+    async def score_cycle(self, user_uuid: str, cycle_id: int,
+                          trigger: str = "sweep") -> Optional[dict]:
         """score one cycle and file the assessment. returns the filed
         assessment dict, or None when there was nothing to do (no such
-        cycle, or another sweep already filed it)."""
-        gathered = await asyncio.to_thread(self._gather, user_uuid, cycle_id)
+        cycle, not sealed, or another sweep already filed it).
+        `trigger='retro'` is the one grace waiver: the person opening the
+        retro room called the evidence question (completeness is still
+        required - an unsealed cycle never scores)."""
+        gathered = await asyncio.to_thread(
+            self._gather, user_uuid, cycle_id, trigger)
         if gathered is None:
             return None
         summary, findings, dropped, source = await self._compose(gathered)
@@ -213,7 +226,8 @@ class CycleScorer:
         return {"subject_id": gathered["subject_id"], "summary": summary,
                 "detail": detail}
 
-    def _gather(self, user_uuid: str, cycle_id: int) -> Optional[dict]:
+    def _gather(self, user_uuid: str, cycle_id: int,
+                trigger: str = "sweep") -> Optional[dict]:
         """everything scoring needs, in one sync pass: the projection, the
         session spans on the user's local calendar, the observation pool,
         and the evidence-ref universe findings may cite. the seal is
@@ -230,7 +244,8 @@ class CycleScorer:
             cycle_row = db.query(Cycle).filter(
                 Cycle.id == cycle_id,
                 Cycle.user_uuid == user_uuid).first()
-            sealed_at = (self._seal(cycle_row, now)
+            sealed_at = (self._seal(cycle_row, now,
+                                    respect_grace=(trigger != "retro"))
                          if cycle_row is not None else None)
             if sealed_at is None:
                 return None
@@ -280,6 +295,7 @@ class CycleScorer:
                 "status": cycle["status"], "start_date": cycle["start_date"],
                 "end_date": cycle["end_date"],
                 "sealed_at": sealed_at.isoformat(),
+                "scored_by": trigger,
                 "frozen": projection["frozen"],
             },
         }
@@ -550,3 +566,56 @@ def recent_assessments(user_uuid: str, *, subject_type: Optional[str] = None,
             "created_at": (r.created_at.isoformat()
                            if r.created_at else None),
         } for r in rows]
+
+
+def assessment_for(user_uuid: str, subject_id: str) -> Optional[dict]:
+    """the one filed card for one subject (the retro door's read), same
+    detached shape as recent_assessments rows."""
+    with get_db() as db:
+        r = db.query(Assessment).filter(
+            Assessment.user_uuid == user_uuid,
+            Assessment.subject_type == SUBJECT_TYPE,
+            Assessment.subject_id == subject_id,
+        ).first()
+        if r is None:
+            return None
+        return {
+            "id": r.id, "helper_id": r.helper_id,
+            "subject_type": r.subject_type, "subject_id": r.subject_id,
+            "summary": r.summary, "detail": r.detail,
+            "created_at": (r.created_at.isoformat()
+                           if r.created_at else None),
+        }
+
+
+def render_assessment(assessment: dict) -> str:
+    """one scorecard as plain text - deterministic, shared by edwin's
+    retro presentation and the planning room's hydration. every number
+    comes from the filed card; nothing here judges, invents, or averages
+    (there is deliberately no overall grade to render)."""
+    detail = assessment.get("detail") or {}
+    components = detail.get("components") or {}
+    lines = []
+    for name in scorecard.COMPONENTS:
+        comp = components.get(name) or {}
+        score = comp.get("score")
+        shown = f"{score:.2f}" if isinstance(score, (int, float)) else "—"
+        evidence = comp.get("evidence") or []
+        first = f" · {evidence[0]}" if evidence else ""
+        lines.append(f"{name} {shown}{first}")
+    parts = ["\n".join(lines)]
+    summary = (assessment.get("summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    findings = detail.get("findings") or []
+    if findings:
+        rendered = []
+        for f in findings:
+            claim = (f.get("claim") or "").strip()
+            if not claim:
+                continue
+            action = (f.get("suggested_action") or "").strip()
+            rendered.append(f"- {claim}" + (f" -> {action}" if action else ""))
+        if rendered:
+            parts.append("findings:\n" + "\n".join(rendered))
+    return "\n\n".join(parts)

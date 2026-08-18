@@ -108,10 +108,17 @@ class WebService:
 
     def __init__(self, store=None, focus: Optional[FocusStore] = None,
                  user_resolver=resolve_web_user, chat_service=None,
-                 app_interface=None):
+                 app_interface=None, cycle_rooms=None):
         self.store = store or get_store()
         self.focus = focus or FocusStore()
         self.cycles = CycleStore()
+        # the cycle-room doors (phase 6b). main injects the scorer-armed
+        # service; the default still opens doors, just never scores on
+        # demand (a retro before the sweep presents cardless, honestly).
+        if cycle_rooms is None:
+            from src.services.cycle_rooms import CycleRooms
+            cycle_rooms = CycleRooms()
+        self.cycle_rooms = cycle_rooms
         self._resolve_user = user_resolver
         # the app-facing chat seam: process_message runs a turn, the app
         # interface's queues carry the delivered lines back. both None on
@@ -171,11 +178,22 @@ class WebService:
                            self._api_room_messages)
         app.router.add_post("/api/v1/rooms/current/messages",
                             self._api_room_send)
+        # the cycle-room doors (phase 6b). literal paths, registered before
+        # the {room_uuid} routes so "cycle" never resolves as a room uuid.
+        app.router.add_get("/api/v1/rooms/cycle", self._api_cycle_doors)
+        app.router.add_post("/api/v1/rooms/cycle/retro",
+                            self._api_cycle_retro_open)
+        app.router.add_post("/api/v1/rooms/cycle/planning",
+                            self._api_cycle_planning_open)
         # the archive routes register AFTER the /current ones so "current"
         # never resolves as a {room_uuid}
         app.router.add_get("/api/v1/rooms", self._api_rooms_archive)
         app.router.add_get("/api/v1/rooms/{room_uuid}/messages",
                            self._api_room_archive_messages)
+        # the room-bound send (phase 6b): a turn into an OPEN owned room (a
+        # cycle room). closed rooms stay read-only through the GET above.
+        app.router.add_post("/api/v1/rooms/{room_uuid}/messages",
+                            self._api_room_send_by_uuid)
         app.router.add_get("/api/v1/ws", self._api_ws)
         app.router.add_static("/static", STATIC_DIR)
         app.on_startup.append(self._start_flow_sweep)
@@ -817,8 +835,77 @@ class WebService:
             return _error("no such room", status=404)
         return web.json_response({"messages": messages})
 
-    async def _api_room_send(self, request: web.Request) -> web.Response:
+    # --- /api/v1: the cycle-room doors (phase 6b) -----------------------------
+
+    async def _api_cycle_doors(self, request: web.Request) -> web.Response:
+        """the door state: the latest sealed cycle, whether its card is
+        filed, and whichever of its rooms already exist. doors: null means
+        nothing to look back on yet."""
         identity = await self._device(request)
+        doors = await asyncio.to_thread(
+            self.cycle_rooms.doors, identity.user_uuid)
+        return web.json_response({
+            "doors": doors,
+            "chat_available": self.chat_service is not None,
+        })
+
+    async def _api_cycle_retro_open(self, request: web.Request
+                                    ) -> web.Response:
+        """open (get-or-create) the retro room for the latest sealed cycle.
+        scoring runs on demand when the card isn't filed - the person
+        opening the retro called the evidence question."""
+        identity = await self._device(request)
+        result = await self.cycle_rooms.open_retro(identity.user_uuid)
+        if result is None:
+            return _error("no sealed cycle to look back on yet", status=404)
+        return web.json_response(result)
+
+    async def _api_cycle_planning_open(self, request: web.Request
+                                       ) -> web.Response:
+        """open (get-or-create) the planning room following the latest
+        sealed cycle."""
+        identity = await self._device(request)
+        result = await self.cycle_rooms.open_planning(identity.user_uuid)
+        if result is None:
+            return _error("no sealed cycle to plan from yet", status=404)
+        return web.json_response(result)
+
+    async def _api_room_send(self, request: web.Request) -> web.Response:
+        """a turn into today's daily room (the v0 shape, unchanged)."""
+        identity = await self._device(request)
+        return await self._run_room_turn(identity, request, room_uuid=None)
+
+    async def _api_room_send_by_uuid(self, request: web.Request
+                                     ) -> web.Response:
+        """a turn into a specific OPEN room the sender owns (phase 6b: the
+        cycle rooms). a foreign or unknown room answers 404 exactly like the
+        read-only GET; a closed room answers 409 - remembering is the GET's
+        job, writing is over."""
+        identity = await self._device(request)
+        room_uuid = request.match_info["room_uuid"]
+
+        def check() -> Optional[str]:
+            from src.services.rooms import get_room_store
+            room = get_room_store().get_by_uuid(room_uuid)
+            if room is None or room["user_uuid"] != identity.user_uuid:
+                return "missing"
+            # OPEN, not merely not-closed: 'closing' means the digest is
+            # already compressing, and a turn slipping in now would miss
+            # the summary the next room hydrates
+            if room["status"] != "open":
+                return "closed"
+            return None
+        problem = await asyncio.to_thread(check)
+        if problem == "missing":
+            return _error("no such room", status=404)
+        if problem == "closed":
+            return _error("this room has settled - it reopens for "
+                          "remembering, not for writing", status=409)
+        return await self._run_room_turn(identity, request,
+                                         room_uuid=room_uuid)
+
+    async def _run_room_turn(self, identity, request: web.Request,
+                             room_uuid: Optional[str]) -> web.Response:
         if self.chat_service is None or self.app_interface is None:
             return _error("chat is not available on this deployment",
                           status=503)
@@ -887,6 +974,9 @@ class WebService:
                             # to their own connected surfaces.
                             chat_scope="group",
                             group_chat_id=user_uuid,
+                            # phase 6b: bind to a specific open room (a
+                            # cycle room); None = today's daily room
+                            room_uuid=room_uuid,
                         ))
                     replies = self.app_interface.drain(queue)
                 finally:

@@ -5,7 +5,9 @@
 import type {
   ArchivedRoom,
   CouncilMember,
+  CycleDoorsPayload,
   CyclePayload,
+  OpenCycleRoomResult,
   RoomCurrent,
   HistoryRow,
   SendResult,
@@ -99,6 +101,23 @@ export function fetchArchivedMessages(
   return request(`/api/v1/rooms/${roomUuid}/messages`, { token });
 }
 
+/** the cycle-room doors: the latest sealed cycle + its rooms (phase 6b) */
+export function fetchCycleDoors(token: string): Promise<CycleDoorsPayload> {
+  return request("/api/v1/rooms/cycle", { token });
+}
+
+/** open (get-or-create) the retro room; edwin presents the card on create */
+export function openCycleRetro(token: string): Promise<OpenCycleRoomResult> {
+  return request("/api/v1/rooms/cycle/retro", { method: "POST", token });
+}
+
+/** open (get-or-create) the planning room following the sealed cycle */
+export function openCyclePlanning(
+  token: string,
+): Promise<OpenCycleRoomResult> {
+  return request("/api/v1/rooms/cycle/planning", { method: "POST", token });
+}
+
 /** quick-add from the deer window: title only, lands scheduled-today */
 export function createTask(
   token: string,
@@ -133,10 +152,14 @@ export async function sendRoomMessage(
   token: string,
   text: string,
   clientMessageId: string,
+  roomUuid?: string,
 ): Promise<SendResult> {
+  const path = roomUuid
+    ? `/api/v1/rooms/${roomUuid}/messages`
+    : "/api/v1/rooms/current/messages";
   for (let attempt = 0; ; attempt++) {
     try {
-      return await request<SendResult>("/api/v1/rooms/current/messages", {
+      return await request<SendResult>(path, {
         method: "POST",
         token,
         body: JSON.stringify({

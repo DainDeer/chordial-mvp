@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 # history (so they can't pollute future context).
 REFUSAL_REPLY = "i don't think i can help with that one, but i'm here for whatever else is on your mind 💛"
 ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mind trying again in a bit?"
+# a room-bound turn aimed at a room that isn't the sender's open room. never
+# persisted; the daily room is unaffected (falling through silently would
+# put retro talk in the wrong room, which is worse than saying no).
+CLOSED_ROOM_REPLY = "that room has settled — today's room is always open 💛"
 
 
 def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
@@ -157,7 +161,25 @@ class ChatService:
                 if not self.orchestrator:
                     return f"echo: {unified_message.content}"
 
-                stream_id = await self._current_stream(user_uuid)
+                # phase 6b: a room-bound turn (a cycle room) targets its own
+                # stream; everything else lands in today's daily room. the
+                # boundary re-checks what the server already verified -
+                # ownership and openness - and refuses rather than silently
+                # rerouting to daily.
+                room_override = getattr(unified_message, "room_uuid", None)
+                if room_override:
+                    room = await asyncio.to_thread(
+                        get_room_store().get_by_uuid, room_override)
+                    # OPEN, not merely not-closed: a 'closing' room's digest
+                    # is already compressing - a turn slipping in now would
+                    # be missing from the summary the next room hydrates
+                    if (room is None
+                            or room["user_uuid"] != user_uuid
+                            or room["status"] != "open"):
+                        return CLOSED_ROOM_REPLY
+                    stream_id = room_override
+                else:
+                    stream_id = await self._current_stream(user_uuid)
 
                 # introductions are dm-shaped wherever they run (private
                 # channel with the introducing helper - identity talk stays

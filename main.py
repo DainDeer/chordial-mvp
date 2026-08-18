@@ -398,14 +398,31 @@ async def main():
     # pages and the api); the AppInterface is the inverse - router-registered
     # so the orchestrator can deliver to connected app surfaces, but not
     # supervised (it has no loop to run; the web server owns the sockets).
+    # edwin's cycle scorer (ROOMS_DESIGN.md section 8, phase 6): a slow
+    # sweep that files one assessment per ended cycle. the scores are
+    # arithmetic, so the watcher runs even without a utility model - the
+    # model only upgrades the prose (summary + evidence-checked findings).
+    # built before the web service so the retro door can score on demand.
+    from src.services.cycle_scorer import CycleScorer
+
+    scorer = CycleScorer(
+        provider=utility_provider,
+        provider_name=provider_name,
+        usage_recorder=UsageRecorder(),
+    )
+    logger.info("cycle scorer enabled (%s prose)",
+                "model" if utility_provider is not None else "deterministic")
+
     if Config.ENABLE_WEB:
         from src.providers.platforms.app import AppInterface
+        from src.services.cycle_rooms import CycleRooms
         from src.web.server import WebService
 
         app_interface = AppInterface(chat_service)
         router.register(app_interface)
         interfaces.append(WebService(chat_service=chat_service,
-                                     app_interface=app_interface))
+                                     app_interface=app_interface,
+                                     cycle_rooms=CycleRooms(scorer=scorer)))
         logger.info(
             "web focus view + app api enabled (http://%s:%s)",
             Config.WEB_HOST, Config.WEB_PORT
@@ -424,20 +441,6 @@ async def main():
 
         tether = RewindTether(router, user_manager)
         logger.info("rewind tether watcher enabled")
-
-    # edwin's cycle scorer (ROOMS_DESIGN.md section 8, phase 6): a slow
-    # sweep that files one assessment per ended cycle. the scores are
-    # arithmetic, so the watcher runs even without a utility model - the
-    # model only upgrades the prose (summary + evidence-checked findings).
-    from src.services.cycle_scorer import CycleScorer
-
-    scorer = CycleScorer(
-        provider=utility_provider,
-        provider_name=provider_name,
-        usage_recorder=UsageRecorder(),
-    )
-    logger.info("cycle scorer enabled (%s prose)",
-                "model" if utility_provider is not None else "deterministic")
 
     pulse = None
     if orchestrator is not None:

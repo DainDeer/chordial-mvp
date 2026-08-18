@@ -44,6 +44,9 @@ export interface DeliveryPayload {
   content: string;
   at?: string;
   ephemeral?: boolean;
+  /** which room the line belongs to (phase 6b); absent on older payload
+   * shapes, which only ever carried daily-room lines */
+  room?: string;
 }
 
 export interface SendResult {
@@ -136,10 +139,49 @@ export interface ArchivedRoom {
   room_type: string;
   status: string;
   date: string | null;
+  /** the cycle-room anchor (phase 6b); null on daily/legacy rooms */
+  subject_type?: string | null;
+  subject_id?: string | null;
   summary: string | null;
   /** contractual one-liner (message counts) - safe to show in lists,
    * unlike the free-text digest whose tail quotes conversation */
   summary_line: string | null;
+}
+
+/** a cycle room as the doors speak it (phase 6b) */
+export interface CycleRoomInfo {
+  id: string;
+  type: "cycle_retro" | "cycle_planning";
+  status: string;
+  subject_id: string | null;
+}
+
+export interface SealedCycleBrief {
+  id: number;
+  public_id: string;
+  title: string;
+  theme: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  closed_at: string | null;
+}
+
+/** GET /api/v1/rooms/cycle - doors is null while no cycle has sealed */
+export interface CycleDoorsPayload {
+  doors: {
+    cycle: SealedCycleBrief;
+    scored: boolean;
+    retro: CycleRoomInfo | null;
+    planning: CycleRoomInfo | null;
+  } | null;
+  chat_available: boolean;
+}
+
+/** POST /api/v1/rooms/cycle/{retro|planning} */
+export interface OpenCycleRoomResult {
+  room: CycleRoomInfo;
+  cycle: SealedCycleBrief;
+  created: boolean;
 }
 
 export interface TodayPayload {

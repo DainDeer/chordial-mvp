@@ -1,11 +1,25 @@
 import { useEffect, useState } from "react";
-import { fetchArchive, fetchToday, isAuthError } from "../api/client";
-import type { ArchivedRoom, TaskRow, TodayPayload } from "../api/types";
+import {
+  fetchArchive,
+  fetchCycleDoors,
+  fetchToday,
+  isAuthError,
+  openCyclePlanning,
+  openCycleRetro,
+} from "../api/client";
+import type {
+  ArchivedRoom,
+  CycleDoorsPayload,
+  TaskRow,
+  TodayPayload,
+} from "../api/types";
+import type { CycleRoomHandle } from "./Room";
 import CyclePanel from "./CyclePanel";
 
 interface Props {
   token: string;
   onEnterRoom: () => void;
+  onEnterCycleRoom: (handle: CycleRoomHandle) => void;
   onOpenArchive: (room: ArchivedRoom) => void;
   onAuthLost: () => void;
 }
@@ -44,11 +58,14 @@ function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
 export default function Home({
   token,
   onEnterRoom,
+  onEnterCycleRoom,
   onOpenArchive,
   onAuthLost,
 }: Props) {
   const [today, setToday] = useState<TodayPayload | null>(null);
   const [pastDays, setPastDays] = useState<ArchivedRoom[]>([]);
+  const [doors, setDoors] = useState<CycleDoorsPayload | null>(null);
+  const [opening, setOpening] = useState<"retro" | "planning" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -72,10 +89,46 @@ export default function Home({
         if (!cancelled && isAuthError(e)) onAuthLost();
         // a missing journal is not an error worth a banner
       });
+    fetchCycleDoors(token)
+      .then((body) => {
+        if (!cancelled) setDoors(body);
+      })
+      .catch((e) => {
+        if (!cancelled && isAuthError(e)) onAuthLost();
+        // no doors is a fine state, not a banner
+      });
     return () => {
       cancelled = true;
     };
   }, [token, onAuthLost]);
+
+  /** open (get-or-create) a cycle room and walk in. the POST is
+   * idempotent server-side, so a double-tap is harmless; `opening`
+   * just keeps the button honest while the first tap is in flight. */
+  async function enterCycleRoom(kind: "retro" | "planning") {
+    if (opening) return;
+    setOpening(kind);
+    try {
+      const result =
+        kind === "retro"
+          ? await openCycleRetro(token)
+          : await openCyclePlanning(token);
+      onEnterCycleRoom({
+        id: result.room.id,
+        type: result.room.type,
+        label: result.cycle.title,
+        chatAvailable: doors?.chat_available ?? true,
+      });
+    } catch (e) {
+      if (isAuthError(e)) onAuthLost();
+      else
+        setError(
+          e instanceof Error ? e.message : "couldn’t open the cycle room",
+        );
+    } finally {
+      setOpening(null);
+    }
+  }
 
   const name = today?.user.name;
   const buckets = today?.buckets;
@@ -124,6 +177,35 @@ export default function Home({
         onAuthLost={onAuthLost}
       />
 
+      {doors?.doors && (
+        <section className="cycle-doors">
+          <h3>
+            cycle “{doors.doors.cycle.title}” closed
+            {doors.doors.scored ? " — the card is filed" : ""}
+          </h3>
+          <div className="cycle-door-row">
+            <button
+              className="cycle-door"
+              onClick={() => enterCycleRoom("retro")}
+              disabled={opening !== null}
+            >
+              {doors.doors.retro
+                ? "return to the retro →"
+                : "sit down for the retro →"}
+            </button>
+            <button
+              className="cycle-door"
+              onClick={() => enterCycleRoom("planning")}
+              disabled={opening !== null}
+            >
+              {doors.doors.planning
+                ? "back to planning →"
+                : "plan the next cycle →"}
+            </button>
+          </div>
+        </section>
+      )}
+
       <button className="enter-room" onClick={onEnterRoom}>
         step into today’s room →
       </button>
@@ -144,7 +226,11 @@ export default function Home({
                           undefined,
                           { weekday: "short", month: "short", day: "numeric" },
                         )
-                      : "before the rooms"}
+                      : r.room_type === "cycle_retro"
+                        ? `retrospective (${r.subject_id ?? "cycle"})`
+                        : r.room_type === "cycle_planning"
+                          ? `planning (${r.subject_id ?? "cycle"})`
+                          : "before the rooms"}
                   </span>
                   {r.summary_line && (
                     <span className="past-day-hint">{r.summary_line}</span>

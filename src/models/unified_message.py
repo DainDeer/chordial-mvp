@@ -27,6 +27,10 @@ class UnifiedMessage:
     dm_helper: Optional[str] = None
     # helper ids explicitly @-addressed in a group message, in mention order.
     mentioned: List[str] = field(default_factory=list)
+    # phase 6b: bind this turn to a specific room's stream (a cycle room)
+    # instead of today's daily room. the caller must have verified the room
+    # is the sender's and open; chat_service re-checks at the boundary.
+    room_uuid: Optional[str] = None
 
     def __post_init__(self):
         if self.timestamp is None:
