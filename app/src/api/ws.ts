@@ -1,7 +1,9 @@
-// the live channel: one websocket per app window, carrying every line the
-// council delivers to this user (attribution rides in the payload - one
-// socket, whole council). auth is first-message {token} because webviews
-// can't set headers on websocket upgrades.
+// the live channel: ONE websocket for the whole app (owned by the shell
+// since 7a, so it lives whenever the window is open - proactive lines
+// confirm even from the home screen, and presence heartbeats ride it),
+// carrying every line the council delivers to this user (attribution rides
+// in the payload - one socket, whole council). auth is first-message
+// {token} because webviews can't set headers on websocket upgrades.
 
 import { SERVER_URL } from "./client";
 import type { DeliveryPayload } from "./types";
@@ -90,5 +92,40 @@ export class RoomSocket {
       this.reconnectTimer = setTimeout(() => this.connect(), this.backoffMs);
       this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX_MS);
     };
+  }
+
+  /** fire-and-forget a client frame (the presence heartbeat). dropped
+   * silently while the socket is down - presence going quiet IS the
+   * away signal, so there is nothing to queue. */
+  send(frame: object): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(frame));
+    }
+  }
+}
+
+/** fan-out for the shell-owned socket: views subscribe for the payloads
+ * and reconnects they care about while mounted, and the shell keeps the
+ * one socket alive across navigation. */
+export class SocketBus {
+  private payloadListeners = new Set<(payload: DeliveryPayload) => void>();
+  private reconnectListeners = new Set<() => void>();
+
+  onPayload(fn: (payload: DeliveryPayload) => void): () => void {
+    this.payloadListeners.add(fn);
+    return () => this.payloadListeners.delete(fn);
+  }
+
+  onReconnect(fn: () => void): () => void {
+    this.reconnectListeners.add(fn);
+    return () => this.reconnectListeners.delete(fn);
+  }
+
+  emitPayload(payload: DeliveryPayload): void {
+    for (const fn of this.payloadListeners) fn(payload);
+  }
+
+  emitReconnect(): void {
+    for (const fn of this.reconnectListeners) fn();
   }
 }

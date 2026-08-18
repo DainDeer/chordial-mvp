@@ -1,5 +1,5 @@
 """outbound message router: the one place that knows how to deliver a message
-to a (platform, user) - and, in v3, as a specific helper.
+to a (platform, user) - and, since phase 3, as a specific helper.
 
 replaces the hand-rolled callback in main.py that string-matched the platform
 and sniffed `hasattr(interface, 'send_message')`. interfaces register by their
@@ -8,12 +8,22 @@ knowing which interface backs a platform. when a send is permanently
 undeliverable, the router deactivates that platform link so we stop paying to
 generate messages for a dead channel.
 
-v3 runs N telegram interfaces (one bot per helper), all reporting
-`platform == "telegram"`. keying purely by platform would collide, so the
-router keys on `(platform, helper_id)` - the interface's `helper_id` attr, or
-`None` for single-bot platforms like discord. `deliver_as(..., speaker=...)`
-resolves the speaking helper's bot; the legacy 3-arg `deliver` speaks as
-chordial.
+the registry keys on `(platform, helper_id)`; every current platform is
+single-bot and registers under `(platform, None)`, attributing speakers
+in-band (the app puts the speaker in the payload; the tether renders it into
+the text). the helper_id sub-key survives the phase-7a ensemble retirement
+because the resolution rule it encodes - never impersonate a helper through
+an account that isn't theirs - is the right default for any future platform
+that does grow per-speaker accounts. `deliver_as(..., speaker=...)` names
+the speaking helper; the legacy 3-arg `deliver` speaks as the chair.
+
+the tether mirror (docs/ROOMS_DESIGN.md section 9, "one conversation, two
+windows"): a council line CONFIRMED delivered to telegram is also fanned,
+best-effort, to the user's connected app surfaces - the desktop shows the
+phone conversation live instead of at the next refetch. the mirror never
+affects the delivery verdict: the event log records against the telegram
+confirmation, and a desk that misses the echo still sees the line in
+history.
 """
 
 import logging
@@ -62,11 +72,11 @@ class MessageRouter:
         """which speaker ids `platform` can actually send as - the director's
         candidate filter (casting a speaker this returns False for would fail
         closed in _resolve). None means unrestricted: a (platform, None)
-        interface serves ANY speaker (the app attributes in-band via the
-        payload; discord is a single untyped bot). a platform with only
-        helper-keyed interfaces (bot-per-helper telegram, including the
-        single-bot deployment where the one bot IS the chair's) can send only
-        as exactly those helpers."""
+        interface serves ANY speaker - the app attributes in-band via the
+        payload, the tether renders attribution into the text, discord is a
+        single untyped bot. a platform with only helper-keyed interfaces
+        (none today; the rule outlives the ensemble) can send only as
+        exactly those helpers."""
         speakers: set = set()
         for p, helper_id in self._interfaces:
             if p != platform:
@@ -113,12 +123,15 @@ class MessageRouter:
             return False
 
         try:
-            # speaker rides along for interfaces that attribute in-band (the
-            # app pushes it in the payload); bot-per-helper platforms already
-            # resolved it to the right account and ignore the kwarg
-            return await interface.send_message(target_id, message,
-                                                speaker=speaker,
-                                                stream_id=stream_id)
+            # every platform attributes in-band now: the app carries the
+            # speaker in its payload, the tether renders it into the text
+            ok = await interface.send_message(target_id, message,
+                                              speaker=speaker,
+                                              stream_id=stream_id)
+            if ok and platform == "telegram":
+                await self._mirror_to_app(target_id, message, speaker,
+                                          stream_id)
+            return ok
         except UndeliverableError as e:
             logger.warning(
                 "permanent delivery failure for %s:%s (speaker=%s) - %s; deactivating link",
@@ -129,6 +142,29 @@ class MessageRouter:
             )
             await self._user_manager.deactivate_platform_identity(platform, target_id)
             return False
+
+    async def _mirror_to_app(
+        self, telegram_user_id: str, message: str, speaker: str,
+        stream_id: Optional[str],
+    ) -> None:
+        """one conversation, two windows: echo a telegram-confirmed council
+        line to the user's connected app surfaces. best-effort by contract -
+        no app interface, no linked user, or no listening surface all no-op
+        silently (history covers the desk on its next fetch), and a failure
+        here never touches the already-confirmed delivery verdict."""
+        interface = self._interfaces.get(("app", None))
+        if interface is None:
+            return
+        try:
+            user_uuid = await self._user_manager.lookup_user_uuid(
+                "telegram", telegram_user_id)
+            if user_uuid is None:
+                return
+            await interface.send_message(user_uuid, message, speaker=speaker,
+                                         stream_id=stream_id,
+                                         source_platform="telegram")
+        except Exception:
+            logger.exception("telegram->app mirror failed; continuing without")
 
     async def deliver_choice_as(
         self,

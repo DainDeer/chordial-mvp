@@ -30,6 +30,7 @@ the multi-user seam the localhost resolver deliberately punted on.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid as uuid_mod
 from datetime import timedelta
@@ -37,7 +38,7 @@ from pathlib import Path
 from typing import Optional
 from weakref import WeakValueDictionary
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 from config import Config
 from src.database.database import get_db
@@ -1039,6 +1040,15 @@ class WebService:
             return ws
 
         user_uuid = identity.user_uuid
+        # the socket proves this user runs the app: make sure the 'app'
+        # platform identity exists (the same link the POST path maintains),
+        # so presence-aware routing can resolve a desk target even for a
+        # user who has only ever read here. structurally can't conflict -
+        # the app's platform id IS the user uuid. (absent chat service =
+        # a chatless rig; the socket still serves reads.)
+        if self.chat_service is not None:
+            await self.chat_service.user_manager.link_platform_identity(
+                user_uuid, "app", user_uuid)
         queue = self.app_interface.subscribe(user_uuid)
         await ws.send_json({"type": "hello", "device": identity.device_uuid})
 
@@ -1067,10 +1077,23 @@ class WebService:
 
         pump_task = asyncio.create_task(pump())
         try:
-            # reading keeps the connection's close/ping handling alive;
-            # inbound chat rides POST, so client frames are ignored
-            async for _ in ws:
-                pass
+            # reading keeps the connection's close/ping handling alive.
+            # inbound chat rides POST; the one client frame that matters is
+            # the presence heartbeat (phase 7a) - {"type": "presence",
+            # "idle_seconds": N} - feeding the app interface's trichotomy
+            # that routes proactive words to the desk or the phone. anything
+            # else is ignored, malformed frames included: a bad heartbeat
+            # must never cost the socket.
+            async for msg in ws:
+                if msg.type != WSMsgType.TEXT:
+                    continue
+                try:
+                    frame = json.loads(msg.data)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(frame, dict) and frame.get("type") == "presence":
+                    self.app_interface.note_presence(
+                        user_uuid, frame.get("idle_seconds"))
         finally:
             pump_task.cancel()
             self.app_interface.unsubscribe(user_uuid, queue)

@@ -245,10 +245,10 @@ class ChordialDirector:
         """who could plausibly field this message: the user's active cast,
         restricted to built agents, to cards present in this room type
         (card.default_rooms; 'legacy' rooms count as daily), and to speakers
-        the platform can actually deliver as (a single-bot telegram
-        deployment can only send as its one bot - casting anyone else would
-        fail closed at the router). the chair leads the list and is always a
-        candidate."""
+        the platform can actually deliver as (every current platform
+        attributes in-band and serves the whole council, so the filter is a
+        no-op today - it stays for any future platform with per-speaker
+        accounts). the chair leads the list and is always a candidate."""
         from src.personas import load_personas
 
         room_type = await self._room_type_of(stimulus.stream_id)

@@ -5,8 +5,10 @@ the prose, pacing, and interpretation of "getting to know someone" are the
 model's job; these two tools are the only code-side bookkeeping it needs:
 `complete_introduction` stamps the (user, helper) relationship's final state
 once identity has settled (or the user declined), and `list_available_guides`
-lets the acting helper see who else in the crew hasn't been met yet, so it can
-offer introductions and hand over a working deep link.
+lets the acting helper see who else in the crew hasn't been met yet, so it
+can offer introductions. (the ensemble-era per-guide telegram deep links
+retired with the per-helper bots in phase 7a: guides are met in the rooms,
+where the council already speaks.)
 """
 import logging
 
@@ -90,23 +92,16 @@ COMPLETE_INTRODUCTION = Tool(
 )
 
 
-def _deep_link(handle: str) -> str:
-    # the 'meet' payload is what the telegram interface routes to
-    # begin_introduction (telegram_bot._MEET_PAYLOAD) - keep them in sync.
-    return f"https://t.me/{handle}?start=meet"
-
-
 async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
     user_uuid = user_of_context(context)
     acting = context.actor
     cards = load_personas()
 
     lines = []
-    offered: list[tuple[str, bool]] = []
+    offered: list[str] = []
     # only helpers that are actually DEPLOYED (ENABLED_HELPERS) are offered -
     # every card is authored for the full council, but a solo or partial
-    # deployment must not advertise residents who can never answer (or hand
-    # out their deep links from leftover env vars).
+    # deployment must not advertise residents who can never answer.
     for helper_id in sorted(set(Config.ENABLED_HELPERS) & set(cards)):
         card = cards[helper_id]
         if helper_id == acting:
@@ -114,18 +109,9 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
         state = await _helper_states.get(user_uuid, helper_id)
         if state.status in ("active", "declined"):
             continue
-        # the real, registered @username (config) - NEVER the persona card's
-        # telegram_handle placeholder, which is almost never the actual name
-        # a helper's bot got registered under (botfather names are globally
-        # unique). a helper with no telegram bot configured at all has no
-        # deep link to offer - still worth listing, just without one.
-        username = Config.telegram_username_for(helper_id)
-        bits = (f"- {card.emoji} {helper_id} the {card.species} - "
-                f"{card.specialty}")
-        if username:
-            bits += f" - meet them: {_deep_link(username)}"
-        lines.append(bits)
-        offered.append((helper_id, bool(username)))
+        lines.append(f"- {card.emoji} {helper_id} the {card.species} - "
+                     f"{card.specialty}")
+        offered.append(helper_id)
 
     # the audit trail for this tool. record_event stays False (a roster goes
     # stale immediately and would sit in cache-stable history forever, inviting
@@ -134,8 +120,7 @@ async def _list_available_guides(tool_input: dict, context: ToolContext) -> str:
     # turns where a helper answered a roster question without asking.
     logger.info(
         "list_available_guides: actor=%s user=%s -> %s",
-        acting, user_uuid,
-        ", ".join(f"{h}{'' if l else ' (no link)'}" for h, l in offered) or "none",
+        acting, user_uuid, ", ".join(offered) or "none",
     )
 
     if not lines:
@@ -148,23 +133,23 @@ LIST_AVAILABLE_GUIDES = Tool(
         name="list_available_guides",
         description=(
             "The ONLY source of truth for who else is in this person's crew. "
-            "Returns the helpers they haven't met yet (or have met but haven't "
-            "decided about), each with its real specialty and a working deep "
-            "link that opens that helper's own chat and starts its "
-            "introduction.\n"
+            "Returns the helpers they haven't met yet (or have met but "
+            "haven't decided about), each with its real specialty. Everyone "
+            "listed already speaks in this room - meeting a guide is just "
+            "talking with them here.\n"
             "\n"
             "Call this ANY time the other helpers come up - not just at the end "
             "of your own introduction. That includes: \"who else is there?\", "
             "\"introduce me to the other helpers / companions / guides / "
-            "crew\", \"can I get a link to X?\", \"who should I talk to about "
-            "<topic>?\", or you offering the crew unprompted.\n"
+            "crew\", \"who should I talk to about <topic>?\", or you "
+            "offering the crew unprompted.\n"
             "\n"
             "You do not know the roster without calling this, and a plausible "
-            "guess is worse than asking: crewmate names, what each one "
-            "specializes in, and every link are known ONLY here. Never write a "
-            "crewmate's name, specialty, or URL from memory or from an earlier "
-            "message - an invented helper doesn't exist and an invented link "
-            "goes nowhere. Call it fresh each time; who's been met changes."
+            "guess is worse than asking: crewmate names and what each one "
+            "specializes in are known ONLY here. Never write a crewmate's "
+            "name or specialty from memory or from an earlier message - an "
+            "invented helper doesn't exist. Call it fresh each time; who's "
+            "been met changes."
         ),
         input_schema={"type": "object", "properties": {}},
     ),

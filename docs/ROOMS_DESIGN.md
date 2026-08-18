@@ -567,6 +567,61 @@ room** — the same room, the same stream, from the phone.
   single-bot plumbing and single-use link-code flow carry over; the multi-bot
   ensemble code does not); the desktop app being asleep never breaks the phone.
 
+### the tether, as built (phase 7a)
+
+- **The collapse.** One `TelegramInterface` per deployment (`TELEGRAM_TOKEN`
+  + `TELEGRAM_BOT_USERNAME`), registered with the router as
+  `(telegram, None)` — the single-bot key, so it serves ANY speaker. The
+  ensemble went whole: per-helper tokens/usernames, the shared crew group and
+  its update deduper, @-mention parsing, `/setup_group`, the meet-the-guides
+  deep links, and `begin_introduction` were deleted, not ported. With the
+  multi-human group gone, every chat scope is a private room with exactly
+  one human — which also retired the dm-only guards on the code-minting
+  tools, so "connect my telegram" works from the app's council room (where
+  the ask actually happens).
+- **Inbound is a room turn.** A known sender's message is a group-scope
+  stimulus into today's daily room (in private chats `chat_id == user_id`,
+  so the group delivery target is the sender); the routing spine picks who
+  answers, exactly as it does for the app. The front door now runs on every
+  surface — a brand-new person's first tether message lands as the chair's
+  dm-shaped introduction, so identity talk stays out of shared summaries.
+  Stranger policy is unchanged: no user row, no model call, one static line.
+- **Attribution is rendered, not configured.** `attributed(speaker, text)`
+  prefixes `{emoji} {id} — ` from the persona card at send time (deterministic
+  and total: unknown/absent speakers pass through). Chunking happens after
+  attribution, so the prefix counts toward telegram's 4096 cap. (Writing
+  that test found a latent `chunk_message` bug: unbroken text one char past
+  the cap spun the hard-split loop forever — fixed and pinned.)
+- **Presence is the app interface's trichotomy.** The desktop shell owns ONE
+  server websocket (it outlives navigation, so proactive lines confirm even
+  from the home screen) and heartbeats `{type: "presence", idle_seconds}`
+  every 30s from the sidecar's OS idle clock. The server keeps a per-user
+  in-memory registry on the `AppInterface`: **absent** (no connected
+  surface), **idle** (connected but idle past `PRESENCE_IDLE_SECONDS` or
+  heartbeats gone quiet), **active** (fresh non-idle heartbeat; a surface
+  that never reports — a pre-7a client — fails open to active). The pulse's
+  stimulus factory routes each firing on it: active → the desk; idle → the
+  phone by recency, falling back to the still-connected desk rather than
+  going silent; absent → messaging platforms only (a closed app can never
+  confirm a send). One target per firing, never both; a broken presence
+  source degrades to absent — it costs the desk preference, never the
+  check-in. Without a web surface the targeting is byte-for-byte pre-7a.
+- **One conversation, two windows.** A council line CONFIRMED delivered to
+  telegram is mirrored best-effort to the user's connected app surfaces by
+  the router; the sender's own phone line is mirrored by the interface
+  before the council answers. Mirrors never touch the delivery verdict —
+  the event log records against the telegram confirmation, and the desk's
+  next history fetch covers anything the echo missed. Mirrored payloads
+  carry `author_type` + `platform`; the desktop renders the person's phone
+  lines on their side of the room with a provenance whisper ("📱 from
+  telegram"), and lines that land while nobody is in a room view become an
+  unread nudge on the door — they wait, they don't chase.
+- **Deferred, not faked:** artifact degradation to inline-button messages
+  ("start when you're back at your desk?" → queued for the deer) — the
+  rewind ping is still the only interactive tether surface; the deer
+  voicing server check-ins in its own bubble (they land in the daily room
+  with the door nudge for now).
+
 ---
 
 ## 10. architecture for 100+ users
@@ -748,7 +803,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) |
 
 ### explicitly deferred
 

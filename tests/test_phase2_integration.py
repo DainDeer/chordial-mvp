@@ -1,8 +1,10 @@
-"""cross-seam integration for the v3 ensemble: the real ChatService driving the
-real Orchestrator (with the real HelperStateManager + EventLog), only the
-model-calling HelperAgent faked. this is the coverage no single workstream
-could write - it proves onboarding routing, the director, scope tagging, and
-delivery line up end to end.
+"""cross-seam integration: the real ChatService driving the real Orchestrator
+(with the real HelperStateManager + EventLog), only the model-calling
+HelperAgent faked. this is the coverage no single workstream could write - it
+proves onboarding routing, the director, scope tagging, and delivery line up
+end to end. (7a: telegram is the single-bot tether - inbound is group scope
+into the shared room, and the ensemble's @-mention summoning is gone; the
+director owns who speaks.)
 """
 import asyncio
 import sys
@@ -73,11 +75,30 @@ def test_new_user_dm_routes_to_introduction():
 
     msg = UnifiedMessage(content="hello?", platform_user_id="tg-new-1",
                          platform="telegram", platform_message_id="1",
-                         chat_scope="dm", dm_helper="vel")
+                         chat_scope="dm")
     reply = _run(chat.process_message(msg))
 
     assert reply is None            # router delivered; interface sends nothing
     assert deliver.sent == [("telegram", "tg-new-1", "vel says hi", "vel")]
+    assert vel.briefings[-1].kind == "introduction"
+
+
+def test_new_user_on_the_tether_routes_to_introduction():
+    """7a: the same front door when the first contact is a tether message -
+    group scope in, dm-shaped introduction out, delivered back to the
+    private chat that sent it."""
+    vel = FakeHelper("vel")
+    deliver = RecordingDeliver()
+    chat = ChatService(orchestrator=_orch({"vel": vel}, deliver=deliver),
+                       user_manager=UserManager())
+
+    msg = UnifiedMessage(content="hi there", platform_user_id="tg-new-2",
+                         platform="telegram", platform_message_id="1",
+                         chat_scope="group", group_chat_id="tg-new-2")
+    reply = _run(chat.process_message(msg))
+
+    assert reply is None
+    assert deliver.sent == [("telegram", "tg-new-2", "vel says hi", "vel")]
     assert vel.briefings[-1].kind == "introduction"
 
 
@@ -94,7 +115,7 @@ def test_returning_active_user_dm_is_a_normal_turn():
                        user_manager=um)
     msg = UnifiedMessage(content="hey", platform_user_id="tg-active-1",
                          platform="telegram", platform_message_id="2",
-                         chat_scope="dm", dm_helper="vel")
+                         chat_scope="dm")
     reply = _run(chat.process_message(msg))
 
     assert reply is None
@@ -104,7 +125,8 @@ def test_returning_active_user_dm_is_a_normal_turn():
 
 def test_group_message_delivers_out_of_band_and_returns_none():
     """a group message is delivered per-speaker via the router; process_message
-    returns None so the receiving bot echoes nothing."""
+    returns None so the receiving interface echoes nothing. on the tether the
+    group target is the sender's own private chat."""
     um = UserManager()
     user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-grp-1"))
     _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
@@ -116,56 +138,35 @@ def test_group_message_delivers_out_of_band_and_returns_none():
                        user_manager=um)
     msg = UnifiedMessage(content="hi crew", platform_user_id="tg-grp-1",
                          platform="telegram", platform_message_id="3",
-                         chat_scope="group", group_chat_id="-100999", via_bot="vel")
+                         chat_scope="group", group_chat_id="tg-grp-1")
     reply = _run(chat.process_message(msg))
 
     assert reply is None                       # nothing sent by the receiving interface
-    assert deliver.sent == [("telegram", "-100999", "vel says hi", "vel")]
+    assert deliver.sent == [("telegram", "tg-grp-1", "vel says hi", "vel")]
 
 
-def test_group_mention_routes_to_the_named_helper():
-    """@-mentioning an active specialist in a group summons that helper, who
-    speaks via its own bot."""
+def test_introduction_talk_stays_private_from_siblings():
+    """an introduction is dm-shaped wherever it runs: identity talk during
+    vel's front door is scope-tagged so a sibling's briefing window never
+    contains it, while vel's does."""
     um = UserManager()
-    user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-grp-2"))
-    _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
-    hsm = HelperStateManager()
-    _run(hsm.set_status(user_uuid, "vel", STATUS_ACTIVE))
-    _run(hsm.set_status(user_uuid, "skip", STATUS_ACTIVE))
-
-    agents = {"vel": FakeHelper("vel"), "skip": FakeHelper("skip")}
-    deliver = RecordingDeliver()
-    chat = ChatService(orchestrator=_orch(agents, deliver=deliver), user_manager=um)
-    msg = UnifiedMessage(content="@tempo_bot got a workout?", platform_user_id="tg-grp-2",
-                         platform="telegram", platform_message_id="4",
-                         chat_scope="group", group_chat_id="-100999",
-                         via_bot="vel", mentioned=["skip"])
-    reply = _run(chat.process_message(msg))
-
-    assert reply is None
-    assert deliver.sent == [("telegram", "-100999", "skip says hi", "skip")]
-
-
-def test_dm_transcript_stays_private_from_siblings():
-    """a message in skip's dm is scope-tagged so a sibling's briefing window
-    never contains it (the privacy filter), while skip's does."""
-    um = UserManager()
-    user_uuid, _ = _run(um.get_or_create_user("telegram", "tg-priv-1"))
-    _run(um.update_user_preferences(user_uuid, {"preferred_name": "dain"}))
-    hsm = HelperStateManager()
-    _run(hsm.set_status(user_uuid, "vel", STATUS_ACTIVE))
-    _run(hsm.set_status(user_uuid, "skip", STATUS_ACTIVE))
-
-    skip = FakeHelper("skip")
-    chat = ChatService(orchestrator=_orch({"vel": FakeHelper("vel"), "skip": skip},
-                                          deliver=RecordingDeliver()), user_manager=um)
-    # a private aside to skip
+    chat = ChatService(
+        orchestrator=_orch({"vel": FakeHelper("vel"),
+                            "skip": FakeHelper("skip")},
+                           deliver=RecordingDeliver()),
+        user_manager=um)
+    # a brand-new person's first words - the introduction, private with vel
     _run(chat.process_message(UnifiedMessage(
-        content="secret between us", platform_user_id="tg-priv-1", platform="telegram",
-        platform_message_id="5", chat_scope="dm", dm_helper="skip")))
+        content="secret between us", platform_user_id="tg-priv-1",
+        platform="telegram", platform_message_id="5",
+        chat_scope="group", group_chat_id="tg-priv-1")))
 
+    user_uuid = _run(um.lookup_user_uuid("telegram", "tg-priv-1"))
+    assert user_uuid is not None
     log = EventLog(user_uuid)
-    tempo_sees = [e.content for e in log.recent(visible_to="skip") if e.kind == "message"]
-    chordial_sees = [e.content for e in log.recent(visible_to="vel") if e.kind == "message"]
-    assert "secret between us" in tempo_sees
-    assert "secret between us" not in chordial_sees
+    vel_sees = [e.content for e in log.recent(visible_to="vel")
+                if e.kind == "message"]
+    skip_sees = [e.content for e in log.recent(visible_to="skip")
+                 if e.kind == "message"]
+    assert "secret between us" in vel_sees
+    assert "secret between us" not in skip_sees

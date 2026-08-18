@@ -18,6 +18,9 @@ export interface ChatMessage {
   authorType: "user" | "agent";
   content: string;
   at: string | null;
+  /** where the line originated when not here - "telegram" marks a tether
+   * line (provenance rides both history rows and mirror payloads) */
+  platform?: string | null;
   /** refusal/error copy: rendered, never persisted, never deduped against */
   ephemeral?: boolean;
   /** an optimistic user line whose turn hasn't finished yet */
@@ -37,6 +40,7 @@ export function fromHistory(row: HistoryRow): ChatMessage {
     authorType: row.author_type === "user" ? "user" : "agent",
     content: row.content,
     at: row.at,
+    platform: row.platform,
   };
 }
 
@@ -47,10 +51,13 @@ export function fromPayload(payload: DeliveryPayload): ChatMessage {
   return {
     key: payload.id ?? fallbackKey(),
     author: payload.author,
-    authorType: "agent",
+    // the tether mirror (phase 7a) echoes the person's own phone lines;
+    // everything else on the socket is a council line
+    authorType: payload.author_type === "user" ? "user" : "agent",
     content: payload.content,
     at: payload.at ?? null,
     ephemeral: payload.ephemeral,
+    platform: payload.platform ?? null,
   };
 }
 

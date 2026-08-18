@@ -199,6 +199,88 @@ def test_curation_plan_is_minimal(db):
     assert stimulus.record_inbound is False
 
 
+# --- the factory: presence-aware routing (ROOMS_DESIGN section 9, 7a) --------
+
+
+def _link(db, platform, platform_user_id):
+    with db() as s:
+        s.add(PlatformIdentity(
+            user_uuid="u1", platform=platform,
+            platform_user_id=platform_user_id,
+        ))
+        s.commit()
+
+
+def _plan_target(presence, platforms, db):
+    factory = ChordialStimulusFactory(
+        UserManager(), platforms=platforms, now=lambda: NOW,
+        presence=presence,
+    )
+    plan = run(factory.plan("u1", checkin_rhythm(), RhythmDecision(due_at=NOW)))
+    return plan.target if plan else None
+
+
+def test_active_presence_routes_the_checkin_to_the_desk(db):
+    """someone demonstrably at the desk gets the desktop, even though they
+    last SPOKE on discord - presence beats recency."""
+    _link(db, "app", "u1")
+    _link(db, "telegram", "777")
+    seed_message(db, "user", "user", "hi", NOW - timedelta(hours=2))
+
+    target = _plan_target(lambda u: "active",
+                          ["discord", "telegram", "app"], db)
+    assert target == DeliveryTarget(platform="app", target_id="u1")
+
+
+def test_idle_presence_prefers_the_phone(db):
+    """away or idle -> the tether: the desk surface may be connected, but
+    nobody is at it."""
+    _link(db, "app", "u1")
+    _link(db, "telegram", "777")
+    seed_message(db, "user", "user", "hi", NOW - timedelta(hours=2))
+
+    target = _plan_target(lambda u: "idle",
+                          ["discord", "telegram", "app"], db)
+    assert target is not None
+    assert target.platform != "app"      # never the unattended desk first
+
+
+def test_idle_with_no_phone_falls_back_to_the_connected_desk(db):
+    """no messaging platform linked, but a desk surface is connected: the
+    word waits on screen rather than going unsaid."""
+    with db() as s:
+        s.query(PlatformIdentity).delete()   # drop the seeded discord link
+        s.commit()
+    _link(db, "app", "u1")
+
+    target = _plan_target(lambda u: "idle", ["discord", "telegram", "app"], db)
+    assert target == DeliveryTarget(platform="app", target_id="u1")
+
+
+def test_absent_presence_never_targets_the_closed_app(db):
+    """the app is closed: a send there could never confirm, so targeting is
+    exactly the pre-7a messaging-platform behavior."""
+    _link(db, "app", "u1")
+
+    target = _plan_target(lambda u: "absent",
+                          ["discord", "telegram", "app"], db)
+    assert target == DeliveryTarget(platform="discord", target_id="42")
+
+
+def test_no_presence_source_reads_as_absent(db):
+    _link(db, "app", "u1")
+    target = _plan_target(None, ["discord", "telegram", "app"], db)
+    assert target == DeliveryTarget(platform="discord", target_id="42")
+
+
+def test_presence_failure_costs_the_desk_preference_never_the_checkin(db):
+    def broken(user_uuid):
+        raise RuntimeError("presence source down")
+
+    target = _plan_target(broken, ["discord", "telegram", "app"], db)
+    assert target == DeliveryTarget(platform="discord", target_id="42")
+
+
 # --- the gates: vel's members and exemptions ----------------------------
 
 

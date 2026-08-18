@@ -422,6 +422,21 @@ textarea::placeholder {
   transform: translateY(-1px);
 }
 
+/* the door's unread nudge (7a): lines that arrived while nobody was in
+   the room wait on the handle, they don't chase */
+.room-nudge {
+  display: inline-block;
+  margin-left: 9px;
+  min-width: 1.4em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #c2568f;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-shadow: none;
+}
+
 /* --- the cycle-room doors (phase 6b) ------------------------------------- */
 
 /* the arc's grace note (phase 6c): earned quiet, stated softly */
@@ -611,6 +626,14 @@ textarea::placeholder {
 
 .line.mine.pending .bubble {
   opacity: 0.6;
+}
+
+/* provenance whisper on tether lines (7a): the same words, marked as
+   having arrived from the phone */
+.line-via {
+  margin-top: 2px;
+  font-size: 0.68rem;
+  color: var(--ink-dim);
 }
 
 .line.ephemeral .bubble {

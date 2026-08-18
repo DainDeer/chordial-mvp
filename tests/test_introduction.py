@@ -213,18 +213,16 @@ def test_complete_introduction_is_terminal_and_records():
 
 
 def _clear_telegram_usernames(monkeypatch):
-    """hermetic env: a developer's real .env may have TELEGRAM_USERNAME_* or
-    a stale ENABLED_HELPERS set, which would otherwise leak real deep links
-    (or an old cast) into these assertions. guides are offered from the
-    DEPLOYED set, so the full council is pinned here."""
+    """hermetic env: a developer's real .env may carry a stale
+    ENABLED_HELPERS set, which would otherwise leak an old cast into these
+    assertions. guides are offered from the DEPLOYED set, so the full
+    council is pinned here. (the per-helper TELEGRAM_USERNAME_* vars died
+    with the ensemble in 7a - nothing reads them anymore.)"""
     from config import Config
 
-    monkeypatch.setattr(Config, "TELEGRAM_BOT_USERNAME", None)
     monkeypatch.setattr(Config, "ENABLED_HELPERS",
                         ["vel", "pip", "skip", "remy", "mabel", "juniper",
                          "edwin"])
-    for hid in ("VEL", "PIP", "SKIP", "REMY", "MABEL", "JUNIPER", "EDWIN"):
-        monkeypatch.delenv(f"TELEGRAM_USERNAME_{hid}", raising=False)
 
 
 def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(
@@ -245,23 +243,17 @@ def test_list_available_guides_excludes_acting_helper_and_lists_the_rest(
         assert f" {helper_id} the {species} - " in result
 
 
-def test_list_available_guides_deep_link_uses_configured_username_not_card_placeholder(
-    db, monkeypatch
-):
-    """the real, registered @username (config) drives the deep link - never
-    the persona card's `telegram_handle` placeholder, which is essentially
-    never the name actually available at botfather. no config -> no (wrong)
-    link offered, rather than a link to someone else's bot."""
+def test_list_available_guides_never_offers_deep_links(db, monkeypatch):
+    """7a: the per-guide bots are gone, so the roster carries no telegram
+    links at all - guides are met in the rooms, where the council already
+    speaks. a leftover ensemble env var must not resurrect one."""
     _clear_telegram_usernames(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_USERNAME_SKIP", "chordial_mvp_v3_skip_bot")
     user_uuid = run(_make_user())
 
-    unconfigured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
-    assert "t.me/" not in unconfigured
-
-    monkeypatch.setenv("TELEGRAM_USERNAME_SKIP", "chordial_mvp_v3_skip_bot")
-    configured = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
-    assert "t.me/chordial_mvp_v3_skip_bot?start=meet" in configured
-    assert "t.me/skip_bot" not in configured  # the card's placeholder, never used
+    result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
+    assert "t.me/" not in result
+    assert "start=meet" not in result
 
 
 def test_list_available_guides_excludes_active_and_declined(db, monkeypatch):
@@ -294,7 +286,6 @@ def test_list_available_guides_logs_what_it_handed_back(db, monkeypatch, caplog)
     invisible in the event log, so 'did it even ask?' was unanswerable from
     the DB alone after a helper confabulated a roster (2026-08-05)."""
     _clear_telegram_usernames(monkeypatch)
-    monkeypatch.setenv("TELEGRAM_USERNAME_MABEL", "chordial_mvp_v3_mabel_bot")
     user_uuid = run(_make_user())
 
     with caplog.at_level("INFO", logger="src.services.tools.intro_tools"):
@@ -302,8 +293,7 @@ def test_list_available_guides_logs_what_it_handed_back(db, monkeypatch, caplog)
 
     line = next(r.getMessage() for r in caplog.records if "list_available_guides" in r.getMessage())
     assert "actor=vel" in line and user_uuid in line
-    assert "mabel (no link)" not in line  # configured: a link went out
-    assert "skip (no link)" in line  # unconfigured: flagged, still offered
+    assert "mabel" in line and "skip" in line  # who was handed back
 
 
 def test_list_available_guides_description_covers_mid_conversation_asks():
@@ -674,12 +664,9 @@ def test_helper_agent_forwards_the_directors_execution_hints(db):
 
 def test_list_available_guides_offers_only_deployed_helpers(db, monkeypatch):
     """every card is authored for the full council, but a partial deployment
-    must not offer residents who can never answer - or hand out their deep
-    links from leftover env vars."""
+    must not offer residents who can never answer."""
     _clear_telegram_usernames(monkeypatch)
     monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "pip", "mabel"])
-    # a leftover env var for a NON-deployed helper must not leak a dead link
-    monkeypatch.setenv("TELEGRAM_USERNAME_SKIP", "chordial_mvp_v3_skip_bot")
     user_uuid = run(_make_user())
 
     result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -15,18 +15,16 @@ class UnifiedMessage:
     metadata: Optional[Dict[str, Any]] = None
     timestamp: Optional[datetime] = None  # naive UTC, matches db storage
 
-    # --- v3 multi-bot / group-chat routing (all default to the v2 dm shape) ---
-    # where the message arrived: 'dm' (a 1:1 chat with one helper's bot) or
-    # 'group' (the shared crew group chat).
+    # --- routing shape (defaults to the dm shape) -----------------------------
+    # where the message arrived: 'dm' (a private channel with the chair -
+    # discord, introductions) or 'group' (the user's council room: the app,
+    # and the telegram tether since 7a). every group is a private room with
+    # exactly one human - the multi-human crew group retired with the
+    # per-helper bot ensemble.
     chat_scope: str = "dm"
-    # the telegram group's chat id, set only when chat_scope == 'group'.
+    # the delivery target for group-scope replies (the app: the user uuid;
+    # the tether: the telegram chat id). set only when chat_scope == 'group'.
     group_chat_id: Optional[str] = None
-    # the helper id whose bot RECEIVED this message (which door it came through).
-    via_bot: Optional[str] = None
-    # for a dm, which helper's bot it is (== via_bot for a dm).
-    dm_helper: Optional[str] = None
-    # helper ids explicitly @-addressed in a group message, in mention order.
-    mentioned: List[str] = field(default_factory=list)
     # phase 6b: bind this turn to a specific room's stream (a cycle room)
     # instead of today's daily room. the caller must have verified the room
     # is the sender's and open; chat_service re-checks at the boundary.

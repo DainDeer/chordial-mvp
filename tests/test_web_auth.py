@@ -306,21 +306,17 @@ def test_web_login_tool_mints_code_and_link(env, public):
     assert auth.redeem_login_code(code) == U1
 
 
-def test_credential_tools_refuse_outside_a_dm(env, public):
-    """a tool result lands in the current reply, and a group reply is
-    delivered to the whole group - bearer codes are dm-only, default-deny
-    (a context with no scope metadata counts as public)."""
-    from dainframe.tools.context import ToolContext
-    from src.database.models import LinkCode
+def test_credential_tools_mint_in_any_scope(env, public):
+    """7a: the dm-only guard retired with the multi-human crew group. every
+    scope is now a private channel whose only reader is the code's owner,
+    so bearer codes mint from the app's council room (the tether's whole
+    link story) exactly as they do in a dm."""
     from src.services.tools.link_tools import LINK_PLATFORM, WEB_LOGIN
 
-    bare = ToolContext(stream_id=U1, activation_id="act-1", actor="chordial")
-    for tool in (WEB_LOGIN, LINK_PLATFORM):
-        for context in (_tool_context(scope="group"), bare):
-            result = _run(tool.handler({}, context))
-            assert result.startswith("refused"), (tool.definition.name, result)
-    with db_mod.SessionLocal() as s:
-        assert s.query(LinkCode).count() == 0  # nothing minted on refusal
-    # and the dm path still works for both
+    assert "link code:" in _run(
+        LINK_PLATFORM.handler({}, _tool_context(scope="group")))
+    assert "login code:" in _run(
+        WEB_LOGIN.handler({}, _tool_context(scope="group")))
+    # and the dm path is unchanged
     assert "link code:" in _run(LINK_PLATFORM.handler({}, _tool_context()))
     assert "login code:" in _run(WEB_LOGIN.handler({}, _tool_context()))
