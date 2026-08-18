@@ -424,6 +424,14 @@ textarea::placeholder {
 
 /* --- the cycle-room doors (phase 6b) ------------------------------------- */
 
+/* the arc's grace note (phase 6c): earned quiet, stated softly */
+.arc-line {
+  margin: 0;
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--ink-dim);
+}
+
 .cycle-doors {
   padding: 12px 14px;
   border: 1px solid var(--line);

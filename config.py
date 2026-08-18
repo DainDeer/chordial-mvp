@@ -290,6 +290,21 @@ class Config:
     CYCLE_SCORER_BACKFILL_DAYS = int(
         os.getenv("CYCLE_SCORER_BACKFILL_DAYS", "14"))
 
+    # the taper (ROOMS_DESIGN.md section 7): success extends the quiet.
+    # a cycle is "steady" when its scorecard's consistency AND execution
+    # both clear their floors (and sustainability, when computable, isn't
+    # poor - unsustainable bursts never earn quiet). each consecutive
+    # steady cycle doubles the check-in interval, capped so presence
+    # never tapers to zero. thresholds are v1 guesses, flagged tunable.
+    TAPER_STEADY_CONSISTENCY = float(
+        os.getenv("TAPER_STEADY_CONSISTENCY", "0.6"))
+    TAPER_STEADY_EXECUTION = float(
+        os.getenv("TAPER_STEADY_EXECUTION", "0.6"))
+    TAPER_MIN_SUSTAINABILITY = float(
+        os.getenv("TAPER_MIN_SUSTAINABILITY", "0.5"))
+    TAPER_MAX_MULTIPLIER = int(os.getenv("TAPER_MAX_MULTIPLIER", "8"))
+    TAPER_WINDOW = int(os.getenv("TAPER_WINDOW", "6"))
+
     # browser origins allowed to call /api/v1 (the tauri webview's origins:
     # production shell + vite dev server). the api is bearer-token'd - no
     # cookies - so CORS here is about letting OUR app in, not csrf defense.
