@@ -276,6 +276,16 @@ class Config:
     REWIND_TETHER_SWEEP_SECONDS = float(
         os.getenv("REWIND_TETHER_SWEEP_SECONDS", "60"))
 
+    # edwin's cycle scorer (docs/ROOMS_DESIGN.md section 8, phase 6): how
+    # often the watcher looks for ended-but-unassessed cycles, and how far
+    # back discovery reaches - cycles older than the backfill window are
+    # left unscored (their data predates the projection; the ledger starts
+    # honest rather than complete).
+    CYCLE_SCORER_SWEEP_SECONDS = float(
+        os.getenv("CYCLE_SCORER_SWEEP_SECONDS", "600"))
+    CYCLE_SCORER_BACKFILL_DAYS = int(
+        os.getenv("CYCLE_SCORER_BACKFILL_DAYS", "14"))
+
     # browser origins allowed to call /api/v1 (the tauri webview's origins:
     # production shell + vite dev server). the api is bearer-token'd - no
     # cookies - so CORS here is about letting OUR app in, not csrf defense.

@@ -4,6 +4,7 @@ from config import Config
 # the registry machinery lives in the dainframe now; re-exported here so
 # chordial code keeps one import home for its tool surface
 from dainframe.tools.registry import Tool, ToolRegistry
+from .assessment_tools import LIST_ASSESSMENTS
 from .intro_tools import COMPLETE_INTRODUCTION, LIST_AVAILABLE_GUIDES
 from .memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
 from .observation_tools import LIST_OBSERVATIONS, RECORD_OBSERVATION
@@ -34,6 +35,9 @@ def build_default_registry() -> ToolRegistry:
     # intro tools - every helper reasons more than it speaks
     registry.register(RECORD_OBSERVATION)
     registry.register(LIST_OBSERVATIONS)
+    # edwin's filed scorecards (phase 6): read-only from conversation -
+    # the cycle scorer is the only writer
+    registry.register(LIST_ASSESSMENTS)
 
     # the native workspace surface: tasks/plans/cycles (core) plus the v3
     # additions (goals/wins/check-ins/notes/occasions). all in-db, always on.

@@ -366,6 +366,46 @@ cycle_health:
   sustainability: { score: 0.84 }
 ```
 
+### the scorer, as built (phase 6a)
+
+The scorer splits judgment from arithmetic, hard — the cadenza lesson
+("the scorer proposes, the transcript disposes") applied to cycles:
+
+- **Every score is computed, never generated.** `scorecard.py` derives all
+  five components from the projection (baseline + scope changes + progress)
+  and the session ledger: execution = landed share of the plan (overshoot
+  clamps at 1.0 — estimation judges the gap, execution never punishes it
+  twice); prioritization = priority-weighted share of *attributed* time
+  (unprioritized and unattributed time is neither credit nor blame);
+  estimation = mean per-commitment accuracy against the **frozen** baseline
+  (released commitments stay in — releasing moved scope honestly, but the
+  estimate was still an estimate); consistency = active days over elapsed
+  days (the denominator stops at "today", so an early-closed cycle isn't
+  blamed for unlived days); sustainability = the daylight share of focus
+  time (late-night window 23:00–06:00). A component that can't be honestly
+  computed is `score: null` with the reason in its evidence. There is
+  deliberately no overall grade.
+- **The model writes only prose.** The shared utility model (curator /
+  reconciler / decider pattern, `role="scorer"`, billed to edwin) produces
+  a short summary and at most six findings; every finding must cite
+  evidence refs (`cm:<uuid>`, `sc:<id>`, `ob:<id>`, `component:<name>`)
+  that the validator resolves against the rows actually gathered. A claim
+  pointing at nothing is structurally unrecordable — dropped and counted.
+  A dead, absent, or garbling model degrades to a deterministic summary;
+  the scorecard files either way.
+- **Exactly once, and the ledger starts now.** One assessment per
+  (user, `cycle`, public id), enforced by a unique index + the focus_flow
+  insert discipline; scoring is a moment — late-arriving events never
+  silently rewrite a filed card. Discovery (a supervised watcher beside
+  the pulse, `CYCLE_SCORER_SWEEP_SECONDS`) finds cycles whose window is
+  over — status complete, or active with the end date behind the user's
+  local today — inside `CYCLE_SCORER_BACKFILL_DAYS`; pre-phase-6 history
+  is left unscored rather than judged on evidence never collected.
+- **Reading is chat, writing is not.** `list_assessments` (edwin's card,
+  plus the chair via the full registry) and `GET /api/v1/scorecards` are
+  read-only; the scorer is the sole writer. Edwin *presenting* a scorecard
+  is the retro room's job (6b).
+
 ---
 
 ## 9. the tether
@@ -578,7 +618,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
-| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | |
+| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) |
 | **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
 
 ### explicitly deferred

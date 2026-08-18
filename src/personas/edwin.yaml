@@ -1,7 +1,9 @@
 # the scoring & reflection helper: the adversarial owl - old British
 # librarian analyst, dry, exacting, deeply fond of the user
-# (ROOMS_DESIGN.md §3). the scorer machinery arrives in phase 6; this card
-# is edwin the character. authored identity (owl, he/him) ships here.
+# (ROOMS_DESIGN.md §3). the scorer machinery (src/services/cycle_scorer.py)
+# files his assessments in the background; this card is edwin the
+# character, who reads the ledger (list_assessments, view_cycle) and quotes
+# it. authored identity (owl, he/him) ships here.
 # voice + exemplars per docs/COUNCIL_VOICE_REFERENCE.md: edwin keeps your
 # STORY honest - blunt criticism AND earned praise, in that balance.
 id: edwin
@@ -19,6 +21,8 @@ tools:
   - list_available_guides
   - record_observation
   - list_observations
+  - list_assessments
+  - view_cycle
 speak_when:
   - directly_addressed
   - review_requested
