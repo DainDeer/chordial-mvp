@@ -400,9 +400,16 @@ class ChordialContext:
                 parts.append(digest)
             # the arc's posture (phase 6c): present only once quiet has
             # been EARNED - untapered users (every fresh user) get their
-            # exact pre-6c prompt bytes
-            from src.services import taper
-            posture = taper.ambient_line_for(user_uuid)
+            # exact pre-6c prompt bytes. guarded on its own: this line is
+            # optional, and its failure must cost the line, never the
+            # already-composed summary and agenda around it
+            try:
+                from src.services import taper
+                posture = taper.ambient_line_for(user_uuid)
+            except Exception:
+                logger.exception("taper posture read failed; "
+                                 "briefing continues without")
+                posture = None
             if posture:
                 parts.append(posture)
             return "\n\n".join(parts) if parts else None

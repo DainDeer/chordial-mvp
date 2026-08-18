@@ -222,6 +222,42 @@ def test_state_for_reads_only_this_users_ledger(env):
     assert state["base_minutes"] == 60
 
 
+def test_the_latest_seal_survives_a_crowded_ledger(env):
+    # sol's repro: a batch of old cycles backfilled AFTER a retro-scored
+    # latest cycle. a filing-ordered window would hold only the old
+    # steady cards and taper to the cap while the latest cycle wobbles;
+    # the seal must order the ledger before anything truncates it
+    wobbly_latest = _card("c9", 2, consistency=0.1,
+                          created_at=(NOW - timedelta(days=2)).isoformat())
+    _file_card(U1, wobbly_latest)
+    for n in range(1, Config.TAPER_WINDOW + 1):
+        _file_card(U1, _card(f"c{n}", 20 + n * 14,
+                             created_at=NOW.isoformat()))
+    state = taper.state_for(U1, 60)
+    assert state["judged"][0]["subject_id"] == "c9"
+    assert state["streak"] == 0
+    assert state["multiplier"] == 1
+
+
+def test_a_taper_failure_keeps_the_briefing(env, monkeypatch):
+    # the arc line is optional; its failure must cost the line, never
+    # the previous-room summary composed around it
+    from src.services.orchestration import ChordialContext
+    from src.services.rooms import RoomStore
+
+    store = RoomStore()
+    yesterday = store.current_room(U1, NOW.date() - timedelta(days=1))
+    store.close_room(yesterday["id"])
+
+    def on_fire(user_uuid):
+        raise RuntimeError("the ledger is on fire")
+    monkeypatch.setattr(taper, "ambient_line_for", on_fire)
+
+    ambient = ChordialContext(user_manager=None)._compose_ambient(U1)
+    assert ambient is not None
+    assert "previously:" in ambient
+
+
 def test_the_ambient_read_speaks_only_when_tapered(env):
     assert taper.ambient_line_for(U1) is None
     _file_card(U1, _card("c1", 2))
@@ -247,7 +283,8 @@ def _async_return(value):
 def _checkin_interval(streams):
     (user, rhythms), = streams
     assert user == U1
-    (rhythm,) = [r for r in rhythms if r.rhythm_id == "checkin"]
+    # a stretched beat versions the id ("checkin@120") - match the family
+    (rhythm,) = [r for r in rhythms if r.rhythm_id.startswith("checkin")]
     return rhythm.rhythm.every
 
 
@@ -275,6 +312,49 @@ def test_the_default_rhythm_is_byte_for_byte_the_old_beat():
     assert (checkin_rhythm().rhythm.every
             == timedelta(minutes=Config.DM_INTERVAL_MINUTES))
     assert checkin_rhythm(None).rhythm.every == checkin_rhythm().rhythm.every
+    # ...including the rhythm KEY: untapered users keep their pulse state
+    assert checkin_rhythm().rhythm_id == "checkin"
+    assert (checkin_rhythm(Config.DM_INTERVAL_MINUTES).rhythm_id
+            == "checkin")
+
+
+def test_a_beat_change_moves_to_a_fresh_rhythm_key():
+    # the pulse store persists next_check per key; a changed beat must
+    # not sleep out the old beat's horizon under the same key
+    stretched = checkin_rhythm(Config.DM_INTERVAL_MINUTES * 8)
+    assert stretched.rhythm_id == f"checkin@{Config.DM_INTERVAL_MINUTES * 8}"
+    assert stretched.rhythm_id != checkin_rhythm().rhythm_id
+    assert (checkin_rhythm(120).rhythm_id
+            != checkin_rhythm(240).rhythm_id)
+
+
+def test_a_reset_beat_escapes_the_stale_horizon():
+    # sol's repro, pinned at the store: an 8x beat records an eight-hour
+    # horizon; the reset beat must claim at the base hour, not at hour 8
+    from datetime import timezone
+    from dainframe.pulse import InMemoryPulseStore
+    from dainframe.pulse.types import PulseOutcome, RhythmKey
+
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    store = InMemoryPulseStore()
+    stretched = RhythmKey(
+        stream_id=U1, rhythm_id=checkin_rhythm(480).rhythm_id)
+
+    async def flow():
+        claim = await store.claim_due(stretched, now,
+                                      now + timedelta(minutes=5))
+        await store.complete(
+            claim, PulseOutcome(status="skipped", at=now, detail="not due"),
+            next_check=now + timedelta(hours=8))
+        later = now + timedelta(minutes=61)
+        # the stretched key sleeps out its own horizon...
+        assert await store.claim_due(
+            stretched, later, later + timedelta(minutes=5)) is None
+        # ...but the reset beat is a fresh key: due evaluates immediately
+        base = RhythmKey(stream_id=U1, rhythm_id=checkin_rhythm().rhythm_id)
+        assert await store.claim_due(
+            base, later, later + timedelta(minutes=5)) is not None
+    _run(flow())
 
 
 # --- the api read model ------------------------------------------------------

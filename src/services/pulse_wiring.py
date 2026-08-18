@@ -99,13 +99,25 @@ def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
 
     `every_minutes` is the taper's seam (phase 6c): steady scorecards
     stretch this beat per user - earned quiet - while the backoff gate
-    keeps stretching ignored chains on top of whatever beat is set."""
+    keeps stretching ignored chains on top of whatever beat is set.
+
+    the rhythm id carries the beat when stretched: the pulse store
+    persists a next_check horizon PER KEY and consults it before the
+    interval is ever re-evaluated, so a shrunk beat under the same key
+    would sleep out the old stretched horizon (a wobbly cycle's reset -
+    or a taper failure's fallback - arriving hours late). a changed beat
+    lands on a fresh key whose due recomputes from the message anchor
+    immediately; the base beat keeps the bare id, so untapered users'
+    key and state are exactly pre-6c. abandoned keys are inert rows in
+    the in-memory store."""
+    minutes = every_minutes or Config.DM_INTERVAL_MINUTES
+    rhythm_id = (CHECKIN_RHYTHM if minutes == Config.DM_INTERVAL_MINUTES
+                 else f"{CHECKIN_RHYTHM}@{minutes}")
     return TaggedRhythm(
-        rhythm_id=CHECKIN_RHYTHM,
+        rhythm_id=rhythm_id,
         kind="scheduled_tick",
         rhythm=Interval(
-            every=timedelta(
-                minutes=every_minutes or Config.DM_INTERVAL_MINUTES),
+            every=timedelta(minutes=minutes),
             anchor=ANY_MESSAGE,
         ),
     )

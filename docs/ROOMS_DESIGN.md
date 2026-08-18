@@ -410,16 +410,26 @@ and answers one question: how much quiet has this person earned?
   doubles the check-in interval; the streak breaks at the first cycle that
   isn't steady. A wobbly cycle resets to full coaching. An **unjudged** cycle
   (scores that couldn't be computed — nothing planned, never frozen) earns
-  nothing either: absence of evidence never extends the quiet.
+  nothing either: absence of evidence never extends the quiet. The taper
+  reads the **whole** cycle ledger (one row per cycle by the exactly-once
+  constraint) and orders by seal *before* the window truncates — a
+  filing-ordered LIMIT would let backfilled old cards displace the latest
+  evidence entirely.
 - **Never to zero.** The multiplier caps (`TAPER_MAX_MULTIPLIER`, 8×) — the
   sentinel keeps its post. The postures map onto the arithmetic: no cards yet
   = *settling in*, streak zero = *building*, earned quiet = *rhythm*, at the
   cap = *keeping watch*.
 - **Applied at the pulse.** `ChordialPulseSource` computes the beat per user
   each cycle (guarded: a taper failure is the flat base beat, never a stalled
-  check-in). It composes with the backoff gate, not replaces it: the taper
-  sets the beat from earned evidence, the backoff still stretches ignored
-  chains on top. First contact stays due-now; quiet hours still hold.
+  check-in). A stretched beat **versions the rhythm key** (`checkin@480`):
+  the pulse store persists a next-check horizon per key and consults it
+  before the interval is re-evaluated, so a reset under the same key would
+  sleep out the old stretched horizon — a changed beat lands on a fresh key
+  whose due recomputes from the message anchor immediately, and the base
+  beat keeps the bare `checkin` id so untapered state is untouched. It
+  composes with the backoff gate, not replaces it: the taper sets the beat
+  from earned evidence, the backoff still stretches ignored chains on top.
+  First contact stays due-now; quiet hours still hold.
 - **Visible, honestly.** `GET /api/v1/arc` reads the same numbers the pulse
   uses (posture, streak, per-cycle verdicts with reasons); the app states it
   as one quiet line. The council's ambient briefing gains a posture line

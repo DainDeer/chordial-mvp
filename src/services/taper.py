@@ -76,14 +76,33 @@ def assess(assessments: list[dict]) -> dict:
 
 def state_for(user_uuid: str, base_minutes: int) -> dict:
     """the decision for one user, with the interval it implies. the one
-    db touch in this module."""
-    from src.services import cycle_scorer
-    rows = cycle_scorer.recent_assessments(
-        user_uuid, subject_type="cycle", limit=Config.TAPER_WINDOW)
-    decision = assess(rows)
+    db touch in this module: the WHOLE cycle ledger, deliberately - a
+    filing-ordered LIMIT would truncate before `assess` orders by seal,
+    and a batch of backfilled old cards could displace the latest cycle
+    from the window entirely. the exactly-once constraint keeps this one
+    row per cycle, so the full read stays honest and small."""
+    decision = assess(_ledger(user_uuid))
     decision["base_minutes"] = int(base_minutes)
     decision["checkin_minutes"] = int(base_minutes) * decision["multiplier"]
     return decision
+
+
+def _ledger(user_uuid: str) -> list[dict]:
+    from src.database.database import get_db
+    from src.database.models import Assessment
+    from src.services import cycle_scorer
+    with get_db() as db:
+        rows = db.query(Assessment).filter(
+            Assessment.user_uuid == user_uuid,
+            Assessment.subject_type == cycle_scorer.SUBJECT_TYPE,
+        ).all()
+        return [{
+            "subject_id": r.subject_id,
+            "summary": r.summary,
+            "detail": r.detail,
+            "created_at": (r.created_at.isoformat()
+                           if r.created_at else None),
+        } for r in rows]
 
 
 def checkin_minutes(user_uuid: str) -> int:
