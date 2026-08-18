@@ -54,18 +54,41 @@ export function fromPayload(payload: DeliveryPayload): ChatMessage {
   };
 }
 
+/** which room a view accepts lines for (phase 6b: cycle rooms share the
+ * one per-user socket with the daily room, so views filter by the
+ * payload's room field). `strict` views (cycle rooms) drop lines that
+ * don't name their room; the daily view also admits room-less payloads -
+ * the pre-6b shape only ever carried daily lines. */
+export interface RoomFilter {
+  /** the viewing room's uuid; null while it hasn't loaded yet */
+  room: string | null;
+  strict?: boolean;
+}
+
+export function inRoom(
+  payload: DeliveryPayload,
+  filter: RoomFilter,
+): boolean {
+  if (payload.room) return payload.room === filter.room;
+  return !filter.strict;
+}
+
 /**
- * admit a live payload unless its id was already seen (POST response vs
- * websocket double-delivery): returns the message to append, or null for a
- * duplicate. deliberately NOT shaped as a react state updater - it mutates
- * `seen` (and mints fallback keys), so it must run exactly once per event.
+ * admit a live payload unless it belongs to another room or its id was
+ * already seen (POST response vs websocket double-delivery): returns the
+ * message to append, or null. a foreign-room line is rejected BEFORE the
+ * seen-set - it never burns the id another view may legitimately admit.
+ * deliberately NOT shaped as a react state updater - it mutates `seen`
+ * (and mints fallback keys), so it must run exactly once per event.
  * strict mode double-invokes updaters to catch exactly that impurity, and
  * did: v1 of this helper ran inside setState and dropped every line.
  */
 export function admitLive(
   seen: Set<string>,
   payload: DeliveryPayload,
+  filter?: RoomFilter,
 ): ChatMessage | null {
+  if (filter && !inRoom(payload, filter)) return null;
   if (payload.id) {
     if (seen.has(payload.id)) return null;
     seen.add(payload.id);

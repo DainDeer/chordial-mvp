@@ -867,6 +867,14 @@ class Room(Base):
     per-user stream is grandfathered as a single room_type='legacy' room
     whose room_uuid equals the user uuid - which is exactly what old
     conversation_events rows backfill their stream_id to.
+
+    cycle rooms (phase 6b: 'cycle_retro' | 'cycle_planning') are undated;
+    their identity is the subject anchor instead - subject_type='cycle',
+    subject_id=the cycle's public id ('cy12'), same vocabulary as
+    assessments. the anchor names what the room is ABOUT: a retro looks
+    back at its cycle; a planning room follows a sealed cycle (its
+    evidence base - the retro summary and the scorecard - belongs to the
+    cycle just lived, even though the conversation plans the next one).
     """
     __tablename__ = 'rooms'
 
@@ -879,6 +887,9 @@ class Room(Base):
     status = Column(String, nullable=False, default='open')  # open|closing|closed
     # the user-local date a daily room belongs to; null for non-dated types
     date = Column(Date, nullable=True)
+    # the subject anchor (null for daily/legacy rooms)
+    subject_type = Column(String, nullable=True)   # 'cycle' | ...
+    subject_id = Column(String, nullable=True)     # public id, e.g. 'cy12'
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     closed_at = Column(DateTime, nullable=True)
@@ -888,6 +899,13 @@ class Room(Base):
         # in one winner and one integrity error, not two mondays
         UniqueConstraint('user_uuid', 'room_type', 'date',
                          name='uq_rooms_user_type_date'),
+        # the undated twin: cycle rooms carry no date, and null dates make
+        # the constraint above vacuous (nulls are distinct) - the subject
+        # anchor is their uniqueness. at most one retro and one planning
+        # room per (user, cycle); daily rooms have null subject_id and are
+        # untouched for the same null-distinctness reason.
+        Index('uq_rooms_user_type_subject',
+              'user_uuid', 'room_type', 'subject_id', unique=True),
         {'sqlite_autoincrement': True},
     )
 

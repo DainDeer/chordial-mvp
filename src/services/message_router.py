@@ -93,12 +93,16 @@ class MessageRouter:
         return None
 
     async def deliver_as(
-        self, platform: str, target_id: str, message: str, speaker: str
+        self, platform: str, target_id: str, message: str, speaker: str,
+        stream_id: Optional[str] = None,
     ) -> bool:
         """send `message` to `target_id` on `platform` AS `speaker` (a helper
         id). resolves the speaker's bot (falling back only to the platform's
         single-bot interface), returns True on success. on a permanent
-        failure, deactivates the platform link and returns False."""
+        failure, deactivates the platform link and returns False.
+        `stream_id` names the room the line belongs to, for interfaces that
+        attribute in-band (the app puts it in the payload so a client showing
+        one room can ignore another room's lines); others ignore it."""
         interface = self._resolve(platform, speaker)
         if interface is None:
             logger.error(
@@ -113,7 +117,8 @@ class MessageRouter:
             # app pushes it in the payload); bot-per-helper platforms already
             # resolved it to the right account and ignore the kwarg
             return await interface.send_message(target_id, message,
-                                                speaker=speaker)
+                                                speaker=speaker,
+                                                stream_id=stream_id)
         except UndeliverableError as e:
             logger.warning(
                 "permanent delivery failure for %s:%s (speaker=%s) - %s; deactivating link",

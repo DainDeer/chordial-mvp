@@ -92,6 +92,11 @@ class AppInterface(BaseInterface):
             "content": content,
             "at": utc_now().isoformat(),
         }
+        # which room this line belongs to (phase 6b): a client rendering one
+        # room drops another room's lines instead of interleaving them.
+        # absent for senders that don't know (pre-6b payload shape).
+        if kwargs.get("stream_id"):
+            payload["room"] = kwargs["stream_id"]
         queues = list(self._subscribers.get(platform_user_id, ()))
         delivered = 0
         for queue in queues:

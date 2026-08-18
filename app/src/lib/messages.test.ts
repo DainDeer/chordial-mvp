@@ -68,6 +68,63 @@ describe("admitLive", () => {
   });
 });
 
+describe("the room filter (phase 6b: cycle rooms share the socket)", () => {
+  const inRoomPayload = (id: string, room?: string): DeliveryPayload => ({
+    ...payload(id, "edwin", "*adjusts spectacles*"),
+    room,
+  });
+
+  it("keeps another room's line out of a view", () => {
+    const seen = new Set<string>();
+    const line = admitLive(seen, inRoomPayload("aaa", "retro-room"), {
+      room: "daily-room",
+    });
+    expect(line).toBeNull();
+  });
+
+  it("does not burn the id when rejecting by room", () => {
+    // the same payload reaches every view's handler; the room it belongs
+    // to must still be able to admit it after another view rejected it
+    const seen = new Set<string>();
+    admitLive(seen, inRoomPayload("aaa", "retro-room"), {
+      room: "daily-room",
+    });
+    expect(seen.has("aaa")).toBe(false);
+    const line = admitLive(seen, inRoomPayload("aaa", "retro-room"), {
+      room: "retro-room",
+      strict: true,
+    });
+    expect(line).not.toBeNull();
+  });
+
+  it("the daily view admits room-less payloads (the pre-6b shape)", () => {
+    const seen = new Set<string>();
+    const line = admitLive(seen, inRoomPayload("aaa"), {
+      room: "daily-room",
+    });
+    expect(line).not.toBeNull();
+  });
+
+  it("a strict (cycle) view drops room-less payloads", () => {
+    const seen = new Set<string>();
+    const line = admitLive(seen, inRoomPayload("aaa"), {
+      room: "retro-room",
+      strict: true,
+    });
+    expect(line).toBeNull();
+  });
+
+  it("a view that hasn't resolved its room yet only takes room-less lines", () => {
+    const seen = new Set<string>();
+    expect(
+      admitLive(seen, inRoomPayload("aaa", "retro-room"), { room: null }),
+    ).toBeNull();
+    expect(
+      admitLive(seen, inRoomPayload("bbb"), { room: null }),
+    ).not.toBeNull();
+  });
+});
+
 describe("reconcileExtras", () => {
   it("drops live lines a history refetch now covers", () => {
     const extras = [

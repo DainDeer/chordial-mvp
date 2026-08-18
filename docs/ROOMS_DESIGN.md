@@ -208,6 +208,47 @@ constraint on `room_summaries.room_id`).
   user-visible retention policy are the acceptable shapes — silent deletion is
   not.
 
+### the cycle rooms, as built (phase 6b)
+
+- **Two undated room types anchor to the sealed cycle.** `cycle_retro`
+  and `cycle_planning` carry a subject anchor (`subject_type='cycle'`,
+  `subject_id='c12'` — the assessments vocabulary) instead of a date;
+  a unique index on (user, room_type, subject_id) is their exactly-once
+  guard (null dates made the dated constraint vacuous for them).
+  Planning anchors to the cycle *just lived* on purpose: the
+  conversation shapes the next cycle, but its evidence base — the retro
+  summary, the filed scorecard — belongs to the last one.
+- **Opening a cycle room closes the user's other open cycle rooms.**
+  One cycle conversation at a time, and that close is what compresses a
+  retro into the summary the planning room hydrates. Daily rooms are
+  untouched; a cycle room nobody follows up on simply stays open.
+- **The retro is a subpoena.** Opening it scores the cycle on demand
+  when no card is filed, waiving only the grace watermark — the person
+  showing up for the review has called the evidence question — never
+  the completeness requirement (no seal, no retro). The card records
+  which way it sealed (`detail.cycle.scored_by: sweep | retro`).
+- **Edwin presents the filed card, exactly once, at room creation**: an
+  authored frame around a deterministic render of the assessment he
+  already wrote at scoring time. No new model call, no invented number —
+  the deer's authored-lines discipline applied to the owl. A retro that
+  opens cardless gets an honest "not written yet" note.
+- **Hydration is family-shaped.** `latest_summary` filters to
+  daily/legacy so a retro closing last never becomes "previously:" in
+  tomorrow's daily room; planning hydrates *its* cycle's retro summary
+  (by subject, never whichever retro closed last) plus the card render;
+  the retro's ambient only orients — the presentation is already in the
+  transcript.
+- **The director folds both types into the `cycle` family** (as
+  legacy folds into daily): vel, pip, mabel, and edwin sit down for
+  cycle rooms; the decider handles the rest, unchanged.
+- **Room-bound turns.** `POST /api/v1/rooms/{uuid}/messages` runs a
+  turn into an open owned room under the same receipt contract as the
+  daily send; closed rooms answer 409 (remembering is the GET's job),
+  foreign rooms 404 exactly like never-existed. Delivery payloads carry
+  the room, so one room's lines never render inside another room's
+  view on the shared per-user socket. Doors:
+  `GET /api/v1/rooms/cycle`, `POST /api/v1/rooms/cycle/{retro|planning}`.
+
 ### room artifacts
 
 Conversation can produce durable interactive objects backed by canonical state,
@@ -423,7 +464,10 @@ The scorer splits judgment from arithmetic, hard — the cadenza lesson
 - **Reading is chat, writing is not.** `list_assessments` (edwin's card,
   plus the chair via the full registry) and `GET /api/v1/scorecards` are
   read-only; the scorer is the sole writer. Edwin *presenting* a scorecard
-  is the retro room's job (6b).
+  happens in the retro room (§4, "the cycle rooms, as built") — a
+  deterministic render of the filed card, never a fresh generation. The
+  grace period has exactly one waiver: the retro door (the person calling
+  the question), recorded on the card as `scored_by`.
 
 ---
 
@@ -637,7 +681,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **3 · the council** | character definitions with per-user overrides; deterministic routing spine + decider; observations/assessments tables; helpers emit them | ✓ persona yaml + silent-agent pattern |
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
-| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) |
+| **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built); 6c taper remains |
 | **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
 
 ### explicitly deferred
