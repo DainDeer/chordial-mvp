@@ -56,9 +56,13 @@ class AppInterface(BaseInterface):
     def __init__(self, chat_service=None):
         super().__init__(chat_service)
         self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
-        # user_uuid -> (monotonic stamp, idle_seconds-or-None) of the most
-        # recent heartbeat. pruned when a user's last surface disconnects.
-        self._presence: Dict[str, Tuple[float, Optional[float]]] = {}
+        # user_uuid -> {connection -> (monotonic stamp, idle_seconds-or-None)}
+        # of each surface's most recent heartbeat. PER CONNECTION on purpose:
+        # a person can sit at one machine while another idles, and the idle
+        # one's heartbeat must never overwrite the active one's (presence is
+        # aggregated any-active-wins, not last-writer-wins). a connection's
+        # report is pruned when that connection unsubscribes.
+        self._presence: Dict[str, Dict[Any, Tuple[float, Optional[float]]]] = {}
 
     # --- subscription (websocket connections, in-flight sends) ---------------
 
@@ -71,6 +75,9 @@ class AppInterface(BaseInterface):
         queues = self._subscribers.get(user_uuid)
         if queues is not None:
             queues.discard(queue)
+            reports = self._presence.get(user_uuid)
+            if reports is not None:
+                reports.pop(queue, None)
             if not queues:
                 del self._subscribers[user_uuid]
                 self._presence.pop(user_uuid, None)
@@ -78,42 +85,51 @@ class AppInterface(BaseInterface):
     # --- presence (docs/ROOMS_DESIGN.md section 9) ----------------------------
 
     def note_presence(self, user_uuid: str,
-                      idle_seconds: Optional[float] = None) -> None:
-        """record a heartbeat from a connected surface. `idle_seconds` is the
-        sidecar's OS-level idle clock as the app last saw it; None means the
-        app is open but the sidecar was unreachable (dev rigs) - openness is
-        then the best signal available and counts as active."""
+                      idle_seconds: Optional[float] = None,
+                      connection: Any = None) -> None:
+        """record one surface's heartbeat. `connection` identifies the
+        reporting surface (the websocket handler passes its own queue, so
+        the report lives and dies with the connection); `idle_seconds` is
+        the sidecar's OS-level idle clock as that surface last saw it - None
+        means the app is open but the sidecar was unreachable (dev rigs),
+        where openness is the best signal available and counts as active."""
         idle = None
         if idle_seconds is not None:
             try:
                 idle = max(0.0, float(idle_seconds))
             except (TypeError, ValueError):
                 idle = None  # a malformed report degrades to 'open = active'
-        self._presence[user_uuid] = (time.monotonic(), idle)
+        self._presence.setdefault(user_uuid, {})[connection] = (
+            time.monotonic(), idle)
 
     def presence_state(self, user_uuid: str) -> str:
-        """'active' | 'idle' | 'absent' - the routing trichotomy.
+        """'active' | 'idle' | 'absent' - the routing trichotomy, aggregated
+        across every connected surface: any demonstrably-active surface
+        makes the person active.
 
         absent: no connected surface at all (the app is closed).
-        idle:   a surface is connected but the person isn't demonstrably
-                there - the last heartbeat reported idleness past the
-                threshold, or heartbeats stopped arriving on a live socket.
-        active: a connected surface with a fresh heartbeat that doesn't
-                report idleness. a connected surface that has NEVER
-                heartbeat is also active - deliberately fail-open, so a
-                pre-7a client (which never reports) keeps its lines.
+        idle:   surfaces are connected but none is demonstrably attended -
+                every reporting surface is idle past the threshold or has
+                gone quiet on a live socket.
+        active: at least one surface has a fresh heartbeat that doesn't
+                report idleness. a user whose surfaces have NEVER heartbeat
+                is also active - deliberately fail-open, so pre-7a clients
+                (which never report) keep their lines. (a mix of one
+                never-reporting client and idle reporters reads idle: the
+                reporters are the evidence we have.)
         """
         if not self._subscribers.get(user_uuid):
             return "absent"
-        report = self._presence.get(user_uuid)
-        if report is None:
+        reports = self._presence.get(user_uuid)
+        if not reports:
             return "active"
-        stamp, idle = report
-        if time.monotonic() - stamp > _PRESENCE_STALE_SECONDS:
-            return "idle"
-        if idle is not None and idle >= Config.PRESENCE_IDLE_SECONDS:
-            return "idle"
-        return "active"
+        now = time.monotonic()
+        for stamp, idle in reports.values():
+            if now - stamp > _PRESENCE_STALE_SECONDS:
+                continue  # this reporter died; it proves nothing
+            if idle is None or idle < Config.PRESENCE_IDLE_SECONDS:
+                return "active"
+        return "idle"
 
     @staticmethod
     def drain(queue: asyncio.Queue) -> list[dict]:

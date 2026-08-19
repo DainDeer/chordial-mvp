@@ -45,6 +45,7 @@ def _ctx(user_uuid: str, actor: str) -> ToolContext:
 from src.services.tools.intro_tools import (  # noqa: E402
     COMPLETE_INTRODUCTION,
     LIST_AVAILABLE_GUIDES,
+    MEET_GUIDE,
 )
 
 
@@ -685,6 +686,92 @@ def test_list_available_guides_solo_deployment_offers_nobody(db, monkeypatch):
 
     result = run(LIST_AVAILABLE_GUIDES.handler({}, _ctx(user_uuid, "vel")))
     assert "no other guides left" in result
+
+
+# --- meet_guide: the offer accepted (sol's 7a P1) ----------------------------
+# the director casts only ACTIVE helpers, and 7a removed the ensemble's
+# meet-link path - without this transition, every guide after vel would
+# stay not_met (unmeetable) forever.
+
+
+def test_meet_guide_moves_a_guide_to_active(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
+    user_uuid = run(_make_user())
+
+    result = run(MEET_GUIDE.handler({"guide_id": "remy"}, _ctx(user_uuid, "vel")))
+
+    assert "remy the raccoon" in result and "welcome them in" in result
+    state = run(HelperStateManager().get(user_uuid, "remy"))
+    assert state.status == "active"
+    # the director's cast reads active_helpers: remy is now castable
+    active = {v.helper_id for v in run(HelperStateManager().active_helpers(user_uuid))}
+    assert "remy" in active
+
+
+def test_meet_guide_normalizes_and_reports_already_active(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
+    user_uuid = run(_make_user())
+    run(HelperStateManager().set_status(user_uuid, "remy", "active"))
+
+    result = run(MEET_GUIDE.handler({"guide_id": "  Remy "}, _ctx(user_uuid, "vel")))
+    assert "already" in result
+
+
+def test_meet_guide_refuses_ghosts_and_partial_deployments(db, monkeypatch):
+    """an invented guide and an authored-but-undeployed one answer the same:
+    not in this house. nothing is written either way."""
+    _clear_telegram_usernames(monkeypatch)
+    monkeypatch.setattr(Config, "ENABLED_HELPERS", ["vel", "pip"])
+    user_uuid = run(_make_user())
+
+    for ghost in ("moonbeam", "remy", "", None):
+        result = run(MEET_GUIDE.handler({"guide_id": ghost}, _ctx(user_uuid, "vel")))
+        assert result.startswith("refused") or "can't meet yourself" in result, ghost
+    assert run(HelperStateManager().get(user_uuid, "remy")).status == "not_met"
+
+
+def test_meet_guide_never_meets_the_actor_itself(db, monkeypatch):
+    _clear_telegram_usernames(monkeypatch)
+    user_uuid = run(_make_user())
+    result = run(MEET_GUIDE.handler({"guide_id": "vel"}, _ctx(user_uuid, "vel")))
+    assert "can't meet yourself" in result
+
+
+def test_meet_guide_remets_a_declined_or_disabled_guide(db, monkeypatch):
+    """declined means 'not right now', and this tool only runs because the
+    user just asked - both states are re-meetable by design."""
+    _clear_telegram_usernames(monkeypatch)
+    user_uuid = run(_make_user())
+    run(HelperStateManager().set_status(user_uuid, "skip", "declined"))
+    run(HelperStateManager().set_status(user_uuid, "mabel", "disabled"))
+
+    for guide in ("skip", "mabel"):
+        run(MEET_GUIDE.handler({"guide_id": guide}, _ctx(user_uuid, "vel")))
+        assert run(HelperStateManager().get(user_uuid, guide)).status == "active"
+
+
+def test_meet_guide_is_registered_and_recorded(db):
+    from src.services.tools import build_default_registry
+
+    registry = build_default_registry()
+    assert "meet_guide" in {d.name for d in registry.definitions()}
+    # a durable state change: the frozen action line is how next turn's
+    # speaker knows the meeting already happened
+    assert MEET_GUIDE.record_event is True
+
+
+def test_every_deployed_card_can_complete_the_offer():
+    """any helper that can OFFER the roster must be able to complete the
+    meeting - a card with list_available_guides but no meet_guide would
+    promise an introduction it can't perform."""
+    from src.personas import load_personas
+
+    for helper_id, card in load_personas().items():
+        tools = getattr(card, "tools", None)
+        if tools is None:
+            continue  # full registry (the chair)
+        if "list_available_guides" in tools:
+            assert "meet_guide" in tools, helper_id
 
 
 def test_solo_deployment_gets_the_solo_awareness_note(monkeypatch):

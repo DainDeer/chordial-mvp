@@ -4,10 +4,11 @@ import PresenceRail from "./components/PresenceRail";
 import Home from "./components/Home";
 import Room, { type CycleRoomHandle } from "./components/Room";
 import ArchiveRoom from "./components/ArchiveRoom";
-import { fetchCouncil, isAuthError } from "./api/client";
+import { fetchCouncil, fetchRoomCurrent, isAuthError } from "./api/client";
 import { fetchSidecarState } from "./api/sidecar";
 import { RoomSocket, SocketBus, type SocketStatus } from "./api/ws";
 import type { ArchivedRoom, CouncilMember } from "./api/types";
+import { classifyForNudge } from "./lib/unread";
 import { clearSession, storedToken, storeSession } from "./lib/session";
 
 type View = "home" | "room" | "archive" | "cycle";
@@ -42,6 +43,31 @@ export default function App() {
   const viewRef = useRef(view);
   viewRef.current = view;
 
+  // today's daily room, for room-aware unread counting: the badge counts
+  // ONLY daily lines, so a cycle room's delayed replies never inflate the
+  // daily door and daily lines still nudge while a cycle room is open.
+  // refreshed lazily when an unrecognized room id arrives (midnight
+  // rollover mints a new daily room).
+  const dailyRoomRef = useRef<string | null>(null);
+  const resolvingDaily = useRef<Promise<void> | null>(null);
+
+  const resolveDailyRoom = useCallback(
+    (authToken: string): Promise<void> => {
+      if (!resolvingDaily.current) {
+        resolvingDaily.current = fetchRoomCurrent(authToken)
+          .then((current) => {
+            dailyRoomRef.current = current.room.id;
+          })
+          .catch(() => undefined) // the badge is a grace note, never an error
+          .finally(() => {
+            resolvingDaily.current = null;
+          });
+      }
+      return resolvingDaily.current;
+    },
+    [],
+  );
+
   const onAuthLost = useCallback(() => {
     clearSession();
     setToken(null);
@@ -64,16 +90,26 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
+    void resolveDailyRoom(token);
     const socket = new RoomSocket(token, {
       onPayload: (payload) => {
         bus.emitPayload(payload);
-        // a council line landing while nobody is in a room view becomes
-        // the door's nudge. the person's own mirrored phone lines don't
-        // count - the reply that follows them will.
-        const watching =
-          viewRef.current === "room" || viewRef.current === "cycle";
-        if (!watching && payload.author_type !== "user") {
+        // a daily-room council line landing while today's room isn't the
+        // watched view becomes the door's nudge (room-aware: cycle lines
+        // belong to a different door, mirrored phone lines are the
+        // person's own words). an unrecognized room id gets ONE
+        // re-resolve - midnight mints a new daily room.
+        const verdict = classifyForNudge(
+          payload, dailyRoomRef.current, viewRef.current);
+        if (verdict === "nudge") {
           setUnread((n) => n + 1);
+        } else if (verdict === "resolve") {
+          void resolveDailyRoom(token).then(() => {
+            if (classifyForNudge(payload, dailyRoomRef.current,
+                                 viewRef.current, true) === "nudge") {
+              setUnread((n) => n + 1);
+            }
+          });
         }
       },
       onStatus: (status) => {
@@ -109,11 +145,12 @@ export default function App() {
       clearInterval(timer);
       socket.stop();
     };
-  }, [token, bus, onAuthLost]);
+  }, [token, bus, onAuthLost, resolveDailyRoom]);
 
-  // stepping into a room clears the door's nudge
+  // stepping into TODAY'S room clears its door's nudge - a cycle room is a
+  // different door and must not swallow the daily count
   useEffect(() => {
-    if (view === "room" || view === "cycle") setUnread(0);
+    if (view === "room") setUnread(0);
   }, [view]);
 
   if (!token) {

@@ -2,11 +2,13 @@
 the mirror-aware payload shape.
 
 presence answers 'deer bubble or tether?' for the pulse: absent = no
-connected surface; idle = connected but not demonstrably attended (idle past
-the threshold, or heartbeats gone quiet on a live socket); active =
-connected with a fresh non-idle heartbeat - or a surface that has never
-reported at all (fail-open for pre-7a clients). no database, no sockets:
-the registry is in-memory arithmetic over monotonic time.
+connected surface; idle = connected but no surface demonstrably attended;
+active = at least one surface with a fresh non-idle heartbeat - or a user
+whose surfaces have never reported at all (fail-open for pre-7a clients).
+reports are PER CONNECTION and aggregated any-active-wins (sol's 7a P2: an
+idle laptop's heartbeat must never overwrite an active desktop's). no
+database, no sockets: the registry is in-memory arithmetic over monotonic
+time.
 """
 
 import asyncio
@@ -90,11 +92,58 @@ def test_stale_heartbeats_on_a_live_socket_read_as_idle(monkeypatch):
 def test_disconnect_prunes_presence_and_reads_absent():
     app = AppInterface()
     queue = app.subscribe("u1")
-    app.note_presence("u1", 0)
+    app.note_presence("u1", 0, connection=queue)
     app.unsubscribe("u1", queue)
 
     assert app.presence_state("u1") == "absent"
     assert app._presence == {}  # the registry doesn't grow forever
+
+
+# --- multiple devices (sol's 7a P2): aggregate, never last-writer-wins --------
+
+
+def test_an_idle_laptop_never_overwrites_an_active_desktop():
+    app = AppInterface()
+    desktop = app.subscribe("u1")
+    laptop = app.subscribe("u1")
+
+    # the idle laptop reports AFTER the active desktop - under
+    # last-writer-wins this read idle and misrouted to the phone
+    app.note_presence("u1", 5, connection=desktop)
+    app.note_presence("u1", 9000, connection=laptop)
+    assert app.presence_state("u1") == "active"
+
+    # order-independent: the reverse interleaving reads the same
+    app.note_presence("u1", 9000, connection=laptop)
+    app.note_presence("u1", 5, connection=desktop)
+    assert app.presence_state("u1") == "active"
+
+
+def test_the_active_surface_leaving_takes_its_evidence_along():
+    app = AppInterface()
+    desktop = app.subscribe("u1")
+    laptop = app.subscribe("u1")
+    app.note_presence("u1", 5, connection=desktop)
+    app.note_presence("u1", 9000, connection=laptop)
+
+    app.unsubscribe("u1", desktop)
+    assert app.presence_state("u1") == "idle"   # only the idle laptop remains
+    app.unsubscribe("u1", laptop)
+    assert app.presence_state("u1") == "absent"
+
+
+def test_a_transient_reportless_queue_never_flips_idle_to_active():
+    """an in-flight POST subscribes a queue with no heartbeat; while real
+    reporters exist, that silent surface is not evidence of anyone."""
+    app = AppInterface()
+    laptop = app.subscribe("u1")
+    app.note_presence("u1", 9000, connection=laptop)
+    assert app.presence_state("u1") == "idle"
+
+    post_queue = app.subscribe("u1")             # a send in flight
+    assert app.presence_state("u1") == "idle"    # still nobody at a screen
+    app.unsubscribe("u1", post_queue)
+    assert app.presence_state("u1") == "idle"
 
 
 def test_mirror_extras_ride_the_payload():

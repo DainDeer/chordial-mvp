@@ -579,6 +579,14 @@ room** — the same room, the same stream, from the phone.
   one human — which also retired the dm-only guards on the code-minting
   tools, so "connect my telegram" works from the app's council room (where
   the ask actually happens).
+- **Guides are met in the room, and `meet_guide` makes that real.** The
+  director casts only ACTIVE helpers, so deleting the meet links needed a
+  replacement transition (Sol's 7a round): when the person says yes to
+  meeting a guide, the acting helper calls `meet_guide` — the guide moves
+  to active (declined/disabled are re-meetable by design; the tool only
+  runs because the user just asked) and can be given the floor from the
+  next turn. Every card that can offer the roster carries the tool, and
+  the cards' council prose now says so.
 - **Inbound is a room turn.** A known sender's message is a group-scope
   stimulus into today's daily room (in private chats `chat_id == user_id`,
   so the group delivery target is the sender); the routing spine picks who
@@ -595,11 +603,15 @@ room** — the same room, the same stream, from the phone.
 - **Presence is the app interface's trichotomy.** The desktop shell owns ONE
   server websocket (it outlives navigation, so proactive lines confirm even
   from the home screen) and heartbeats `{type: "presence", idle_seconds}`
-  every 30s from the sidecar's OS idle clock. The server keeps a per-user
-  in-memory registry on the `AppInterface`: **absent** (no connected
-  surface), **idle** (connected but idle past `PRESENCE_IDLE_SECONDS` or
-  heartbeats gone quiet), **active** (fresh non-idle heartbeat; a surface
-  that never reports — a pre-7a client — fails open to active). The pulse's
+  every 30s from the sidecar's OS idle clock. The server keeps a
+  per-user, **per-connection** registry on the `AppInterface`, aggregated
+  any-active-wins (Sol's 7a round: an idle laptop's heartbeat must never
+  overwrite an active desktop's — each report lives and dies with its
+  socket): **absent** (no connected surface), **idle** (surfaces connected
+  but none demonstrably attended — every reporter idle past
+  `PRESENCE_IDLE_SECONDS` or gone quiet), **active** (any fresh non-idle
+  heartbeat; a user whose surfaces never report — a pre-7a client — fails
+  open to active). The pulse's
   stimulus factory routes each firing on it: active → the desk; idle → the
   phone by recency, falling back to the still-connected desk rather than
   going silent; absent → messaging platforms only (a closed app can never
@@ -614,8 +626,14 @@ room** — the same room, the same stream, from the phone.
   next history fetch covers anything the echo missed. Mirrored payloads
   carry `author_type` + `platform`; the desktop renders the person's phone
   lines on their side of the room with a provenance whisper ("📱 from
-  telegram"), and lines that land while nobody is in a room view become an
-  unread nudge on the door — they wait, they don't chase.
+  telegram"), and daily-room council lines that land while today's room
+  isn't the watched view become an unread nudge on its door — they wait,
+  they don't chase. The nudge is room-aware (Sol's 7a round): it counts
+  daily lines even while a cycle room is open (they're filtered from that
+  view's transcript, so they were never seen), never counts a cycle room's
+  lines against the daily door, and re-resolves an unrecognized room id
+  once (midnight mints a new daily room) before deciding. Only entering
+  today's room clears it.
 - **Deferred, not faked:** artifact degradation to inline-button messages
   ("start when you're back at your desk?" → queued for the deer) — the
   rewind ping is still the only interactive tether surface; the deer

@@ -2,13 +2,17 @@
 overhaul (docs/V3_DESIGN.md section 3).
 
 the prose, pacing, and interpretation of "getting to know someone" are the
-model's job; these two tools are the only code-side bookkeeping it needs:
+model's job; these tools are the only code-side bookkeeping it needs:
 `complete_introduction` stamps the (user, helper) relationship's final state
-once identity has settled (or the user declined), and `list_available_guides`
-lets the acting helper see who else in the crew hasn't been met yet, so it
-can offer introductions. (the ensemble-era per-guide telegram deep links
-retired with the per-helper bots in phase 7a: guides are met in the rooms,
-where the council already speaks.)
+once the chair's front door has settled identity (or the user declined);
+`list_available_guides` lets the acting helper see who else in the crew
+hasn't been met yet, so it can offer introductions; and `meet_guide` is the
+offer accepted - it moves the chosen guide to active so the director can
+give them the floor. (the ensemble-era per-guide telegram deep links and
+their private dm rituals retired with the per-helper bots in phase 7a:
+guides are met in the rooms, where the council already speaks, and
+meet_guide is the transition that makes that real - the director only casts
+active helpers, so without it a guide would stay unmeetable forever.)
 """
 import logging
 
@@ -134,9 +138,9 @@ LIST_AVAILABLE_GUIDES = Tool(
         description=(
             "The ONLY source of truth for who else is in this person's crew. "
             "Returns the helpers they haven't met yet (or have met but "
-            "haven't decided about), each with its real specialty. Everyone "
-            "listed already speaks in this room - meeting a guide is just "
-            "talking with them here.\n"
+            "haven't decided about), each with its real specialty. Meeting "
+            "happens right here in the room: when the person says yes to "
+            "one, call meet_guide with that guide's id.\n"
             "\n"
             "Call this ANY time the other helpers come up - not just at the end "
             "of your own introduction. That includes: \"who else is there?\", "
@@ -160,4 +164,71 @@ LIST_AVAILABLE_GUIDES = Tool(
     # line plus agent_traces.tool_trace (which records every call, tool-by-tool,
     # whatever this flag says).
     record_event=False,
+)
+
+
+async def _meet_guide(tool_input: dict, context: ToolContext) -> str:
+    """the offer accepted: move a chosen guide to active so the director can
+    cast them from the next turn on. meeting happens IN the room - there is
+    no private ritual to run - so the caller's job after this returns is
+    simply to welcome them in. declined and disabled guides are re-meetable
+    by design (the states mean "not right now", and this tool only ever runs
+    because the user just asked)."""
+    user_uuid = user_of_context(context)
+    guide_id = tool_input.get("guide_id")
+    guide_id = guide_id.strip().lower() if isinstance(guide_id, str) else ""
+
+    cards = load_personas()
+    if guide_id == context.actor:
+        return "you can't meet yourself - you're already here."
+    if guide_id not in set(Config.ENABLED_HELPERS) & set(cards):
+        # undeployed and misspelled answer identically: not in this house.
+        # list_available_guides is the source of truth for who is.
+        return (f"refused: there is no guide '{guide_id or '?'}' in this "
+                "house. call list_available_guides for who's actually here.")
+
+    state = await _helper_states.get(user_uuid, guide_id)
+    if state.status == "active":
+        return f"{guide_id} is already part of this person's council - just talk to them."
+
+    await _helper_states.set_status(user_uuid, guide_id, "active")
+    card = cards[guide_id]
+    logger.info("meet_guide: actor=%s user=%s guide=%s (was %s)",
+                context.actor, user_uuid, guide_id, state.status)
+    return (f"{card.emoji} {guide_id} the {card.species} has joined this "
+            f"person's council ({card.specialty}). they can speak in this "
+            "room from the next turn - welcome them in.")
+
+
+MEET_GUIDE = Tool(
+    definition=ToolDef(
+        name="meet_guide",
+        description=(
+            "Add a guide to this person's active council when they say yes "
+            "to meeting one - the moment they agree (\"yes, introduce me to "
+            "remy\", \"can pip join?\"), call this with that guide's id. "
+            "Meeting happens right here in the room: after this returns, "
+            "welcome the guide in your reply, and they can speak from the "
+            "next turn. Guide ids come from list_available_guides - call it "
+            "first if you're not sure who's available. Also the way back for "
+            "a guide the person previously declined or turned off, when they "
+            "ask for them again. Never call it unprompted: joining the "
+            "council is the person's choice."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "guide_id": {
+                    "type": "string",
+                    "description": "The guide's id exactly as "
+                                   "list_available_guides names it (e.g. 'remy').",
+                },
+            },
+            "required": ["guide_id"],
+        },
+    ),
+    handler=_meet_guide,
+    # a durable state change the whole council reads: the frozen action line
+    # is how next turn's speaker knows the meeting already happened.
+    record_event=True,
 )

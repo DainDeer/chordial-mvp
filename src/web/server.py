@@ -1092,8 +1092,12 @@ class WebService:
                 except (ValueError, TypeError):
                     continue
                 if isinstance(frame, dict) and frame.get("type") == "presence":
+                    # keyed by this connection's queue: the report lives and
+                    # dies with the socket, and one device's idleness can
+                    # never overwrite another's activity
                     self.app_interface.note_presence(
-                        user_uuid, frame.get("idle_seconds"))
+                        user_uuid, frame.get("idle_seconds"),
+                        connection=queue)
         finally:
             pump_task.cancel()
             self.app_interface.unsubscribe(user_uuid, queue)
