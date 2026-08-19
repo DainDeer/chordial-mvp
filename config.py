@@ -214,6 +214,20 @@ class Config:
     SYNC_DAILY_EVENT_CAP = int(os.getenv("SYNC_DAILY_EVENT_CAP", "5000"))
     SYNC_MAX_BATCH = int(os.getenv("SYNC_MAX_BATCH", "500"))
 
+    # the meter (phase 7c, src/services/metering.py): per-user model-token
+    # budgets over a trailing 24h window (same rolling shape as the sync
+    # cap - no midnight cliff, gradual recovery). budgeted = input + output
+    # tokens; cache traffic is reported but never counted. soft stops
+    # proactive outreach; hard also refuses conversational turns with
+    # honest ephemeral copy. 0 = off (the default: single-user rigs stay
+    # unmetered and byte-identical). OPS_TOKEN unlocks the operator
+    # dashboard at /ops - unset, the routes don't exist.
+    USER_TOKEN_BUDGET_SOFT_24H = int(
+        os.getenv("USER_TOKEN_BUDGET_SOFT_24H", "0"))
+    USER_TOKEN_BUDGET_HARD_24H = int(
+        os.getenv("USER_TOKEN_BUDGET_HARD_24H", "0"))
+    OPS_TOKEN = os.getenv("OPS_TOKEN")
+
     # the rewind tether (docs/REWIND_DESIGN.md section 8): an unresolved
     # offer earns one opted-in phone ping after AWAY_MINUTES; an offer older
     # than STALE_HOURS never pings (yesterday's quiet is the chip's business,

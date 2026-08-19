@@ -211,6 +211,13 @@ class WebService:
                 logger.warning(
                     "APP_UPDATES_DIR %s does not exist - the update feed "
                     "route was not mounted", Config.APP_UPDATES_DIR)
+        # the operator's meter (phase 7c): the usage dashboard. gated by
+        # OPS_TOKEN - unset means the routes don't exist at all, same
+        # pattern as the update feed. the page itself is inert html; the
+        # data endpoint is the thing the bearer check guards.
+        if Config.OPS_TOKEN:
+            app.router.add_get("/ops", self._ops_page)
+            app.router.add_get("/api/ops/usage", self._api_ops_usage)
         app.on_startup.append(self._start_flow_sweep)
         app.on_cleanup.append(self._stop_flow_sweep)
         return app
@@ -678,6 +685,36 @@ class WebService:
         state = await asyncio.to_thread(
             taper.state_for, identity.user_uuid, Config.DM_INTERVAL_MINUTES)
         return web.json_response({"arc": state})
+
+    # --- the operator's meter (phase 7c) ----------------------------------
+
+    @staticmethod
+    def _ops_authorized(request: web.Request) -> bool:
+        """constant-time bearer check against OPS_TOKEN. the token is an
+        operator credential, not a user one - no session, no cookie, the
+        dashboard page holds it in sessionStorage and sends it per fetch."""
+        import hmac as hmac_mod
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return False
+        presented = header[len("Bearer "):].strip()
+        return bool(Config.OPS_TOKEN) and hmac_mod.compare_digest(
+            presented.encode(), Config.OPS_TOKEN.encode())
+
+    async def _ops_page(self, request: web.Request) -> web.Response:
+        return web.FileResponse(STATIC_DIR / "ops.html")
+
+    async def _api_ops_usage(self, request: web.Request) -> web.Response:
+        if not self._ops_authorized(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        from src.services import metering
+        try:
+            days = int(request.query.get("days", "14"))
+        except ValueError:
+            days = 14
+        days = max(1, min(days, 90))
+        report = await asyncio.to_thread(metering.usage_report, days)
+        return web.json_response(report)
 
     async def _api_v1_task_create(self, request: web.Request) -> web.Response:
         """a quick-add from the deer window: title only, scheduled today.
