@@ -423,17 +423,17 @@ def test_link_device_tool_mints_a_working_code(env):
     assert identity.user_uuid == U1
 
 
-def test_link_device_tool_refuses_outside_dm(env):
+def test_link_device_tool_mints_from_the_council_room(env):
+    """7a: the dm-only guard retired with the multi-human crew group -
+    every scope is a private room with exactly one human, so the desktop
+    pairing flow works from the app's own council room."""
     from dainframe.tools.context import ToolContext
     from src.services.tools.link_tools import LINK_DEVICE
 
     ctx = ToolContext(stream_id=U1, activation_id="test-act",
                       actor="chordial", metadata={"scope": "group"})
     result = _run(LINK_DEVICE.handler({}, ctx))
-    assert result.startswith("refused")
-    with env() as s:
-        from src.database.models import LinkCode
-        assert s.query(LinkCode).count() == 0
+    assert "device link code:" in result
 
 
 def test_link_device_tool_is_registered(env):

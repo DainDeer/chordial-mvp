@@ -1,6 +1,11 @@
 # Telegram Setup
 
-How to give chordial her second door. One-time setup, ~5 minutes.
+How to hang the tether: ONE bot that carries the whole council, a window
+into today's daily room from your phone (docs/ROOMS_DESIGN.md §9). One-time
+setup, ~5 minutes. (The phase-3 one-bot-per-helper ensemble and its shared
+group chat were retired in phase 7a — if your `.env` still has
+`TELEGRAM_TOKEN_<HELPER>`, `TELEGRAM_USERNAME_<HELPER>`, or
+`TELEGRAM_GROUP_CHAT_ID`, delete them; nothing reads them anymore.)
 
 ## 1. Create the bot with @BotFather
 
@@ -33,8 +38,9 @@ You don't need to do anything special on Telegram first — the link flow
 handles Telegram's "user must message the bot before it can reply" rule
 automatically:
 
-1. On Discord, ask chordial: *"can we chat on telegram?"*
-2. She replies with a one-time code and a tappable `t.me/...` link.
+1. In the desktop app's room (or a Discord DM), ask: *"can we chat on
+   telegram?"*
+2. The reply carries a one-time code and a tappable `t.me/...` link.
 3. Tap the link → Telegram opens the bot → hit START. Done — the `/start`
    both introduces you to the bot and redeems the code in one step. (Pasting
    the bare code as a message works too.)
@@ -42,33 +48,20 @@ automatically:
 Codes expire after 15 minutes (`LINK_CODE_TTL_MINUTES`) and are single-use.
 Strangers who find the bot get a polite one-liner and are never onboarded.
 
-## 4. Multiple helpers (v3)
+## 4. The whole council, one bot
 
-Each helper (chordial, tempo, aria, pep, mochi, poet) runs as its own
-BotFather bot. Repeat step 1 per helper you want live, then set:
+There is nothing to configure per helper. Every message you send on Telegram
+lands in **today's daily room** — the same stream the desktop shows — and
+whichever council member answers is attributed inline in the text:
 
 ```
-TELEGRAM_TOKEN_TEMPO=123456:ABC-tempos-token
-TELEGRAM_USERNAME_TEMPO=chordial_mvp_tempo_bot   # no @ - whatever you actually got
+🦝 remy — burrito logged, ~650
 ```
 
-(chordial keeps using the bare `TELEGRAM_TOKEN`/`TELEGRAM_BOT_USERNAME` from
-step 2 — no `_CHORDIAL` suffix needed.) Add the helper's id to
-`ENABLED_HELPERS` (comma-separated, e.g. `ENABLED_HELPERS=chordial,tempo`) or
-it won't get an interface even with a token configured.
-
-**The username must be the bot's REAL, registered handle — never guess.**
-Persona cards (`src/personas/*.yaml`) carry a `telegram_handle` placeholder
-(`tempo_bot`, `aria_bot`, ...) for readability, but those short names are
-almost certainly already taken on Telegram (BotFather usernames are global).
-Startup fails loudly if a helper has a token but no configured username, and
-logs a warning (once connected) if the configured username doesn't match
-what the token's bot actually registered as — both mean mention-parsing and
-the meet-the-guides deep links would otherwise point at the wrong bot.
-
-Optional: `TELEGRAM_GROUP_CHAT_ID` for the shared group all the helpers and
-you sit in together — see the design doc for the group flow. Not required to
-test 1:1 DMs with any helper.
+The desktop mirrors the exchange live ("one conversation, two windows"), and
+proactive check-ins pick exactly one channel: the desk when you're
+demonstrably there, the tether when you're away or idle
+(`PRESENCE_IDLE_SECONDS`, default 300).
 
 ## 5. Dev bot (important!)
 

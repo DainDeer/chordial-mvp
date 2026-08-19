@@ -54,11 +54,16 @@ class FakeInterface(BaseInterface):
 
 
 class FakeUserManager:
-    def __init__(self):
+    def __init__(self, links=None):
         self.deactivated = []
+        # (platform, platform_user_id) -> user_uuid, for the tether mirror
+        self.links = links or {}
 
     async def deactivate_platform_identity(self, platform, platform_user_id):
         self.deactivated.append((platform, platform_user_id))
+
+    async def lookup_user_uuid(self, platform, platform_user_id):
+        return self.links.get((platform, platform_user_id))
 
 
 def test_delivers_to_the_registered_interface():
@@ -200,3 +205,100 @@ def test_deliver_as_deactivates_link_on_permanent_failure():
 
     assert ok is False
     assert users.deactivated == [("telegram", "dead")]
+
+
+# --- 7a: the tether mirror (one conversation, two windows) ------------------------
+
+
+class FakeAppInterface(FakeInterface):
+    """the (app, None) interface, kwargs kept - the mirror's payload extras
+    are the point."""
+
+    def __init__(self, *, raise_exc=None):
+        super().__init__("app", raise_exc=raise_exc)
+        self.kwargs = []
+
+    async def send_message(self, platform_user_id, content, **kwargs):
+        if self._raise is not None:
+            raise self._raise
+        self.sent.append((platform_user_id, content))
+        self.kwargs.append(kwargs)
+        return True
+
+
+def test_confirmed_telegram_delivery_mirrors_to_the_app():
+    users = FakeUserManager(links={("telegram", "777"): "u-777"})
+    router = MessageRouter(users)
+    telegram = FakeInterface("telegram")
+    app = FakeAppInterface()
+    router.register(telegram)
+    router.register(app)
+
+    ok = run(router.deliver_as("telegram", "777", "burrito logged",
+                               speaker="remy", stream_id="room-1"))
+
+    assert ok is True
+    assert telegram.sent == [("777", "burrito logged")]
+    assert app.sent == [("u-777", "burrito logged")]
+    extras = app.kwargs[0]
+    assert extras["speaker"] == "remy"
+    assert extras["stream_id"] == "room-1"
+    assert extras["source_platform"] == "telegram"
+
+
+def test_failed_telegram_delivery_never_mirrors():
+    users = FakeUserManager(links={("telegram", "777"): "u-777"})
+    router = MessageRouter(users)
+    router.register(FakeInterface("telegram", ok=False))
+    app = FakeAppInterface()
+    router.register(app)
+
+    ok = run(router.deliver_as("telegram", "777", "hi", speaker="vel"))
+
+    assert ok is False
+    assert app.sent == []  # an unconfirmed line must not appear anywhere
+
+
+def test_discord_delivery_does_not_mirror():
+    """the mirror is the TETHER's contract; discord stays fully pre-7a."""
+    users = FakeUserManager(links={("discord", "42"): "u-42"})
+    router = MessageRouter(users)
+    discord = FakeInterface("discord")
+    app = FakeAppInterface()
+    router.register(discord)
+    router.register(app)
+
+    ok = run(router.deliver_as("discord", "42", "hi", speaker="vel"))
+
+    assert ok is True
+    assert app.sent == []
+
+
+def test_mirror_without_linked_user_or_app_interface_noops():
+    # no app interface registered at all
+    users = FakeUserManager(links={("telegram", "777"): "u-777"})
+    router = MessageRouter(users)
+    telegram = FakeInterface("telegram")
+    router.register(telegram)
+    assert run(router.deliver_as("telegram", "777", "hi", speaker="vel")) is True
+
+    # app registered, but the telegram id maps to nobody
+    router2 = MessageRouter(FakeUserManager())
+    router2.register(FakeInterface("telegram"))
+    app = FakeAppInterface()
+    router2.register(app)
+    assert run(router2.deliver_as("telegram", "999", "hi", speaker="vel")) is True
+    assert app.sent == []
+
+
+def test_mirror_failure_never_touches_the_delivery_verdict():
+    users = FakeUserManager(links={("telegram", "777"): "u-777"})
+    router = MessageRouter(users)
+    telegram = FakeInterface("telegram")
+    router.register(telegram)
+    router.register(FakeAppInterface(raise_exc=RuntimeError("mirror cracked")))
+
+    ok = run(router.deliver_as("telegram", "777", "hi", speaker="vel"))
+
+    assert ok is True                    # telegram confirmed; the echo is extra
+    assert telegram.sent == [("777", "hi")]

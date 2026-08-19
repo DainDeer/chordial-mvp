@@ -119,16 +119,13 @@ know about each other. The rules:
 
 1. **Different `DATABASE_URL`** — prod on postgres, dev on its sqlite file.
    This is the non-negotiable one.
-2. **Different Telegram bots** — one bot token can only be polled by ONE
+2. **Different Telegram bot** — one bot token can only be polled by ONE
    process at a time (Telegram returns conflicts if two processes poll the
-   same token, and messages get eaten). So the dev daemon needs its own
-   BotFather bots: a dev `TELEGRAM_TOKEN`, and a dev `TELEGRAM_TOKEN_<HELPER>`
-   for **every enabled helper** — each helper is its own bot. Tip: keep
-   `ENABLED_HELPERS` small in dev so you only need a couple of dev bots.
+   same token, and messages get eaten). The tether is a single bot for the
+   whole council (7a), so dev needs exactly one extra BotFather bot: a dev
+   `TELEGRAM_TOKEN` + `TELEGRAM_BOT_USERNAME`.
 3. **Different Discord app/token** (or just leave Discord disabled in dev
    with `ENABLE_DISCORD=false`).
-4. **Different Telegram group** (`TELEGRAM_GROUP_CHAT_ID`) if you're testing
-   group-chat mode — or unset it and test DMs only.
 5. **No `NOTION_API_KEY` in dev** (until the native workspace fully replaces
    Notion): a dev daemon pointed at the real Notion would happily write to
    the real dainframe.

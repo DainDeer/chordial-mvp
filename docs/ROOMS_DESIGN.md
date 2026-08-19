@@ -567,6 +567,79 @@ room** — the same room, the same stream, from the phone.
   single-bot plumbing and single-use link-code flow carry over; the multi-bot
   ensemble code does not); the desktop app being asleep never breaks the phone.
 
+### the tether, as built (phase 7a)
+
+- **The collapse.** One `TelegramInterface` per deployment (`TELEGRAM_TOKEN`
+  + `TELEGRAM_BOT_USERNAME`), registered with the router as
+  `(telegram, None)` — the single-bot key, so it serves ANY speaker. The
+  ensemble went whole: per-helper tokens/usernames, the shared crew group and
+  its update deduper, @-mention parsing, `/setup_group`, the meet-the-guides
+  deep links, and `begin_introduction` were deleted, not ported. With the
+  multi-human group gone, every chat scope is a private room with exactly
+  one human — which also retired the dm-only guards on the code-minting
+  tools, so "connect my telegram" works from the app's council room (where
+  the ask actually happens).
+- **Guides are met in the room, and `meet_guide` makes that real.** The
+  director casts only ACTIVE helpers, so deleting the meet links needed a
+  replacement transition (Sol's 7a round): when the person says yes to
+  meeting a guide, the acting helper calls `meet_guide` — the guide moves
+  to active (declined/disabled are re-meetable by design; the tool only
+  runs because the user just asked) and can be given the floor from the
+  next turn. Every card that can offer the roster carries the tool, and
+  the cards' council prose now says so.
+- **Inbound is a room turn.** A known sender's message is a group-scope
+  stimulus into today's daily room (in private chats `chat_id == user_id`,
+  so the group delivery target is the sender); the routing spine picks who
+  answers, exactly as it does for the app. The front door now runs on every
+  surface — a brand-new person's first tether message lands as the chair's
+  dm-shaped introduction, so identity talk stays out of shared summaries.
+  Stranger policy is unchanged: no user row, no model call, one static line.
+- **Attribution is rendered, not configured.** `attributed(speaker, text)`
+  prefixes `{emoji} {id} — ` from the persona card at send time (deterministic
+  and total: unknown/absent speakers pass through). Chunking happens after
+  attribution, so the prefix counts toward telegram's 4096 cap. (Writing
+  that test found a latent `chunk_message` bug: unbroken text one char past
+  the cap spun the hard-split loop forever — fixed and pinned.)
+- **Presence is the app interface's trichotomy.** The desktop shell owns ONE
+  server websocket (it outlives navigation, so proactive lines confirm even
+  from the home screen) and heartbeats `{type: "presence", idle_seconds}`
+  every 30s from the sidecar's OS idle clock. The server keeps a
+  per-user, **per-connection** registry on the `AppInterface`, aggregated
+  any-active-wins (Sol's 7a round: an idle laptop's heartbeat must never
+  overwrite an active desktop's — each report lives and dies with its
+  socket): **absent** (no connected surface), **idle** (surfaces connected
+  but none demonstrably attended — every reporter idle past
+  `PRESENCE_IDLE_SECONDS` or gone quiet), **active** (any fresh non-idle
+  heartbeat; a user whose surfaces never report — a pre-7a client — fails
+  open to active). The pulse's
+  stimulus factory routes each firing on it: active → the desk; idle → the
+  phone by recency, falling back to the still-connected desk rather than
+  going silent; absent → messaging platforms only (a closed app can never
+  confirm a send). One target per firing, never both; a broken presence
+  source degrades to absent — it costs the desk preference, never the
+  check-in. Without a web surface the targeting is byte-for-byte pre-7a.
+- **One conversation, two windows.** A council line CONFIRMED delivered to
+  telegram is mirrored best-effort to the user's connected app surfaces by
+  the router; the sender's own phone line is mirrored by the interface
+  before the council answers. Mirrors never touch the delivery verdict —
+  the event log records against the telegram confirmation, and the desk's
+  next history fetch covers anything the echo missed. Mirrored payloads
+  carry `author_type` + `platform`; the desktop renders the person's phone
+  lines on their side of the room with a provenance whisper ("📱 from
+  telegram"), and daily-room council lines that land while today's room
+  isn't the watched view become an unread nudge on its door — they wait,
+  they don't chase. The nudge is room-aware (Sol's 7a round): it counts
+  daily lines even while a cycle room is open (they're filtered from that
+  view's transcript, so they were never seen), never counts a cycle room's
+  lines against the daily door, and re-resolves an unrecognized room id
+  once (midnight mints a new daily room) before deciding. Only entering
+  today's room clears it.
+- **Deferred, not faked:** artifact degradation to inline-button messages
+  ("start when you're back at your desk?" → queued for the deer) — the
+  rewind ping is still the only interactive tether surface; the deer
+  voicing server check-ins in its own bubble (they land in the daily room
+  with the door nudge for now).
+
 ---
 
 ## 10. architecture for 100+ users
@@ -748,7 +821,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) |
 
 ### explicitly deferred
 

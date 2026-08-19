@@ -201,21 +201,71 @@ class OnboardingGate:
 
 
 class ChordialStimulusFactory:
-    """plan: resolve the delivery destination BEFORE any tokens - targeted at
-    the platform the user most recently spoke on, falling back to any other
-    live link; nowhere to deliver = no firing. build: the same scheduled_tick
-    stimulus the engine has always handled, now carrying a staleness
-    precondition revalidated under the stream lock."""
+    """plan: resolve the delivery destination BEFORE any tokens - nowhere to
+    deliver = no firing. build: the same scheduled_tick stimulus the engine
+    has always handled, now carrying a staleness precondition revalidated
+    under the stream lock.
+
+    where a proactive word lands is presence-aware (ROOMS_DESIGN section 9):
+    `presence` is the app interface's trichotomy - callable(user_uuid) ->
+    'active' | 'idle' | 'absent'. someone demonstrably at the desk gets the
+    desktop; away or idle gets the phone; never both (there is exactly one
+    target per firing, chosen here - the attention budget was spent by the
+    gates before routing ever runs). without a presence source (no web
+    surface, dev rigs) every user reads as absent, which is exactly the
+    pre-7a most-recently-spoke targeting over the messaging platforms."""
 
     def __init__(
         self,
         user_manager: UserManager,
         platforms: Optional[List[str]] = None,
         now=aware_utc_now,
+        presence=None,
     ):
         self.user_manager = user_manager
         self.platforms = platforms
         self._now = now
+        self.presence = presence
+
+    def _presence_of(self, user_uuid: str) -> str:
+        """the routing trichotomy, guarded: a broken presence source must
+        cost the desk preference, never the check-in."""
+        if self.presence is None:
+            return "absent"
+        try:
+            state = self.presence(user_uuid)
+        except Exception:
+            logger.exception("presence lookup failed for %s; treating as "
+                             "absent", user_uuid)
+            return "absent"
+        return state if state in ("active", "idle") else "absent"
+
+    async def _resolve_target(self, user_uuid: str) -> Optional[tuple]:
+        """(platform, target_id) for a proactive send, presence first:
+
+        active -> the desktop (falling back to any live link only if the
+        app was somehow never linked); idle -> the phone platforms by
+        recency, falling back to the still-connected desk (the word waits
+        on screen) rather than going silent; absent -> the messaging
+        platforms only - the app is closed, and a send there could never
+        confirm."""
+        state = self._presence_of(user_uuid)
+        active = EventLog(user_uuid).active_platform()
+        if state == "active":
+            return await self.user_manager.resolve_delivery_identity(
+                user_uuid, "app", self.platforms)
+
+        away_platforms = (None if self.platforms is None
+                          else [p for p in self.platforms if p != "app"])
+        preferred = active if active != "app" else None
+        target = await self.user_manager.resolve_delivery_identity(
+            user_uuid, preferred, away_platforms)
+        if target is None and state == "idle":
+            # no phone linked, but a desk surface is connected: deliverable,
+            # just not attended right now
+            target = await self.user_manager.resolve_delivery_identity(
+                user_uuid, "app", self.platforms)
+        return target
 
     async def plan(
         self, stream_id: str, rhythm: TaggedRhythm, decision: RhythmDecision
@@ -224,10 +274,7 @@ class ChordialStimulusFactory:
         if rhythm.kind == "curation_due":
             return FiringPlan(key=key, kind=rhythm.kind, due_at=decision.due_at)
 
-        active = EventLog(stream_id).active_platform()
-        target = await self.user_manager.resolve_delivery_identity(
-            stream_id, active, self.platforms
-        )
+        target = await self._resolve_target(stream_id)
         if target is None:
             logger.debug("no deliverable platform for user %s, skipping", stream_id)
             return None
@@ -292,6 +339,7 @@ def build_pulse(
     platforms: Optional[List[str]] = None,
     store=None,
     now=aware_utc_now,
+    presence=None,
 ) -> Pulse:
     """chordial's ambient loop: five-minute cycles, per-user unified recency,
     the don't-nag gate stack (onboarding -> quiet hours -> backoff, first
@@ -300,7 +348,10 @@ def build_pulse(
     PulseStore is a later phase, alongside the other SQL adapters).
 
     the check-in beat is per-user since 6c: the taper stretches it as
-    scorecard history earns quiet (src/services/taper.py)."""
+    scorecard history earns quiet (src/services/taper.py). WHERE the beat
+    lands is presence-aware since 7a: `presence` (the app interface's
+    trichotomy) routes each firing to the desk or the phone - see
+    ChordialStimulusFactory."""
     from src.services import taper
     gates = [
         ScheduledOnly(OnboardingGate(user_manager)),
@@ -320,7 +371,8 @@ def build_pulse(
     return Pulse(
         source=ChordialPulseSource(user_manager, curator=curator,
                                    checkin_minutes=taper.checkin_minutes),
-        factory=ChordialStimulusFactory(user_manager, platforms=platforms, now=now),
+        factory=ChordialStimulusFactory(user_manager, platforms=platforms,
+                                        now=now, presence=presence),
         engine=orchestrator,
         store=store or InMemoryPulseStore(),
         # rhythm keys are USERS: recency anchors and gate arithmetic must

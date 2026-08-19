@@ -4,10 +4,13 @@ v1's rigid onboarding state machine is retired; "has this user finished
 onboarding" is no longer chat_service state at all - it's vel's own
 HelperState.status, read the same way any other helper's relationship state
 is read. these tests cover the routing decision ChatService.process_message
-makes (introduction vs. ordinary user_message stimulus) and the
-begin_introduction deep-link entry point, with the orchestrator mocked out
-(what happens once an introduction stimulus reaches a real Orchestrator/
-HelperAgent is covered in tests/test_introduction.py).
+makes (introduction vs. ordinary user_message stimulus) on every surface -
+since 7a the front door runs for group scope too, because the tether can be
+a brand-new person's first contact - with the orchestrator mocked out (what
+happens once an introduction stimulus reaches a real Orchestrator/
+HelperAgent is covered in tests/test_introduction.py). the ensemble-era
+specialist-dm rituals and the begin_introduction meet-link entry point
+retired with the per-helper bots.
 """
 
 import asyncio
@@ -164,50 +167,57 @@ def test_active_user_with_no_saved_name_is_not_re_introduced(db):
     assert orchestrator.calls[0].kind == "user_message"
 
 
-def test_specialist_dm_continues_that_helpers_introduction(db):
-    """Once a meet link starts Tempo's ritual, later Tempo DMs must keep
-    receiving introduction briefings even though vel is already active."""
-    chat, orchestrator, user_manager = _chat_service()
-    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "skip-intro"))
-    run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "Dain"}))
-    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
-    run(HelperStateManager().set_status(user_uuid, "skip", "introducing"))
-
-    run(
+def test_new_user_on_the_tether_gets_the_front_door(db):
+    """7a: a brand-new person's first telegram message arrives GROUP-scope
+    (the tether speaks into the daily room), and must still land as the
+    chair's introduction - dm-shaped, so identity talk stays out of shared
+    summaries - targeted back at the private chat that sent it."""
+    chat, orchestrator, _ = _chat_service()
+    reply = run(
         chat.process_message(
             _msg(
-                "I think a fox",
+                "hi, someone gave me this bot",
                 platform="telegram",
-                platform_user_id="skip-intro",
-                dm_helper="skip",
+                platform_user_id="777",
+                chat_scope="group",
+                group_chat_id="777",
             )
         )
     )
 
+    assert reply is None
     stim = orchestrator.calls[0]
     assert stim.kind == "introduction"
-    assert stim.audience == "skip"
-    assert stim.addressed == ("skip",)
+    assert stim.scope == "dm"
+    assert stim.audience == "vel"
+    assert stim.target.platform == "telegram"
+    assert stim.target.target_id == "777"
 
 
-def test_unmet_specialist_dm_does_not_use_chordial_legacy_name_rule(db):
+def test_active_user_on_the_tether_is_an_ordinary_group_turn(db):
     chat, orchestrator, user_manager = _chat_service()
-    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "skip-unmet"))
-    run(HelperStateManager().set_status(user_uuid, "vel", "introducing"))
+    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "888", "dain"))
+    run(user_manager.update_user_preferences(user_uuid, {"preferred_name": "Dain"}))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
 
-    run(
+    reply = run(
         chat.process_message(
             _msg(
-                "hello",
+                "back on the bus, ate lunch",
                 platform="telegram",
-                platform_user_id="skip-unmet",
-                dm_helper="skip",
+                platform_user_id="888",
+                chat_scope="group",
+                group_chat_id="888",
             )
         )
     )
 
-    assert orchestrator.calls[0].kind == "user_message"
-    assert orchestrator.calls[0].audience == "skip"
+    assert reply is None
+    stim = orchestrator.calls[0]
+    assert stim.kind == "user_message"
+    assert stim.scope == "group"
+    assert stim.target.platform == "telegram"
+    assert stim.target.target_id == "888"
 
 
 def test_still_introducing_rules():
@@ -221,14 +231,15 @@ def test_still_introducing_rules():
 
 
 def test_group_scope_returns_none(db):
-    chat, orchestrator, _ = _chat_service()
+    chat, orchestrator, user_manager = _chat_service()
+    user_uuid, _ = run(user_manager.get_or_create_user("discord", "123", "tester"))
+    run(HelperStateManager().set_status(user_uuid, "vel", "active"))
     reply = run(
         chat.process_message(
             _msg(
-                "@skip how's my training plan",
+                "how's my training plan",
                 chat_scope="group",
                 group_chat_id="-100",
-                dm_helper="vel",
             )
         )
     )
@@ -259,27 +270,6 @@ def test_echo_fallback_when_no_orchestrator(db):
     chat = ChatService(orchestrator=None, user_manager=UserManager())
     reply = run(chat.process_message(_msg("hello")))
     assert reply == "echo: hello"
-
-
-# --- begin_introduction (the meet-the-guides deep link) ----------------------
-
-
-def test_begin_introduction_sets_helper_introducing_and_returns_reply(db):
-    chat, orchestrator, user_manager = _chat_service()
-    user_uuid, _ = run(user_manager.get_or_create_user("telegram", "789", "dain"))
-
-    reply = run(chat.begin_introduction("telegram", "789", "skip"))
-
-    assert reply is None    # skip's bot delivered through the router
-    assert len(orchestrator.calls) == 1
-    stim = orchestrator.calls[0]
-    assert stim.kind == "introduction"
-    assert stim.scope == "dm"
-    assert stim.audience == "skip"
-    assert stim.addressed == ("skip",)
-
-    state = run(HelperStateManager().get(user_uuid, "skip"))
-    assert state.status == "introducing"
 
 
 def test_same_user_activations_are_serialized(db):

@@ -1,4 +1,14 @@
-"""telegram interface: the second door into the same conversation.
+"""the tether: a single-bot telegram window into today's daily room
+(docs/ROOMS_DESIGN.md section 9).
+
+ONE bot carries the whole council. a known sender's message is a group-scope
+turn in today's daily room - the same stream the desktop shows - and every
+council line delivered back is attributed inline in the text ("🦝 remy — ..."),
+because telegram has no in-band author channel the way the app's payload does.
+the phase-3 one-bot-per-helper ensemble (per-helper tokens, the shared crew
+group, @-mention parsing, the update deduper, meet-the-guides deep links) was
+retired outright in phase 7a, not ported: it could never scale past a handful
+of users, and the rooms model doesn't need it.
 
 python-telegram-bot v22 in MANUAL mode (initialize/start/start_polling, not
 run_polling) - the documented pattern for coexisting in one asyncio loop with
@@ -7,7 +17,7 @@ background tasks, and start() parks on an event until stop() so main's
 create_task(interface.start()) treatment stays uniform across platforms.
 
 identity rules (the public-username safety property):
-- a KNOWN linked sender flows into chat_service like any discord dm.
+- a KNOWN linked sender flows into chat_service like any other inbound turn.
 - an UNKNOWN sender never reaches chat_service (which would create a user and
   spend api budget). if their message looks like a link code, we try to
   redeem it; otherwise they get one static line pointing them at the link
@@ -26,7 +36,6 @@ telegram facts this file leans on (verified against current docs):
 import asyncio
 import logging
 import re
-from collections import OrderedDict
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -51,61 +60,9 @@ from src.utils.string_utils import chunk_message
 logger = logging.getLogger(__name__)
 
 
-class UpdateDeduper:
-    """N bots in one group each deliver every human message; keep the first.
-
-    every helper bot polls its own update stream, so a single human line in the
-    shared group arrives once per bot - all with the same (chat_id, message_id).
-    all interfaces share ONE deduper instance; the first bot to observe a given
-    (chat_id, message_id) processes it, the rest see a duplicate and drop it.
-    """
-
-    def __init__(self, maxlen: int = 512):
-        self._seen: "OrderedDict[tuple[int, int], None]" = OrderedDict()
-        self._maxlen = maxlen
-
-    def is_duplicate(self, chat_id: int, message_id: int) -> bool:
-        key = (chat_id, message_id)
-        if key in self._seen:
-            return True
-        self._seen[key] = None
-        if len(self._seen) > self._maxlen:
-            self._seen.popitem(last=False)
-        return False
-
-
-def mentioned_helpers(message, handle_to_helper: "dict[str, str] | None") -> list[str]:
-    """resolve @-mentions in a group message to helper ids, in order (deduped).
-
-    telegram hands us `MessageEntity` spans instead of leaving us to regex the
-    text: a "mention" entity is an '@handle' substring we slice out of the text
-    and map to a helper id; a "text_mention" entity carries a `User` object
-    directly (used when a bot has no public username) whose `.username` we map
-    the same way. unknown handles are ignored.
-    """
-    handle_to_helper = handle_to_helper or {}
-    out: list[str] = []
-    text = message.text or ""
-    for ent in message.entities or []:
-        helper: Optional[str] = None
-        if ent.type == "mention":
-            handle = text[ent.offset + 1 : ent.offset + ent.length]  # drop the '@'
-            helper = handle_to_helper.get(handle.lower())
-        elif ent.type == "text_mention" and getattr(ent, "user", None) is not None:
-            username = getattr(ent.user, "username", None)
-            if username:
-                helper = handle_to_helper.get(username.lower())
-        if helper and helper not in out:
-            out.append(helper)
-    return out
-
-
 _TELEGRAM_MAX_LENGTH = 4096
 _INTER_CHUNK_DELAY = 1.0  # stay under telegram's ~1 msg/sec per chat
 _LINK_CODE_RE = re.compile(r"^[A-Z2-9]{8}$")
-# the /start payload chordial's meet-the-guides deep links carry
-# (t.me/<bot>?start=<this>). MUST match the value intro_tools._deep_link builds.
-_MEET_PAYLOAD = "meet"
 
 # the bare-/start greeting when TELEGRAM_OPEN_ONBOARDING is on: static (no
 # model call) - their first real message is what creates the user
@@ -137,71 +94,59 @@ CONFLICT_REPLY = (
 )
 
 
-class TelegramInterface(BaseInterface):
-    """one helper's telegram bot (long polling): its DMs + the shared group.
+def attributed(speaker: Optional[str], content: str) -> str:
+    """render a council line for a surface with no author channel: the
+    speaker's emoji + id, inline, ahead of the words - "🦝 remy — burrito
+    logged". deterministic and total: an unknown or absent speaker id (a
+    static system line, a speaker whose card isn't deployed) passes the
+    content through untouched rather than inventing an author."""
+    if not speaker:
+        return content
+    from src.personas import load_personas
 
-    in v3 each helper (chordial, tempo, ...) runs as its own bot account with
-    its own token, so main builds one interface per enabled helper. they all
-    still report `platform == "telegram"`; the router disambiguates by
-    `helper_id`. per-helper state carried here:
-    - `helper_id`: which persona this bot speaks as (event-log author / router
-      sub-key / the `via_bot` stamp on inbound messages).
-    - `deduper`: a SHARED `UpdateDeduper` across every interface - N bots each
-      receive every human group message, and only the first delivery of a given
-      (chat_id, message_id) is processed.
-    - `handle_to_helper`: bot @handle (lowercase, no '@') -> helper id, for
-      resolving @mentions in group messages to the helpers they summon.
-    """
+    card = load_personas().get(speaker)
+    if card is None:
+        return content
+    return f"{card.emoji} {speaker} — {content}"
+
+
+class TelegramInterface(BaseInterface):
+    """the deployment's one telegram bot: every user's tether into their
+    daily room. registers with the router as (telegram, None) - the
+    single-bot key - so it serves ANY speaker; attribution is rendered into
+    the text at send time. `mirror` (optional) is the app interface's
+    fan-out, so a known sender's own line also appears live on their
+    connected desktop (one conversation, two windows)."""
 
     platform = "telegram"
 
     def __init__(
         self,
-        helper_id: str,
         token: str,
         telegram_handle: str,
         chat_service,
         link_service,
         user_manager,
-        deduper,
-        group_chat_id=None,
-        handle_to_helper: "dict[str, str] | None" = None,
+        mirror=None,
     ):
         super().__init__(chat_service)
-        self.helper_id = helper_id
         self.token = token
         self.telegram_handle = telegram_handle
         self.link_service = link_service
         self.user_manager = user_manager
-        self.deduper = deduper
-        self.group_chat_id = group_chat_id
-        self.handle_to_helper = handle_to_helper or {}
+        self.mirror = mirror
         self._stopped = asyncio.Event()
 
         self.app: Application = ApplicationBuilder().token(token).build()
         self.app.add_handler(CommandHandler("start", self._on_start))
-        self.app.add_handler(
-            CommandHandler(
-                "setup_group",
-                self._on_setup_group,
-                filters=filters.ChatType.GROUPS,
-            )
-        )
         self.app.add_handler(
             MessageHandler(
                 filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND,
                 self._on_message,
             )
         )
-        self.app.add_handler(
-            MessageHandler(
-                filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
-                self._on_group_message,
-            )
-        )
-        # the rewind tether's inline answers (REWIND_DESIGN section 8).
-        # registered on every helper bot: whichever bot carried the ping
-        # receives the tap.
+        # the rewind tether's inline answers (REWIND_DESIGN section 8):
+        # whichever ping the user taps, the answer lands here.
         self.app.add_handler(
             CallbackQueryHandler(self._on_rewind_choice, pattern=r"^rw:")
         )
@@ -215,23 +160,18 @@ class TelegramInterface(BaseInterface):
         try:
             await self.app.initialize()
 
-            # nice-to-have sanity check: the configured @username (deep links,
-            # mention parsing - see Config.telegram_username_for) should
-            # actually belong to this token's bot. every helper's own handle
-            # is checked, not just chordial's - a mismatch here means deep
-            # links/mentions for THIS helper are silently pointing at the
-            # wrong bot (most likely: BotFather username != TELEGRAM_USERNAME_*).
+            # nice-to-have sanity check: the configured @username (link-code
+            # deep links) should actually belong to this token's bot - a
+            # mismatch means minted links silently point at the wrong bot
+            # (most likely: BotFather username != TELEGRAM_BOT_USERNAME).
             me = await self.app.bot.get_me()
             if self.telegram_handle and me.username != self.telegram_handle:
                 logger.warning(
-                    "configured username for '%s' is %r but the token belongs "
-                    "to @%s - deep links/mentions for this helper will point "
-                    "at the wrong bot! fix TELEGRAM_USERNAME_%s (or "
-                    "TELEGRAM_BOT_USERNAME for chordial).",
-                    self.helper_id,
+                    "configured TELEGRAM_BOT_USERNAME is %r but the token "
+                    "belongs to @%s - minted deep links will point at the "
+                    "wrong bot!",
                     self.telegram_handle,
                     me.username,
-                    self.helper_id.upper(),
                 )
 
             await self.app.start()
@@ -260,33 +200,15 @@ class TelegramInterface(BaseInterface):
     # --- inbound ---------------------------------------------------------------
 
     async def _on_start(self, update, context: ContextTypes.DEFAULT_TYPE):
-        """/start - carries one of two deep-link payloads, or none:
-        - `meet`: the meet-the-guides link (t.me/<bot>?start=meet) that chordial
-          hands out. a KNOWN user tapping it kicks off THIS helper's own
-          introduction in dm. (a stranger can't meet a guide - they link via
-          chordial first, so they fall through to the stranger line.)
-        - anything else: treated as a cross-platform link CODE to redeem (the
-          under-the-hood account-linking flow; the user never types these).
-        """
+        """/start - carries a cross-platform link CODE as its deep-link
+        payload (the account-linking flow; the user never types these), or
+        nothing. (the ensemble-era 'meet' payload is gone with the per-guide
+        bots: guides are met in the rooms now.)"""
         user = update.effective_user
         if user is None or update.message is None:
             return
 
         payload = context.args[0] if context.args else None
-
-        if payload == _MEET_PAYLOAD:
-            if await self._is_known(str(user.id)):
-                await update.effective_chat.send_action(ChatAction.TYPING)
-                reply = await self.chat_service.begin_introduction(
-                    "telegram",
-                    str(user.id),
-                    self.helper_id,
-                )
-                await self._send_chunked(update, reply)
-            else:
-                await update.message.reply_text(self._stranger_start_reply())
-            return
-
         if payload:
             await update.message.reply_text(await self._redeem(payload, user))
             return
@@ -306,27 +228,19 @@ class TelegramInterface(BaseInterface):
             return OPEN_ONBOARDING_HELLO
         return STRANGER_REPLY
 
-    async def _send_chunked(self, update, text) -> None:
-        """send a (possibly long) reply as telegram-sized chunks, paced under
-        the per-chat rate limit - the same shape _on_message uses."""
-        if not text:
-            return
-        chunks = chunk_message(text, max_length=_TELEGRAM_MAX_LENGTH)
-        for i, chunk in enumerate(chunks):
-            await update.effective_chat.send_message(chunk)
-            if i < len(chunks) - 1:
-                await asyncio.sleep(_INTER_CHUNK_DELAY)
-
     async def _on_message(self, update, context: ContextTypes.DEFAULT_TYPE):
+        """a private-chat line. known senders speak into today's daily room
+        (group scope: the council's routing spine picks who answers, and the
+        replies are delivered out-of-band through the router - process_message
+        returns None on that path, so anything it DOES return is refusal/error
+        copy to send plainly). unknown senders never reach chat_service."""
         user = update.effective_user
         message = update.message
         if user is None or message is None or not message.text:
             return
 
         if not await self._is_known(str(user.id)):
-            # a code-shaped message is always a redemption attempt first -
-            # cross-platform linking works the same whether onboarding is
-            # open or gated
+            # a code-shaped message is always a redemption attempt first
             candidate = message.text.strip().upper()
             if _LINK_CODE_RE.fullmatch(candidate):
                 await message.reply_text(await self._redeem(candidate, user))
@@ -338,8 +252,9 @@ class TelegramInterface(BaseInterface):
                 return
             # open onboarding: fall through into chat_service, which creates
             # the user and starts the introduction - the same trust-on-first-
-            # message contract as a discord dm. deliberately DM-only: the
-            # group handler ignores strangers regardless of this flag.
+            # message contract as a discord dm.
+
+        await self._mirror_user_line(str(user.id), message.text)
 
         from src.models.unified_message import UnifiedMessage
 
@@ -348,9 +263,12 @@ class TelegramInterface(BaseInterface):
             platform_user_id=str(user.id),
             platform="telegram",
             platform_message_id=str(message.message_id),
-            chat_scope="dm",
-            via_bot=self.helper_id,
-            dm_helper=self.helper_id,
+            # the tether always maps to the current daily room - the same
+            # shared scope the app posts into, so the routing spine picks
+            # the speaker. in private chats chat_id == user_id, so the
+            # group target is deliverable as-is.
+            chat_scope="group",
+            group_chat_id=str(user.id),
             metadata={
                 "username": user.username,
                 "timestamp": message.date,
@@ -369,105 +287,25 @@ class TelegramInterface(BaseInterface):
                 if i < len(chunks) - 1:
                     await asyncio.sleep(_INTER_CHUNK_DELAY)
 
-    async def _on_group_message(self, update, context: ContextTypes.DEFAULT_TYPE):
-        """a human line in the shared crew group. delivered to every bot, so we
-        dedupe first; unknown senders are ignored (no user row, no reply); the
-        reply is delivered out-of-band by the orchestrator/router, so we send
-        nothing back here (chat_service returns None for group scope)."""
-        user = update.effective_user
-        message = update.message
-        chat = update.effective_chat
-        if user is None or message is None or not message.text or chat is None:
+    async def _mirror_user_line(self, platform_user_id: str, text: str) -> None:
+        """one conversation, two windows: the sender's own telegram line,
+        fanned best-effort to their connected desktop surfaces before the
+        council answers (so the desk sees the question, then the reply).
+        strictly cosmetic - the event log is the record; any failure here
+        costs the live echo, never the turn."""
+        if self.mirror is None:
             return
-
-        # The crew room contains personal context, so knowing the sender is not
-        # sufficient authorization: a known user may add a helper bot to any
-        # number of unrelated groups.  Fail closed until a room is configured,
-        # and only accept updates from that exact Telegram chat.
-        if not self._is_configured_group(chat.id):
-            logger.warning(
-                "ignoring group message for helper '%s' from unconfigured "
-                "telegram chat %s",
-                self.helper_id,
-                chat.id,
-            )
-            return
-
-        # N bots => N identical updates; only the first past the shared deduper
-        # is processed. keyed on (chat_id, message_id), stable across streams.
-        if self.deduper is not None and self.deduper.is_duplicate(
-            chat.id, message.message_id
-        ):
-            return
-
-        # unknown senders in a group are ignored silently: no onboarding, no
-        # stranger line, no api spend (the group is a known-users-only room).
-        if not await self._is_known(str(user.id)):
-            return
-
-        mentioned = mentioned_helpers(message, self.handle_to_helper)
-
-        from src.models.unified_message import UnifiedMessage
-
-        unified_msg = UnifiedMessage(
-            content=message.text,
-            platform_user_id=str(user.id),
-            platform="telegram",
-            platform_message_id=str(message.message_id),
-            chat_scope="group",
-            group_chat_id=str(chat.id),
-            via_bot=self.helper_id,
-            mentioned=mentioned,
-            metadata={
-                "username": user.username,
-                "timestamp": message.date,
-            },
-        )
-
-        # group scope: the orchestrator delivers each speaker's line out-of-band
-        # via the router, so process_message returns None and we send nothing.
-        # (a returned string is an acceptable fallback, but the contract is None.)
-        response = await self.chat_service.process_message(unified_msg)
-        if response:
-            chunks = chunk_message(response, max_length=_TELEGRAM_MAX_LENGTH)
-            for i, chunk in enumerate(chunks):
-                await chat.send_message(chunk)
-                if i < len(chunks) - 1:
-                    await asyncio.sleep(_INTER_CHUNK_DELAY)
-
-    async def _on_setup_group(self, update, context: ContextTypes.DEFAULT_TYPE):
-        """/setup_group in a group: a discovery helper. reply with the chat id
-        and how to persist it (set TELEGRAM_GROUP_CHAT_ID) - phase-2 keeps this
-        lightweight, since Dain creates the group manually and sets the env."""
-        user = update.effective_user
-        message = update.message
-        chat = update.effective_chat
-        if user is None or message is None or chat is None:
-            return
-
-        # Only an already-linked account may discover/configure the private
-        # crew room. Once a room is configured, do not disclose or suggest a
-        # replacement id from commands issued in another group.
-        if not await self._is_known(str(user.id)):
-            return
-        if self.group_chat_id is not None and not self._is_configured_group(chat.id):
-            return
-        # keep it deduped too: every bot in the group sees this command.
-        if self.deduper is not None and self.deduper.is_duplicate(
-            chat.id, message.message_id
-        ):
-            return
-        await message.reply_text(
-            f"this group's chat id is `{chat.id}`.\n"
-            f"set TELEGRAM_GROUP_CHAT_ID={chat.id} in the environment and "
-            f"restart so the crew can speak here."
-        )
-
-    def _is_configured_group(self, chat_id) -> bool:
-        """Whether ``chat_id`` is the explicitly configured private crew room."""
-        return self.group_chat_id is not None and str(chat_id) == str(
-            self.group_chat_id
-        )
+        try:
+            user_uuid = await self.user_manager.lookup_user_uuid(
+                "telegram", platform_user_id)
+            if user_uuid is None:
+                return  # open-onboarding first contact: no user row yet
+            await self.mirror.send_message(
+                user_uuid, text, speaker="user",
+                author_type="user", source_platform="telegram")
+        except Exception:
+            logger.exception("telegram->app mirror of a user line failed; "
+                             "continuing without")
 
     async def _is_known(self, platform_user_id: str) -> bool:
         return not await self.user_manager.is_new_user("telegram", platform_user_id)
@@ -493,14 +331,17 @@ class TelegramInterface(BaseInterface):
     # --- outbound ----------------------------------------------------------------
 
     async def send_message(self, platform_user_id: str, content: str, **kwargs) -> bool:
-        """send a message to a telegram user, chunked.
+        """send a council line to a telegram user, attributed inline and
+        chunked. the router forwards `speaker=`; `stream_id` (the room) is
+        accepted and ignored - the tether is one room by construction.
 
         raises UndeliverableError for permanent failures (blocked the bot,
         never /start-ed, malformed id) so the router deactivates the link;
         transient failures return False and leave the link active."""
         try:
             chat_id = int(platform_user_id)
-            chunks = chunk_message(content, max_length=_TELEGRAM_MAX_LENGTH)
+            text = attributed(kwargs.get("speaker"), content)
+            chunks = chunk_message(text, max_length=_TELEGRAM_MAX_LENGTH)
 
             await self.app.bot.send_chat_action(
                 chat_id=chat_id, action=ChatAction.TYPING
@@ -541,9 +382,10 @@ class TelegramInterface(BaseInterface):
 
     async def send_choice(self, platform_user_id: str, content: str,
                           choices: list, **kwargs) -> bool:
-        """one message with inline buttons (the rewind tether's ping). the
-        ping is short by construction - no chunking; the buttons must ride
-        the same message they answer. failure mapping mirrors send_message."""
+        """one message with inline buttons (the rewind tether's ping),
+        attributed like any council line. the ping is short by construction -
+        no chunking; the buttons must ride the same message they answer.
+        failure mapping mirrors send_message."""
         try:
             chat_id = int(platform_user_id)
             keyboard = InlineKeyboardMarkup([
@@ -551,7 +393,9 @@ class TelegramInterface(BaseInterface):
                 for c in choices
             ])
             await self.app.bot.send_message(
-                chat_id=chat_id, text=content, reply_markup=keyboard)
+                chat_id=chat_id,
+                text=attributed(kwargs.get("speaker"), content),
+                reply_markup=keyboard)
             return True
         except Forbidden as e:
             raise UndeliverableError(

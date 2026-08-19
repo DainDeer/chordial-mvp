@@ -40,6 +40,18 @@ def test_single_overlong_paragraph_does_not_crash():
     assert sum(len(c.replace(" ", "")) for c in chunks) == len(long_paragraph.replace(" ", ""))
 
 
+def test_unbroken_text_one_char_past_the_limit_terminates():
+    """THE 7a regression: continuous text (no spaces, no sentence breaks)
+    just past max_length used to spin forever - the hard-split loop took a
+    zero-length slice once the chunk was exactly full. live, one 4097-char
+    unbroken reply would have hung the telegram send path."""
+    for extra in (1, 10, 5000):
+        text = "z" * (4096 + extra)
+        chunks = chunk_message(text, max_length=4096)
+        assert all(len(c) <= 4096 for c in chunks)
+        assert "".join(chunks) == text  # nothing dropped, nothing invented
+
+
 def test_respects_custom_max_length():
     text = " ".join(f"word{i} and some filler here." for i in range(400))
     for limit in (2000, 4096):

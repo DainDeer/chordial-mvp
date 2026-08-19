@@ -20,6 +20,9 @@ import CyclePanel from "./CyclePanel";
 
 interface Props {
   token: string;
+  /** council lines that arrived while nobody was in a room view (7a):
+   * the door carries the nudge instead of a notification interrupting */
+  unread: number;
   onEnterRoom: () => void;
   onEnterCycleRoom: (handle: CycleRoomHandle) => void;
   onOpenArchive: (room: ArchivedRoom) => void;
@@ -68,6 +71,7 @@ function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
  * to the room, and the journal of remembered days. */
 export default function Home({
   token,
+  unread,
   onEnterRoom,
   onEnterCycleRoom,
   onOpenArchive,
@@ -237,6 +241,14 @@ export default function Home({
 
       <button className="enter-room" onClick={onEnterRoom}>
         step into today’s room →
+        {unread > 0 && (
+          <span
+            className="room-nudge"
+            title={`${unread} new ${unread === 1 ? "line" : "lines"} waiting`}
+          >
+            {unread}
+          </span>
+        )}
       </button>
 
       {pastDays.length > 0 && (

@@ -305,6 +305,44 @@ def test_ws_auth_then_receives_council_lines(env):
     _run(_with_service(_service(None, app), flow))
 
 
+def test_ws_presence_frames_feed_the_registry(env):
+    """7a: the one client frame that matters - the presence heartbeat - and
+    the guarantee that garbage frames cost nothing (the socket keeps
+    serving; presence just doesn't move)."""
+    app = AppInterface()
+
+    async def flow(client):
+        token = _token()
+        ws = await client.ws_connect("/api/v1/ws")
+        await ws.send_json({"token": token})
+        hello = await ws.receive_json()
+        assert hello["type"] == "hello"
+
+        # connected + no report yet: fail-open active (pre-7a clients)
+        assert app.presence_state(U1) == "active"
+
+        await ws.send_json({"type": "presence", "idle_seconds": 900})
+        # garbage must be shrugged off, not close the socket
+        await ws.send_str("not json {{{")
+        await ws.send_json({"type": "something-else"})
+        await asyncio.sleep(0.05)  # let the server drain the frames
+
+        assert app.presence_state(U1) == "idle"
+
+        await ws.send_json({"type": "presence", "idle_seconds": 2})
+        await asyncio.sleep(0.05)
+        assert app.presence_state(U1) == "active"
+
+        # the socket still delivers after the garbage
+        assert await app.send_message(U1, "still with you") is True
+        payload = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert payload["content"] == "still with you"
+        await ws.close()
+        await asyncio.sleep(0)
+        assert app.presence_state(U1) == "absent"
+    _run(_with_service(_service(None, app), flow))
+
+
 def test_ws_rejects_bad_token(env):
     app = AppInterface()
 

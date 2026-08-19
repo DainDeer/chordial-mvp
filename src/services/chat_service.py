@@ -116,8 +116,6 @@ class ChatService:
 
             chat_scope = getattr(unified_message, "chat_scope", "dm") or "dm"
             group_chat_id = getattr(unified_message, "group_chat_id", None)
-            dm_helper = getattr(unified_message, "dm_helper", None) or CHAIR_ID
-            mentioned = getattr(unified_message, "mentioned", None) or []
 
             user_uuid, _ = await self.user_manager.get_or_create_user(
                 platform, platform_user_id, username
@@ -132,31 +130,19 @@ class ChatService:
                 ) = await self.user_manager.get_user_profile(user_uuid)
 
                 kind = "user_message"
-                intro_helper = None
-                # the front-door check runs for dms AND for the app's shared
-                # room: the app is many users' FIRST surface, and a brand-new
-                # person's first message there must land as the chair's
-                # introduction, not an ordinary council turn. (telegram
-                # groups keep the old rule - group members were introduced
-                # in their dms.)
-                if chat_scope == "dm" or platform == "app":
-                    helper_state = await self.helper_states.get(user_uuid, dm_helper)
-                    if dm_helper == CHAIR_ID:
-                        is_introducing = _still_introducing(
-                            helper_state.status, user_name
+                # the front-door check runs on EVERY inbound surface: since
+                # the ensemble retired (phase 7a), each of them - a discord
+                # dm, the app's council room, the tether - can be a
+                # brand-new person's first contact, and that first message
+                # must land as the chair's introduction, not an ordinary
+                # council turn.
+                helper_state = await self.helper_states.get(user_uuid, CHAIR_ID)
+                if _still_introducing(helper_state.status, user_name):
+                    kind = "introduction"
+                    if helper_state.status != "introducing":
+                        await self.helper_states.set_status(
+                            user_uuid, CHAIR_ID, "introducing"
                         )
-                    else:
-                        # Preferred-name back compatibility belongs only to the
-                        # chair's front door. A specialist continues its own
-                        # multi-turn ritual only while its relationship says so.
-                        is_introducing = helper_state.status == "introducing"
-                    if is_introducing:
-                        kind = "introduction"
-                        intro_helper = dm_helper
-                        if helper_state.status != "introducing":
-                            await self.helper_states.set_status(
-                                user_uuid, dm_helper, "introducing"
-                            )
 
                 if not self.orchestrator:
                     return f"echo: {unified_message.content}"
@@ -181,10 +167,9 @@ class ChatService:
                 else:
                     stream_id = await self._current_stream(user_uuid)
 
-                # introductions are dm-shaped wherever they run (private
-                # channel with the introducing helper - identity talk stays
-                # out of shared summaries); ordinary shared-room turns take
-                # the group shape
+                # introductions are dm-shaped wherever they run (a private
+                # channel with the chair - identity talk stays out of shared
+                # summaries); ordinary shared-room turns take the group shape
                 if chat_scope == "group" and kind != "introduction":
                     stimulus = Stimulus(
                         kind=kind,
@@ -192,7 +177,6 @@ class ChatService:
                         content=unified_message.content,
                         platform=platform,
                         scope="group",
-                        addressed=tuple(mentioned),
                         target=(
                             DeliveryTarget(platform=platform, target_id=group_chat_id)
                             if group_chat_id else None
@@ -205,16 +189,16 @@ class ChatService:
                         },
                     )
                 else:
-                    # the addressed helper is both the lone speaker and the
-                    # name of the private channel the inbound records into
+                    # the chair is both the lone speaker and the name of the
+                    # private channel the inbound records into
                     stimulus = Stimulus(
                         kind=kind,
                         stream_id=stream_id,
                         content=unified_message.content,
                         platform=platform,
                         scope="dm",
-                        audience=intro_helper or dm_helper,
-                        addressed=(intro_helper or dm_helper,),
+                        audience=CHAIR_ID,
+                        addressed=(CHAIR_ID,),
                         target=DeliveryTarget(
                             platform=platform, target_id=platform_user_id
                         ),
@@ -231,59 +215,6 @@ class ChatService:
 
         except Exception as e:
             logger.error(f"error processing message: {e}")
-            return "sorry, i encountered an error processing your message."
-
-    async def begin_introduction(
-        self, platform: str, platform_user_id: str, helper_id: str
-    ) -> Optional[str]:
-        """entry point for the meet-the-guides deep link (`t.me/<bot>?start=meet`):
-        a user already known on `platform` taps a guide's link, which opens
-        that helper's dm and should kick off ITS introduction. flips the
-        helper's relationship to 'introducing' and runs the activation.
-        """
-        try:
-            user_uuid, _ = await self.user_manager.get_or_create_user(
-                platform, platform_user_id
-            )
-            async with self._lock_for_user(user_uuid):
-                (
-                    user_name,
-                    user_timezone,
-                    user_pronouns,
-                ) = await self.user_manager.get_user_profile(user_uuid)
-
-                await self.helper_states.set_status(user_uuid, helper_id, "introducing")
-
-                if not self.orchestrator:
-                    return f"echo: meet {helper_id}"
-
-                stream_id = await self._current_stream(user_uuid)
-
-                result = await self.orchestrator.handle(
-                    Stimulus(
-                        kind="introduction",
-                        stream_id=stream_id,
-                        content=None,
-                        platform=platform,
-                        scope="dm",
-                        audience=helper_id,
-                        addressed=(helper_id,),
-                        target=DeliveryTarget(
-                            platform=platform, target_id=platform_user_id
-                        ),
-                        extras={
-                            "user_id": user_uuid,
-                            "user_name": user_name,
-                            "user_pronouns": user_pronouns,
-                            "user_timezone": user_timezone,
-                        },
-                    )
-                )
-
-                return self._reply_for(result)
-
-        except Exception as e:
-            logger.error(f"error beginning introduction for helper {helper_id}: {e}")
             return "sorry, i encountered an error processing your message."
 
     @staticmethod

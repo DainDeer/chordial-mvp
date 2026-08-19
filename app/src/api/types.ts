@@ -47,6 +47,12 @@ export interface DeliveryPayload {
   /** which room the line belongs to (phase 6b); absent on older payload
    * shapes, which only ever carried daily-room lines */
   room?: string;
+  /** the tether mirror (phase 7a): "user" when this is the person's own
+   * line echoed from another platform; absent on council lines */
+  author_type?: string;
+  /** where a mirrored line originated (e.g. "telegram"); absent on
+   * app-first deliveries */
+  platform?: string;
 }
 
 export interface SendResult {

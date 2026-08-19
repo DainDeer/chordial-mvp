@@ -6,7 +6,7 @@ import {
   isAuthError,
   sendRoomMessage,
 } from "../api/client";
-import { RoomSocket, type SocketStatus } from "../api/ws";
+import { type SocketBus, type SocketStatus } from "../api/ws";
 import type { CouncilMember, RoomInfo } from "../api/types";
 import {
   admitLive,
@@ -34,6 +34,10 @@ export interface CycleRoomHandle {
 interface Props {
   token: string;
   council: CouncilMember[];
+  /** the shell-owned socket's fan-out (7a): the view subscribes while
+   * mounted; the socket itself outlives navigation */
+  bus: SocketBus;
+  socketStatus: SocketStatus;
   onTurnComplete: () => void;
   onAuthLost: () => void;
   cycleRoom?: CycleRoomHandle;
@@ -78,6 +82,8 @@ function Stirring() {
 export default function Room({
   token,
   council,
+  bus,
+  socketStatus,
   onTurnComplete,
   onAuthLost,
   cycleRoom,
@@ -89,7 +95,6 @@ export default function Room({
   );
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [extras, setExtras] = useState<ChatMessage[]>([]);
-  const [socketStatus, setSocketStatus] = useState<SocketStatus>("connecting");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -131,28 +136,26 @@ export default function Room({
   }, [refresh]);
 
   useEffect(() => {
-    const socket = new RoomSocket(token, {
-      // dedupe OUTSIDE the state updater: updaters must stay pure (strict
-      // mode double-invokes them), the seen-set mutation must run once.
-      // the filter keeps rooms apart on the shared per-user socket: a
-      // retro line never renders in the daily view and vice versa
-      onPayload: (payload) => {
-        const filter: RoomFilter = {
-          room: roomIdRef.current,
-          strict: Boolean(cycleRoom),
-        };
-        const line = admitLive(seen.current, payload, filter);
-        if (line) setExtras((prev) => [...prev, line]);
-      },
-      onStatus: (status) => {
-        setSocketStatus(status);
-        if (status === "revoked") onAuthLost();
-      },
-      onReconnect: refresh,
+    // the socket is the shell's (it outlives this view); subscribe for the
+    // lines and reconnects this room cares about while mounted.
+    // dedupe OUTSIDE the state updater: updaters must stay pure (strict
+    // mode double-invokes them), the seen-set mutation must run once.
+    // the filter keeps rooms apart on the shared per-user socket: a
+    // retro line never renders in the daily view and vice versa
+    const offPayload = bus.onPayload((payload) => {
+      const filter: RoomFilter = {
+        room: roomIdRef.current,
+        strict: Boolean(cycleRoom),
+      };
+      const line = admitLive(seen.current, payload, filter);
+      if (line) setExtras((prev) => [...prev, line]);
     });
-    socket.start();
-    return () => socket.stop();
-  }, [token, refresh, onAuthLost, cycleRoom]);
+    const offReconnect = bus.onReconnect(refresh);
+    return () => {
+      offPayload();
+      offReconnect();
+    };
+  }, [bus, refresh, cycleRoom]);
 
   const messages = [...history, ...extras];
 
@@ -310,6 +313,11 @@ export default function Room({
                 className={`line mine${m.pending ? " pending" : ""}`}
               >
                 <div className="bubble">{m.content}</div>
+                {m.platform === "telegram" && (
+                  <span className="line-via" title="sent from the phone">
+                    📱 from telegram
+                  </span>
+                )}
                 {m.failed && (
                   <button
                     className="line-retry"

@@ -1,13 +1,19 @@
-"""telegram interface tests: handler policy and outbound error mapping, with
-ptb's Application/bot faked (no network, no token).
+"""tether interface tests (ROOMS_DESIGN section 9): handler policy, inline
+attribution, the desktop mirror, and outbound error mapping, with ptb's
+Application/bot faked (no network, no token).
 
 the properties that matter:
 - unknown senders NEVER reach chat_service (no user creation, no api spend):
   code-shaped text attempts redemption, everything else gets one static line
-- /start with a deep-link payload redeems; bare /start is polite
-- outbound maps telegram errors onto the router's contract: Forbidden and
-  chat-not-found -> UndeliverableError (permanent), other TelegramError ->
-  False (transient), RetryAfter honored once
+- a known sender's message is a GROUP-scope turn into today's daily room
+  (chat_id == user_id in private chats, so the group target is the sender),
+  and their line mirrors best-effort to connected desktop surfaces
+- /start with a deep-link payload redeems; bare /start is polite; the
+  ensemble-era 'meet' payload is just an unrecognizable code now
+- outbound renders inline attribution (one bot, whole council) and maps
+  telegram errors onto the router's contract: Forbidden and chat-not-found
+  -> UndeliverableError (permanent), other TelegramError -> False
+  (transient), RetryAfter honored once
 - chunking at 4096 with pacing between chunks
 """
 
@@ -32,10 +38,10 @@ from config import Config  # noqa: E402
 # the interface reads TELEGRAM_TOKEN at construction; give it something
 Config.TELEGRAM_TOKEN = Config.TELEGRAM_TOKEN or "123456:TEST-token"
 
+from src.personas import load_personas  # noqa: E402
 from src.providers.platforms.telegram_bot import (  # noqa: E402
     TelegramInterface,
-    UpdateDeduper,
-    mentioned_helpers,
+    attributed,
     STRANGER_REPLY,
     LINKED_REPLY,
     INVALID_CODE_REPLY,
@@ -57,17 +63,20 @@ def run(coro):
 class FakeBot:
     def __init__(self, send_error=None, retry_once=False):
         self.sent = []  # text chunks sent via send_message
+        self.markups = []  # reply_markup objects, when passed
         self.actions = []  # chat actions
         self.send_error = send_error
         self._retry_once = retry_once
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, reply_markup=None):
         if self._retry_once:
             self._retry_once = False
             raise RetryAfter(0)  # 0-second wait keeps the test fast
         if self.send_error:
             raise self.send_error
         self.sent.append((chat_id, text))
+        if reply_markup is not None:
+            self.markups.append(reply_markup)
 
     async def send_chat_action(self, chat_id, action):
         if self.send_error and isinstance(self.send_error, (Forbidden, BadRequest)):
@@ -76,18 +85,15 @@ class FakeBot:
 
 
 class FakeChatService:
-    def __init__(self, reply="hi from chordial!"):
+    def __init__(self, reply=None):
+        # group scope's contract is None (delivered out-of-band); a string
+        # models refusal/error copy the interface must still send
         self.reply = reply
         self.received = []
-        self.introductions = []  # (platform, platform_user_id, helper_id)
 
     async def process_message(self, unified):
         self.received.append(unified)
         return self.reply
-
-    async def begin_introduction(self, platform, platform_user_id, helper_id):
-        self.introductions.append((platform, platform_user_id, helper_id))
-        return f"hi, i'm {helper_id}!"
 
 
 class FakeUserManager:
@@ -96,6 +102,9 @@ class FakeUserManager:
 
     async def is_new_user(self, platform, platform_user_id):
         return platform_user_id not in self.known
+
+    async def lookup_user_uuid(self, platform, platform_user_id):
+        return f"uuid-{platform_user_id}" if platform_user_id in self.known else None
 
 
 class FakeLinkService:
@@ -115,46 +124,38 @@ class FakeLinkService:
         )
 
 
-def _interface(
-    chat=None,
-    links=None,
-    users=None,
-    bot=None,
-    *,
-    helper_id="chordial",
-    deduper=None,
-    group_chat_id=None,
-    handle_to_helper=None,
-):
+class FakeMirror:
+    """the app interface's fan-out, as the tether sees it."""
+
+    def __init__(self, fail=False):
+        self.fanned = []  # (user_uuid, content, kwargs)
+        self.fail = fail
+
+    async def send_message(self, platform_user_id, content, **kwargs):
+        if self.fail:
+            raise RuntimeError("mirror cracked")
+        self.fanned.append((platform_user_id, content, kwargs))
+        return True
+
+
+def _interface(chat=None, links=None, users=None, bot=None, mirror=None):
     iface = TelegramInterface(
-        helper_id,
-        "123456:TEST-token",
-        f"{helper_id}_bot",
-        chat or FakeChatService(),
-        links if links is not None else FakeLinkService(),
-        users or FakeUserManager(),
-        deduper if deduper is not None else UpdateDeduper(),
-        group_chat_id=group_chat_id,
-        handle_to_helper=handle_to_helper,
+        token="123456:TEST-token",
+        telegram_handle="chordial_bot",
+        chat_service=chat or FakeChatService(),
+        link_service=links if links is not None else FakeLinkService(),
+        user_manager=users or FakeUserManager(),
+        mirror=mirror,
     )
     iface.app = types.SimpleNamespace(bot=bot or FakeBot())
     return iface
 
 
-class FakeEntity:
-    def __init__(self, type, offset, length, user=None):
-        self.type = type
-        self.offset = offset
-        self.length = length
-        self.user = user
-
-
 class FakeMessage:
-    def __init__(self, text, message_id=42, entities=None):
+    def __init__(self, text, message_id=42):
         self.text = text
         self.message_id = message_id
         self.date = None
-        self.entities = entities
         self.replies = []
 
     async def reply_text(self, text):
@@ -177,18 +178,8 @@ class FakeChat:
 def _update(text, user_id=777, username="wanderer"):
     return types.SimpleNamespace(
         effective_user=types.SimpleNamespace(id=user_id, username=username),
-        effective_chat=FakeChat(),
+        effective_chat=FakeChat(chat_id=user_id),
         message=FakeMessage(text),
-    )
-
-
-def _group_update(
-    text, user_id=777, username="wanderer", chat_id=-100, message_id=42, entities=None
-):
-    return types.SimpleNamespace(
-        effective_user=types.SimpleNamespace(id=user_id, username=username),
-        effective_chat=FakeChat(chat_id=chat_id),
-        message=FakeMessage(text, message_id=message_id, entities=entities),
     )
 
 
@@ -231,8 +222,8 @@ def test_stranger_bad_code_gets_invalid_reply():
 
 
 def test_open_onboarding_stranger_reaches_chat_service(monkeypatch):
-    """with the flag on, a stranger's dm flows into chat_service exactly like
-    a discord dm - user creation + introduction are chat_service's job."""
+    """with the flag on, a stranger's message flows into chat_service exactly
+    like a first app message - user creation + introduction are its job."""
     monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
     chat = FakeChatService(reply="welcome to the forest!")
     iface = _interface(chat=chat)
@@ -269,20 +260,14 @@ def test_open_onboarding_bare_start_gets_hello_not_stranger_wall(monkeypatch):
     assert chat.received == []                    # static line, no model call
 
 
-def test_open_onboarding_group_strangers_still_ignored(monkeypatch):
-    """the flag is DM-only: the crew room stays known-users-only, silent."""
-    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
-    chat = FakeChatService()
-    iface = _interface(chat=chat, group_chat_id="-100", deduper=UpdateDeduper())
-    update = _group_update("infiltrating the group", chat_id=-100)
-    run(iface._on_group_message(update, _ctx()))
-
-    assert chat.received == []
-    assert update.message.replies == []
+# --- inbound: the tether is a group-scope turn into today's room -------------------
 
 
-def test_known_user_flows_to_chat_service_with_reply():
-    chat = FakeChatService(reply="hey dain!")
+def test_known_user_speaks_into_the_daily_room_as_group_scope():
+    """the tether maps to the council's shared room: group scope (the
+    routing spine picks the speaker), the group target is the private chat
+    itself, and the reply arrives out-of-band - nothing sent here."""
+    chat = FakeChatService(reply=None)
     iface = _interface(chat=chat, users=FakeUserManager(known_ids={"777"}))
     update = _update("good morning!")
     run(iface._on_message(update, _ctx()))
@@ -291,25 +276,66 @@ def test_known_user_flows_to_chat_service_with_reply():
     unified = chat.received[0]
     assert unified.platform == "telegram"
     assert unified.platform_user_id == "777"
-    assert unified.chat_scope == "dm"
-    assert unified.via_bot == "chordial"
-    assert unified.dm_helper == "chordial"
-    assert update.effective_chat.sent == ["hey dain!"]
-    assert update.effective_chat.actions  # typing indicator fired
+    assert unified.chat_scope == "group"
+    assert unified.group_chat_id == "777"        # chat_id == user_id in dms
+    assert update.effective_chat.sent == []      # delivered via the router
+    assert update.effective_chat.actions         # typing indicator fired
 
 
-def test_dm_stamps_the_receiving_bots_helper_id():
-    chat = FakeChatService(reply=None)
-    iface = _interface(
-        chat=chat, users=FakeUserManager(known_ids={"777"}), helper_id="tempo"
-    )
-    update = _update("push day?")
+def test_refusal_copy_still_sends_in_place():
+    """a returned string is refusal/error copy (never persisted) - the one
+    case the interface still answers directly."""
+    chat = FakeChatService(reply="i don't think i can help with that one")
+    iface = _interface(chat=chat, users=FakeUserManager(known_ids={"777"}))
+    update = _update("do the impossible")
     run(iface._on_message(update, _ctx()))
 
+    assert update.effective_chat.sent == ["i don't think i can help with that one"]
+
+
+# --- inbound: the desktop mirror (one conversation, two windows) -------------------
+
+
+def test_known_users_line_mirrors_to_the_desktop():
+    mirror = FakeMirror()
+    chat = FakeChatService(reply=None)
+    iface = _interface(chat=chat, users=FakeUserManager(known_ids={"777"}),
+                       mirror=mirror)
+    update = _update("logging lunch from the bus")
+    run(iface._on_message(update, _ctx()))
+
+    assert len(mirror.fanned) == 1
+    user_uuid, content, kwargs = mirror.fanned[0]
+    assert user_uuid == "uuid-777"
+    assert content == "logging lunch from the bus"
+    assert kwargs["author_type"] == "user"
+    assert kwargs["source_platform"] == "telegram"
+    assert len(chat.received) == 1               # the turn still ran
+
+
+def test_mirror_failure_never_costs_the_turn():
+    mirror = FakeMirror(fail=True)
+    chat = FakeChatService(reply=None)
+    iface = _interface(chat=chat, users=FakeUserManager(known_ids={"777"}),
+                       mirror=mirror)
+    update = _update("still here?")
+    run(iface._on_message(update, _ctx()))
+
+    assert len(chat.received) == 1               # the mirror is cosmetic
+
+
+def test_stranger_without_user_row_is_never_mirrored(monkeypatch):
+    """open onboarding's first contact has no user row yet: the mirror
+    no-ops instead of inventing one (lookup is read-only by contract)."""
+    monkeypatch.setattr(Config, "TELEGRAM_OPEN_ONBOARDING", True)
+    mirror = FakeMirror()
+    chat = FakeChatService(reply="hello, new friend")
+    iface = _interface(chat=chat, users=FakeUserManager(), mirror=mirror)
+    update = _update("hi, i'm new")
+    run(iface._on_message(update, _ctx()))
+
+    assert mirror.fanned == []
     assert len(chat.received) == 1
-    unified = chat.received[0]
-    assert unified.via_bot == "tempo"
-    assert unified.dm_helper == "tempo"
 
 
 # --- inbound: /start ---------------------------------------------------------------
@@ -324,34 +350,19 @@ def test_start_with_payload_redeems():
     assert update.message.replies == [LINKED_REPLY]
 
 
-def test_start_meet_known_user_begins_this_helpers_introduction():
-    """the meet-the-guides deep link (t.me/<bot>?start=meet): a known user
-    taps tempo's link and tempo introduces itself in dm - NOT a code redeem."""
+def test_legacy_meet_payload_is_just_an_unrecognized_code():
+    """the ensemble-era meet-the-guides deep link: whatever payload arrives
+    is a redemption attempt now - no introduction machinery, no model call."""
+    links = FakeLinkService(LinkResult.INVALID)
     chat = FakeChatService()
-    links = FakeLinkService()
-    iface = _interface(
-        chat=chat,
-        links=links,
-        helper_id="tempo",
-        users=FakeUserManager(known_ids={"777"}),
-    )
+    iface = _interface(chat=chat, links=links,
+                       users=FakeUserManager(known_ids={"777"}))
     update = _update("/start")
     run(iface._on_start(update, _ctx(args=["meet"])))
 
-    assert chat.introductions == [("telegram", "777", "tempo")]
-    assert links.redeemed == []  # never treated as a code
-    assert update.effective_chat.sent == ["hi, i'm tempo!"]  # chunked send path
-
-
-def test_start_meet_stranger_gets_static_reply_and_no_introduction():
-    """a stranger can't meet a guide - they must link via chordial first."""
-    chat = FakeChatService()
-    iface = _interface(chat=chat, users=FakeUserManager(known_ids=set()))
-    update = _update("/start")
-    run(iface._on_start(update, _ctx(args=["meet"])))
-
-    assert chat.introductions == []
-    assert update.message.replies == [STRANGER_REPLY]
+    assert links.redeemed[0][0] == "meet"
+    assert update.message.replies == [INVALID_CODE_REPLY]
+    assert chat.received == []
 
 
 def test_bare_start_stranger_vs_known():
@@ -366,7 +377,58 @@ def test_bare_start_stranger_vs_known():
     assert update.message.replies == [ALREADY_LINKED_REPLY]
 
 
-# --- outbound -----------------------------------------------------------------------
+# --- outbound: inline attribution --------------------------------------------------
+
+
+def _a_council_member():
+    """a real deployed card with its emoji - the attribution's raw material."""
+    cards = load_personas()
+    helper_id = sorted(set(Config.ENABLED_HELPERS) & set(cards))[0]
+    return helper_id, cards[helper_id]
+
+
+def test_attributed_renders_emoji_speaker_and_words():
+    helper_id, card = _a_council_member()
+    line = attributed(helper_id, "burrito logged, ~650")
+    assert line == f"{card.emoji} {helper_id} — burrito logged, ~650"
+
+
+def test_attributed_passes_through_unknown_or_absent_speakers():
+    assert attributed(None, "just words") == "just words"
+    assert attributed("nobody-of-that-name", "just words") == "just words"
+
+
+def test_send_message_attributes_the_speaker_inline():
+    helper_id, card = _a_council_member()
+    bot = FakeBot()
+    iface = _interface(bot=bot)
+    ok = run(iface.send_message("777", "hello from the council",
+                                speaker=helper_id, stream_id="room-1"))
+    assert ok is True
+    assert bot.sent == [(777, f"{card.emoji} {helper_id} — hello from the council")]
+
+
+def test_send_message_without_speaker_sends_plain_text():
+    bot = FakeBot()
+    iface = _interface(bot=bot)
+    ok = run(iface.send_message("777", "system words"))
+    assert ok is True
+    assert bot.sent == [(777, "system words")]
+
+
+def test_send_choice_attributes_the_ping():
+    helper_id, card = _a_council_member()
+    bot = FakeBot()
+    iface = _interface(bot=bot)
+    ok = run(iface.send_choice(
+        "777", "want that time back?",
+        [{"label": "yes", "data": "rw:yes"}], speaker=helper_id))
+    assert ok is True
+    assert bot.sent == [(777, f"{card.emoji} {helper_id} — want that time back?")]
+    assert bot.markups  # the buttons rode the same message
+
+
+# --- outbound: chunking + error mapping --------------------------------------------
 
 
 def test_send_message_chunks_and_paces():
@@ -378,6 +440,19 @@ def test_send_message_chunks_and_paces():
     assert len(bot.sent) == 2
     assert all(len(text) <= _TELEGRAM_MAX_LENGTH for _, text in bot.sent)
     assert bot.actions  # typing indicator before the sends
+
+
+def test_attribution_counts_toward_the_chunk_limit():
+    """the rendered prefix is part of the message: chunking happens AFTER
+    attribution, so a line near the cap still fits every chunk."""
+    helper_id, _card = _a_council_member()
+    bot = FakeBot()
+    iface = _interface(bot=bot)
+    ok = run(iface.send_message("777", "z" * _TELEGRAM_MAX_LENGTH,
+                                speaker=helper_id))
+    assert ok is True
+    assert len(bot.sent) == 2  # the prefix pushed it over one message
+    assert all(len(text) <= _TELEGRAM_MAX_LENGTH for _, text in bot.sent)
 
 
 def test_forbidden_raises_undeliverable():
@@ -412,168 +487,3 @@ def test_retry_after_is_honored_once():
     ok = run(iface.send_message("777", "hello"))
     assert ok is True
     assert len(bot.sent) == 1  # succeeded on the retry
-
-
-# --- inbound: group chat --------------------------------------------------------
-
-_HANDLES = {"chordial_bot": "chordial", "tempo_bot": "tempo", "aria_bot": "aria"}
-
-
-def test_group_known_user_builds_group_unified_and_sends_nothing():
-    chat = FakeChatService(reply=None)  # group scope returns None
-    iface = _interface(
-        chat=chat,
-        users=FakeUserManager(known_ids={"777"}),
-        helper_id="tempo",
-        handle_to_helper=_HANDLES,
-        group_chat_id="-100777",
-    )
-    update = _group_update("hey crew", chat_id=-100777)
-    run(iface._on_group_message(update, _ctx()))
-
-    assert len(chat.received) == 1
-    unified = chat.received[0]
-    assert unified.chat_scope == "group"
-    assert unified.group_chat_id == "-100777"
-    assert unified.via_bot == "tempo"
-    assert unified.mentioned == []
-    assert update.effective_chat.sent == []  # delivered out-of-band
-
-
-def test_group_unknown_sender_is_ignored_silently():
-    chat = FakeChatService()
-    iface = _interface(
-        chat=chat, handle_to_helper=_HANDLES, group_chat_id="-100"
-    )  # nobody known
-    update = _group_update("who am i")
-    run(iface._on_group_message(update, _ctx()))
-
-    assert chat.received == []  # never reaches chat_service
-    assert update.effective_chat.sent == []
-    assert update.message.replies == []  # no stranger line in a group
-
-
-def test_group_message_parses_mentions_in_order():
-    chat = FakeChatService(reply=None)
-    iface = _interface(
-        chat=chat,
-        users=FakeUserManager(known_ids={"777"}),
-        handle_to_helper=_HANDLES,
-        group_chat_id="-100",
-    )
-    text = "@tempo_bot and @aria_bot help"
-    entities = [
-        FakeEntity("mention", 0, len("@tempo_bot")),
-        FakeEntity("mention", 15, len("@aria_bot")),
-    ]
-    update = _group_update(text, entities=entities)
-    run(iface._on_group_message(update, _ctx()))
-
-    assert chat.received[0].mentioned == ["tempo", "aria"]
-
-
-def test_shared_deduper_processes_a_group_message_once():
-    deduper = UpdateDeduper()
-    known = FakeUserManager(known_ids={"777"})
-    chat_a = FakeChatService(reply=None)
-    chat_b = FakeChatService(reply=None)
-    # two helper bots share one deduper (as main wires them)
-    bot_a = _interface(
-        chat=chat_a,
-        users=known,
-        helper_id="chordial",
-        deduper=deduper,
-        handle_to_helper=_HANDLES,
-        group_chat_id="-100",
-    )
-    bot_b = _interface(
-        chat=chat_b,
-        users=known,
-        helper_id="tempo",
-        deduper=deduper,
-        handle_to_helper=_HANDLES,
-        group_chat_id="-100",
-    )
-
-    upd_a = _group_update("morning!", chat_id=-100, message_id=99)
-    upd_b = _group_update("morning!", chat_id=-100, message_id=99)
-    run(bot_a._on_group_message(upd_a, _ctx()))
-    run(bot_b._on_group_message(upd_b, _ctx()))
-
-    # exactly one bot processed it (the first past the shared deduper)
-    assert len(chat_a.received) + len(chat_b.received) == 1
-
-
-# --- /setup_group -----------------------------------------------------------------
-
-
-def test_group_message_outside_configured_room_is_ignored():
-    chat = FakeChatService(reply=None)
-    iface = _interface(
-        chat=chat, users=FakeUserManager(known_ids={"777"}), group_chat_id="-100555"
-    )
-    update = _group_update("private context please", chat_id=-100999)
-    run(iface._on_group_message(update, _ctx()))
-
-    assert chat.received == []
-    assert update.effective_chat.sent == []
-
-
-def test_group_message_is_ignored_until_room_is_configured():
-    chat = FakeChatService(reply=None)
-    iface = _interface(chat=chat, users=FakeUserManager(known_ids={"777"}))
-    update = _group_update("private context please", chat_id=-100999)
-    run(iface._on_group_message(update, _ctx()))
-
-    assert chat.received == []
-
-
-def test_setup_group_known_user_replies_with_chat_id_before_configuration():
-    iface = _interface(users=FakeUserManager(known_ids={"777"}))
-    update = _group_update("/setup_group", chat_id=-100555)
-    run(iface._on_setup_group(update, _ctx()))
-    assert update.message.replies
-    assert "-100555" in update.message.replies[0]
-
-
-def test_setup_group_unknown_user_is_ignored():
-    iface = _interface()
-    update = _group_update("/setup_group", chat_id=-100555)
-    run(iface._on_setup_group(update, _ctx()))
-    assert update.message.replies == []
-
-
-def test_setup_group_cannot_replace_an_existing_configured_room():
-    iface = _interface(
-        users=FakeUserManager(known_ids={"777"}), group_chat_id="-100555"
-    )
-    update = _group_update("/setup_group", chat_id=-100999)
-    run(iface._on_setup_group(update, _ctx()))
-    assert update.message.replies == []
-
-
-# --- mention parsing (unit) -------------------------------------------------------
-
-
-def test_mentioned_helpers_maps_handles_lowercased_and_dedupes():
-    msg = FakeMessage(
-        "@Tempo_Bot @tempo_bot @aria_bot",
-        entities=[
-            FakeEntity("mention", 0, len("@Tempo_Bot")),
-            FakeEntity("mention", 11, len("@tempo_bot")),
-            FakeEntity("mention", 22, len("@aria_bot")),
-        ],
-    )
-    assert mentioned_helpers(msg, _HANDLES) == ["tempo", "aria"]
-
-
-def test_mentioned_helpers_ignores_unknown_handles_and_no_entities():
-    assert mentioned_helpers(FakeMessage("hi", entities=None), _HANDLES) == []
-    msg = FakeMessage("@stranger_bot", entities=[FakeEntity("mention", 0, 13)])
-    assert mentioned_helpers(msg, _HANDLES) == []
-
-
-def test_mentioned_helpers_handles_text_mention_entities():
-    user = types.SimpleNamespace(username="Aria_Bot")
-    msg = FakeMessage("aria", entities=[FakeEntity("text_mention", 0, 4, user=user)])
-    assert mentioned_helpers(msg, _HANDLES) == ["aria"]

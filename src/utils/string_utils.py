@@ -20,12 +20,17 @@ def chunk_message(content: str, max_length: int = 2000) -> List[str]:
             for sentence in sentences:
                 # if even a sentence is too long, hard split it
                 if len(sentence) > max_length:
-                    # this is rare but could happen with urls or continuous text
+                    # rare but real: urls or continuous text. every pass
+                    # must consume input or flush the chunk - the previous
+                    # shape took a zero-length slice once the chunk was
+                    # exactly full and looped forever (found by the tether's
+                    # attribution test; live it meant one 4097-char
+                    # unbroken reply could hang the send path).
                     while len(sentence) > 0:
-                        if len(current_chunk) + len(sentence[:max_length - len(current_chunk)]) <= max_length:
-                            split_point = max_length - len(current_chunk)
-                            current_chunk += sentence[:split_point]
-                            sentence = sentence[split_point:]
+                        space = max_length - len(current_chunk)
+                        if space > 0:
+                            current_chunk += sentence[:space]
+                            sentence = sentence[space:]
                         else:
                             chunks.append(current_chunk.strip())
                             current_chunk = ""

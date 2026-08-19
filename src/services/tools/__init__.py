@@ -5,7 +5,11 @@ from config import Config
 # chordial code keeps one import home for its tool surface
 from dainframe.tools.registry import Tool, ToolRegistry
 from .assessment_tools import LIST_ASSESSMENTS
-from .intro_tools import COMPLETE_INTRODUCTION, LIST_AVAILABLE_GUIDES
+from .intro_tools import (
+    COMPLETE_INTRODUCTION,
+    LIST_AVAILABLE_GUIDES,
+    MEET_GUIDE,
+)
 from .memory_tools import SAVE_MEMORY, SEARCH_MEMORIES
 from .observation_tools import LIST_OBSERVATIONS, RECORD_OBSERVATION
 from .preference_tools import SET_PREFERENCE
@@ -31,6 +35,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(SET_PREFERENCE)
     registry.register(COMPLETE_INTRODUCTION)
     registry.register(LIST_AVAILABLE_GUIDES)
+    registry.register(MEET_GUIDE)
     # the council's structured noticing (phase 3): unconditional like the
     # intro tools - every helper reasons more than it speaks
     registry.register(RECORD_OBSERVATION)

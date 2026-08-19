@@ -2,7 +2,6 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 
-from src.personas import CHAIR_ID
 
 load_dotenv()
 
@@ -90,20 +89,14 @@ class Config:
     # only effective when the agenda is available (it needs the open-task list).
     RECONCILER_ENABLED = os.getenv("RECONCILER_ENABLED", "true").lower() == "true"
 
-    # telegram (second platform). bot token from @BotFather; username (no '@')
-    # is used for link-code deep links (https://t.me/<username>?start=<code>).
-    # in v3 each helper runs as its OWN telegram bot: the token for helper X is
-    # TELEGRAM_TOKEN_<X> (e.g. TELEGRAM_TOKEN_TEMPO), with the bare TELEGRAM_TOKEN
-    # serving as chordial's (back-compat with the single-bot v2 deployment).
-    #
-    # the username works the same way (TELEGRAM_USERNAME_<X>, chordial falls
-    # back to the bare TELEGRAM_BOT_USERNAME) and is DELIBERATELY config, not
-    # the persona card's `telegram_handle` field: BotFather usernames must be
-    # globally unique across all of telegram, so a card's placeholder
-    # ('tempo_bot') is almost never the real, available name you register -
-    # you WILL end up with something like 'chordial_mvp_v3_tempo_bot'. every
-    # place that needs the real handle (mention parsing, meet-the-guides deep
-    # links) reads it from here, never from the card.
+    # telegram: the tether (docs/ROOMS_DESIGN.md section 9). ONE bot per
+    # deployment carries the whole council - speakers are attributed inline
+    # in the message text, so there is exactly one token and one username.
+    # (the phase-3 one-bot-per-helper ensemble - TELEGRAM_TOKEN_<HELPER>,
+    # TELEGRAM_USERNAME_<HELPER>, the shared crew group - was retired
+    # outright in phase 7a, not ported.) the username (no '@') is used for
+    # link-code deep links (https://t.me/<username>?start=<code>) and must
+    # be the REAL BotFather name, never a persona card's placeholder.
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME")
     ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "false").lower() == "true"
@@ -113,72 +106,23 @@ class Config:
     # discoverable - any stranger who finds the bot would cost api spend.
     # dev instances turn this on to test onboarding without discord; a public
     # deployment should prefer invite codes (MULTI_USER_SPEC phase 2) over
-    # leaving this open. DM-only: the group room stays known-users-only.
+    # leaving this open.
     TELEGRAM_OPEN_ONBOARDING = (
         os.getenv("TELEGRAM_OPEN_ONBOARDING", "false").lower() == "true"
     )
-    # the shared group chat all the helper bots and the user sit in. captured
-    # once (env, or a /setup_group command that writes it back) - the delivery
-    # target for group-scope proactive/scripted messages. None = no group yet
-    # (helpers only reachable via 1:1 dms until it's set).
-    TELEGRAM_GROUP_CHAT_ID = os.getenv("TELEGRAM_GROUP_CHAT_ID")
     # how long a platform link code stays redeemable
     LINK_CODE_TTL_MINUTES = int(os.getenv("LINK_CODE_TTL_MINUTES", "15"))
 
     @classmethod
-    def telegram_token_for(cls, helper_id: str) -> Optional[str]:
-        """the bot token a helper polls/sends on. the chair falls back to the
-        bare TELEGRAM_TOKEN so a single-bot deployment keeps working
-        untouched; every other helper needs its own TELEGRAM_TOKEN_<HELPER>."""
-        specific = os.getenv(f"TELEGRAM_TOKEN_{helper_id.upper()}")
-        if specific:
-            return specific
-        if helper_id == CHAIR_ID:
-            return cls.TELEGRAM_TOKEN
-        return None
-
-    @classmethod
-    def telegram_helper_tokens(cls) -> "dict[str, str]":
-        """{helper_id: token} for every ENABLED helper that has a token set.
-        drives how many telegram interfaces main() spins up (one per bot)."""
-        out: dict[str, str] = {}
-        for helper_id in cls.ENABLED_HELPERS:
-            token = cls.telegram_token_for(helper_id)
-            if token:
-                out[helper_id] = token
-        return out
-
-    @classmethod
-    def telegram_username_for(cls, helper_id: str) -> Optional[str]:
-        """the bot's REAL @username (no '@'), used for mention parsing and
-        deep links. chordial falls back to TELEGRAM_BOT_USERNAME (back-compat
-        with the single-bot v2 deployment); every other helper needs its own
-        TELEGRAM_USERNAME_<HELPER> - there's no safe default, because a
-        persona card's `telegram_handle` is just a placeholder, not a
-        registered bot name."""
-        specific = os.getenv(f"TELEGRAM_USERNAME_{helper_id.upper()}")
-        if specific:
-            return specific.lstrip("@")
-        if helper_id == CHAIR_ID:
-            return cls.TELEGRAM_BOT_USERNAME
-        return None
-
-    @classmethod
-    def telegram_helper_usernames(cls) -> "dict[str, str]":
-        """{helper_id: username} for every ENABLED helper that has BOTH a
-        token and a configured username - main() requires both before an
-        interface is built, so this is the authoritative set once startup
-        validation has passed."""
-        out: dict[str, str] = {}
-        for helper_id in cls.telegram_helper_tokens():
-            username = cls.telegram_username_for(helper_id)
-            if username:
-                out[helper_id] = username
-        return out
-
-    @classmethod
     def telegram_linking_enabled(cls) -> bool:
         return cls.ENABLE_TELEGRAM and bool(cls.TELEGRAM_BOT_USERNAME)
+
+    # presence-aware proactive routing (docs/ROOMS_DESIGN.md section 9):
+    # the desktop app heartbeats the sidecar's idle clock over its websocket;
+    # a connected app whose last report shows this much idleness (or whose
+    # reports have gone stale) counts as AWAY, and proactive words route to
+    # the phone instead of an empty desk. a v1 guess, env-tunable.
+    PRESENCE_IDLE_SECONDS = int(os.getenv("PRESENCE_IDLE_SECONDS", "300"))
 
     # the web focus view (src/web/): a localhost desktop companion page -
     # today's tasks + the pomodoro bar. served by the main process on the

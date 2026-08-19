@@ -66,6 +66,19 @@ class UserManager:
             is_new = identity is None
             logger.info(f"user {platform}:{platform_user_id} is {'new' if is_new else 'existing'}")
             return is_new
+
+    async def lookup_user_uuid(
+        self, platform: str, platform_user_id: str
+    ) -> Optional[str]:
+        """the user behind a platform identity, read-only - never creates a
+        row (get_or_create_user's job). None for strangers. active or not:
+        callers that care about deliverability check the link themselves."""
+        with get_db() as db:
+            identity = db.query(PlatformIdentity).filter(
+                PlatformIdentity.platform == platform,
+                PlatformIdentity.platform_user_id == platform_user_id,
+            ).first()
+            return identity.user_uuid if identity else None
     
     async def update_user_preferences(self, user_uuid: str, preferences: Dict[str, Any]):
         """update user preferences"""

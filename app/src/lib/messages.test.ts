@@ -42,6 +42,47 @@ describe("fromHistory", () => {
     const theirs = fromHistory(row(4, "vel", "*ears perk*"));
     expect(theirs).toMatchObject({ key: "h4", authorType: "agent" });
   });
+
+  it("carries platform provenance for the tether marker (7a)", () => {
+    const viaPhone = fromHistory({ ...row(5, "user", "from the bus"),
+                                   platform: "telegram" });
+    expect(viaPhone.platform).toBe("telegram");
+  });
+});
+
+describe("fromPayload (the tether mirror, 7a)", () => {
+  it("renders a mirrored user line on the person's side of the room", () => {
+    const mirrored = fromPayload({
+      ...payload("mid-1", "user", "logging lunch"),
+      author_type: "user",
+      platform: "telegram",
+    });
+    expect(mirrored).toMatchObject({
+      authorType: "user",
+      platform: "telegram",
+      content: "logging lunch",
+    });
+  });
+
+  it("keeps ordinary payloads as council lines", () => {
+    const line = fromPayload(payload("mid-2", "remy", "~650, logged"));
+    expect(line.authorType).toBe("agent");
+    expect(line.platform).toBeNull();
+  });
+
+  it("mirrored lines reconcile against their history rows", () => {
+    // after a refetch, the mirror's live echo and the persisted row are the
+    // same (author, content) pair - the extra must drop, not double-render
+    const extras = [
+      fromPayload({ ...payload("mid-3", "user", "from the bus"),
+                    author_type: "user", platform: "telegram" }),
+    ];
+    const history = [
+      fromHistory({ ...row(6, "user", "from the bus"),
+                    platform: "telegram" }),
+    ];
+    expect(reconcileExtras(extras, history)).toEqual([]);
+  });
 });
 
 describe("admitLive", () => {

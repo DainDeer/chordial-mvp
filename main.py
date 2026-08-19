@@ -11,22 +11,17 @@ from src.managers.user_manager import UserManager
 from src.database.database import init_db
 
 
-def _build_interfaces(chat_service, link_service, user_manager):
+def _build_interfaces(chat_service, link_service, user_manager,
+                      app_interface=None):
     """construct every enabled platform interface. add a branch here per platform;
     nothing else in main() needs to change - the router and scheduler discover
     platforms from whatever this returns.
 
-    telegram in v3 is MULTI-BOT: one interface per enabled helper that has a
-    token (Config.telegram_helper_tokens()), all sharing one UpdateDeduper (N
-    bots in a group each receive every human message; the deduper keeps the
-    first) and one handle->helper map (for resolving @mentions). a single-bot
-    deployment - only the chair's TELEGRAM_TOKEN set - yields exactly one
-    telegram interface, i.e. v2 behavior.
-
-    the real @username (mention parsing, deep links) is config
-    (TELEGRAM_USERNAME_<HELPER>), never the persona card's `telegram_handle`
-    placeholder - BotFather names are globally unique, so the card's guess
-    ('tempo_bot') is rarely the name you actually got to register."""
+    telegram is the tether (ROOMS_DESIGN section 9): ONE bot for the whole
+    council, speakers attributed inline in the text. `app_interface` (when
+    the web surface is enabled) is handed to it as the mirror, so a phone
+    line also echoes live onto the user's connected desktop. the phase-3
+    one-bot-per-helper ensemble was retired outright in phase 7a."""
     interfaces = []
     if Config.ENABLE_DISCORD:
         from src.providers.platforms.discord_bot import DiscordInterface
@@ -34,47 +29,29 @@ def _build_interfaces(chat_service, link_service, user_manager):
         interfaces.append(DiscordInterface(chat_service))
         logger.info("discord interface enabled")
     if Config.ENABLE_TELEGRAM:
-        from src.providers.platforms.telegram_bot import (
-            TelegramInterface,
-            UpdateDeduper,
+        from src.providers.platforms.telegram_bot import TelegramInterface
+
+        if not Config.TELEGRAM_TOKEN:
+            raise RuntimeError(
+                "ENABLE_TELEGRAM is true but TELEGRAM_TOKEN is not set"
+            )
+        if not Config.TELEGRAM_BOT_USERNAME:
+            raise RuntimeError(
+                "ENABLE_TELEGRAM is true but TELEGRAM_BOT_USERNAME is not "
+                "set - this must be the REAL BotFather username (link-code "
+                "deep links point at it)"
+            )
+        interfaces.append(
+            TelegramInterface(
+                token=Config.TELEGRAM_TOKEN,
+                telegram_handle=Config.TELEGRAM_BOT_USERNAME,
+                chat_service=chat_service,
+                link_service=link_service,
+                user_manager=user_manager,
+                mirror=app_interface,
+            )
         )
-
-        tokens = Config.telegram_helper_tokens()
-        if not tokens:
-            raise RuntimeError(
-                "ENABLE_TELEGRAM is true but no helper has a telegram token "
-                "(set TELEGRAM_TOKEN for the chair and/or TELEGRAM_TOKEN_<HELPER>)"
-            )
-        missing_username = [h for h in tokens if not Config.telegram_username_for(h)]
-        if missing_username:
-            raise RuntimeError(
-                "ENABLE_TELEGRAM is true but these helpers have a token and no "
-                f"configured @username: {', '.join(missing_username)} (set "
-                "TELEGRAM_BOT_USERNAME for the chair and/or "
-                "TELEGRAM_USERNAME_<HELPER> for the rest - this must be the "
-                "REAL BotFather username, not the persona card's placeholder)"
-            )
-
-        usernames = Config.telegram_helper_usernames()
-        handle_to_helper = {
-            username.lower(): helper_id for helper_id, username in usernames.items()
-        }
-        deduper = UpdateDeduper()
-        for helper_id, token in tokens.items():
-            interfaces.append(
-                TelegramInterface(
-                    helper_id=helper_id,
-                    token=token,
-                    telegram_handle=usernames[helper_id],
-                    chat_service=chat_service,
-                    link_service=link_service,
-                    user_manager=user_manager,
-                    deduper=deduper,
-                    group_chat_id=Config.TELEGRAM_GROUP_CHAT_ID,
-                    handle_to_helper=handle_to_helper,
-                )
-            )
-        logger.info("telegram interfaces enabled for helpers: %s", ", ".join(tokens))
+        logger.info("telegram tether enabled (one bot, whole council)")
     return interfaces
 
 
@@ -386,18 +363,27 @@ async def main():
 
     link_service = PlatformLinkService(user_manager)
 
+    # the app interface first (when the web surface is on): it is both a
+    # delivery platform AND the tether's mirror + presence source, so the
+    # telegram interface and the pulse need it in hand. router-registered
+    # but not supervised (no loop to run; the web server owns the sockets).
+    app_interface = None
+    if Config.ENABLE_WEB:
+        from src.providers.platforms.app import AppInterface
+
+        app_interface = AppInterface(chat_service)
+        router.register(app_interface)
+
     # build interfaces and register them with the outbound router. the router
     # owns platform->interface routing and link-deactivation on hard failures,
     # so the scheduler never has to know which interface backs a platform.
-    interfaces = _build_interfaces(chat_service, link_service, user_manager)
+    interfaces = _build_interfaces(chat_service, link_service, user_manager,
+                                   app_interface=app_interface)
     for interface in interfaces:
         router.register(interface)
 
-    # the web focus view + the app-facing /api/v1 surface. the WebService is
-    # supervised like any interface but NOT router-registered (it serves
-    # pages and the api); the AppInterface is the inverse - router-registered
-    # so the orchestrator can deliver to connected app surfaces, but not
-    # supervised (it has no loop to run; the web server owns the sockets).
+    # the web focus view + the app-facing /api/v1 surface: supervised like
+    # any interface but NOT router-registered (it serves pages and the api).
     # edwin's cycle scorer (ROOMS_DESIGN.md section 8, phase 6): a slow
     # sweep that files one assessment per ended cycle. the scores are
     # arithmetic, so the watcher runs even without a utility model - the
@@ -414,12 +400,9 @@ async def main():
                 "model" if utility_provider is not None else "deterministic")
 
     if Config.ENABLE_WEB:
-        from src.providers.platforms.app import AppInterface
         from src.services.cycle_rooms import CycleRooms
         from src.web.server import WebService
 
-        app_interface = AppInterface(chat_service)
-        router.register(app_interface)
         interfaces.append(WebService(chat_service=chat_service,
                                      app_interface=app_interface,
                                      cycle_rooms=CycleRooms(scorer=scorer)))
@@ -448,12 +431,16 @@ async def main():
             orchestrator=orchestrator,
             user_manager=user_manager,
             curator=curator_agent,
-            # 'app' is deliberately excluded from PROACTIVE targeting: the
-            # desktop app is often closed, and a failed send there means a
-            # missed check-in with no fallback at send time. presence-aware
-            # routing (deer bubble vs tether) lands in phase 7; until then
-            # ambient outreach sticks to the always-on messaging platforms.
-            platforms=[p for p in router.platforms() if p != "app"],
+            # presence-aware routing (ROOMS_DESIGN section 9, phase 7a):
+            # every platform is a candidate, and the app interface's
+            # presence trichotomy decides where each proactive word lands -
+            # desktop when someone is demonstrably there, the tether when
+            # they're away or idle, never both. without a web surface,
+            # presence is None and targeting is exactly the pre-7a
+            # always-on-platforms behavior.
+            platforms=list(router.platforms()),
+            presence=(app_interface.presence_state
+                      if app_interface is not None else None),
         )
 
     try:
