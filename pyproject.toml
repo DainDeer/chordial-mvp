@@ -34,6 +34,9 @@ dainframe = { path = "../the-dainframe", develop = true, extras = ["anthropic", 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
 pytest = "^8.4.0"
+# freezes the sidecar into the app bundle (phase 7b: the box) - see
+# packaging/. the python marker mirrors pyinstaller's own upper bound.
+pyinstaller = { version = "^6.15", python = ">=3.10,<3.16" }
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

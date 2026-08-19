@@ -9,7 +9,7 @@ import { fetchSidecarState } from "./api/sidecar";
 import { RoomSocket, SocketBus, type SocketStatus } from "./api/ws";
 import type { ArchivedRoom, CouncilMember } from "./api/types";
 import { classifyForNudge } from "./lib/unread";
-import { clearSession, storedToken, storeSession } from "./lib/session";
+import { clearSession, loadSession, storeSession } from "./lib/session";
 
 type View = "home" | "room" | "archive" | "cycle";
 
@@ -26,7 +26,11 @@ const PRESENCE_BEAT_MS = 30_000;
  * mounted. lines that arrive while nobody is watching the room become the
  * door's unread nudge. */
 export default function App() {
-  const [token, setToken] = useState<string | null>(storedToken());
+  // the token loads async now (7b: the keychain answers a beat after
+  // launch); sessionLoaded gates the render so the link screen never
+  // flashes at someone who is already linked
+  const [token, setToken] = useState<string | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
   const [view, setView] = useState<View>("home");
   const [council, setCouncil] = useState<CouncilMember[]>([]);
   const [archiveRoom, setArchiveRoom] = useState<ArchivedRoom | null>(null);
@@ -68,8 +72,21 @@ export default function App() {
     [],
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadSession().then((held) => {
+      if (!cancelled) {
+        setToken(held);
+        setSessionLoaded(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onAuthLost = useCallback(() => {
-    clearSession();
+    void clearSession();
     setToken(null);
     setCouncil([]);
     setView("home");
@@ -153,11 +170,16 @@ export default function App() {
     if (view === "room") setUnread(0);
   }, [view]);
 
+  if (!sessionLoaded) {
+    // a single quiet frame while the keychain answers
+    return null;
+  }
+
   if (!token) {
     return (
       <LinkScreen
         onLinked={(newToken, deviceId) => {
-          storeSession(newToken, deviceId);
+          void storeSession(newToken, deviceId);
           setToken(newToken);
         }}
       />

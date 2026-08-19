@@ -25,3 +25,9 @@ backups/
 # env backups taken before config edits - secrets, never commit
 .env.bak*
 .env.*.bak
+
+# the box (phase 7b): pyinstaller work dirs and the frozen sidecar binaries
+# that tauri bundles - build artifacts, rebuilt by packaging/build_sidecar.sh
+packaging/build/
+packaging/dist/
+app/src-tauri/binaries/

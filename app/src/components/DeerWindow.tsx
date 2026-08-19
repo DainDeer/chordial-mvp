@@ -35,7 +35,11 @@ import {
   quietLine,
   removeLabel,
 } from "../lib/rewind";
-import { storedToken, TOKEN_STORAGE_KEY } from "../lib/session";
+import {
+  loadSession,
+  SESSION_REV_KEY,
+  TOKEN_STORAGE_KEY,
+} from "../lib/session";
 import Confetti from "./Confetti";
 import InlineContent from "./InlineContent";
 
@@ -59,9 +63,11 @@ function mmss(totalSeconds: number): string {
  * sidecar; this window is where they meet. */
 export default function DeerWindow() {
   // reactive, not read-once: the person links in the MAIN window while
-  // this one is already open. the cross-window storage event is the fast
-  // path; a slow poll is the belt (webview storage-event delivery varies)
-  const [token, setToken] = useState<string | null>(storedToken);
+  // this one is already open. the cross-window storage event on the rev
+  // counter is the fast path (the token itself lives in the keychain in
+  // packaged builds - no secret rides the event); a slow poll is the belt
+  // (webview storage-event delivery varies)
+  const [token, setToken] = useState<string | null>(null);
   const [focus, setFocus] = useState<FocusState>({
     running: false,
     banked: {},
@@ -122,25 +128,32 @@ export default function DeerWindow() {
       .catch(() => {});
   }, [token]);
 
-  // notice link/relink/revoke from the main window: storage event + poll
+  // notice link/relink/revoke from the main window: storage event + poll.
+  // the async load keeps arrivals in order by only applying a changed value
+  const refreshToken = useCallback(() => {
+    void loadSession().then((fresh) => {
+      setToken((current) => (fresh === current ? current : fresh));
+    });
+  }, []);
+
   useEffect(() => {
+    refreshToken(); // the initial read (keychain or localStorage)
     const onStorage = (e: StorageEvent) => {
-      if (e.key === TOKEN_STORAGE_KEY || e.key === null) {
-        setToken(storedToken());
+      if (
+        e.key === SESSION_REV_KEY ||
+        e.key === TOKEN_STORAGE_KEY ||
+        e.key === null
+      ) {
+        refreshToken();
       }
     };
     window.addEventListener("storage", onStorage);
-    const poll = setInterval(() => {
-      setToken((current) => {
-        const fresh = storedToken();
-        return fresh === current ? current : fresh;
-      });
-    }, TOKEN_POLL_MS);
+    const poll = setInterval(refreshToken, TOKEN_POLL_MS);
     return () => {
       window.removeEventListener("storage", onStorage);
       clearInterval(poll);
     };
-  }, []);
+  }, [refreshToken]);
 
   // hand the sidecar its credential whenever we have one AND can reach it -
   // covers first link, relink, and a sidecar that started after this window

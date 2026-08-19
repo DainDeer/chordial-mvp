@@ -43,6 +43,16 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "externalBin": ["binaries/chordial-sidecar"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1QzY2QzEzQzA4MzA4MjMKUldRakNJUEFFMnpHZFFtbGwrWGxtcDhlMEYrMUh1aGVWVmxEbUx4bDVVL3ZoR285aHBsNGdNdWEK",
+      "endpoints": [
+        "https://api.internetcreature.dev/app/updates/latest.json"
+      ]
+    }
   }
 }

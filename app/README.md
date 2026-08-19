@@ -6,8 +6,10 @@ Design: [`docs/ROOMS_DESIGN.md`](../docs/ROOMS_DESIGN.md) (authoritative).
 - **frontend:** React + TypeScript (Vite), in [`src/`](src/)
 - **shell:** Tauri 2 (Rust), in [`src-tauri/`](src-tauri/) — will grow the
   collectors (frontmost bundle id, idle) and the deer/tray windows
-- **sidecar:** the Python ambient engine is *not* bundled yet (phase 7);
-  during development it runs side by side from the repo root
+- **sidecar:** the Python ambient engine — bundled into release builds as
+  a frozen binary (phase 7b, [`docs/PACKAGING.md`](../docs/PACKAGING.md));
+  during development it still runs side by side from the repo root, and
+  debug builds never spawn it
 
 ## dev
 
@@ -45,6 +47,10 @@ poetry run python -m src.sidecar
 # terminal 4 - the shell (opens the main window AND the deer window)
 cd app && npm install && npm run tauri dev
 ```
+
+If `tauri dev` complains about a missing external binary, run
+`bash packaging/build_sidecar.sh` once from the repo root — the CLI wants
+the frozen sidecar file to exist even though debug builds never spawn it.
 
 Paste the code into the app's link screen and you're in. On a `fresh` db the
 first message runs the real front-door introduction (vel greets you); `seed`
@@ -114,8 +120,14 @@ promptly.
   CORS allowlist on `/api/v1` only — configured with `APP_ALLOWED_ORIGINS`
   on the server side. The sidecar keeps the same list in
   `SIDECAR_ALLOWED_ORIGINS`.
-- The device bearer token lives in webview localStorage for dev-mode; phase 7
-  packaging graduates it to the OS keychain (stronghold plugin).
+- The device bearer token: packaged builds keep it in the OS keychain
+  (macOS Keychain / Windows Credential Manager, via the shell's
+  `credential_*` commands — the stronghold plugin was passed over: it wants
+  a password-derived snapshot, and the OS keychain is the thing actually
+  meant). Dev builds keep webview localStorage — an unsigned debug binary
+  changes identity every rebuild, and macOS would prompt each time. First
+  packaged run migrates a localStorage-era token in and removes the
+  plaintext copy.
 - The template's opener plugin was removed (nothing opens external URLs yet).
   If/when the app needs to open links, re-add it with a scoped URL allowlist,
   not `opener:default`.

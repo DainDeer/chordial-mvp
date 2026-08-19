@@ -735,6 +735,51 @@ tuning.
   bounded room contexts, per-user attention and token budgets. The council must
   be affordable *because* it's mostly silent.
 
+### the box, as built (phase 7b)
+
+One installable app — shell, frontend, and the sidecar frozen inside it —
+plus a signed self-update feed. Runbook: `docs/PACKAGING.md`.
+
+- **The sidecar is a PyInstaller onefile binary** (~10 MB: aiohttp + stdlib,
+  no hiddenimports — the analysis IS the inventory, and the server's world
+  stays structurally outside the box). `packaging/build_sidecar.sh` names it
+  per tauri's externalBin convention. Frozen runs move state to the platform
+  app-data dir (`src/sidecar/paths.py`, identifier pinned to
+  tauri.conf.json by test) and log to `sidecar.log` beside the db; dev runs
+  keep the cwd. Measured ~6–8s spawn-to-bind (onefile self-extraction) —
+  every consumer already tolerates it.
+- **Release builds own the sidecar's life; debug builds spawn nothing**
+  (the four-terminal dev loop is untouched). The shell probes
+  `/v1/state` first and ADOPTS a sidecar already on the port (second app
+  launch, dev terminal) rather than fighting for it; spawns with
+  `SIDECAR_DB` pointed at tauri's own app-data dir; respawns on death with
+  a capped backoff ladder (a run that lived a stable minute resets it); kills
+  the child on every exit path via the run-event hook.
+- **The updater polls the chordial server itself** — `/app/updates/`
+  (latest.json + bundles) served read-only when `APP_UPDATES_DIR` is set;
+  single origin, no third-party host, and a misconfigured dir warns instead
+  of taking the council down. Bundles are minisign-signed at build; the
+  pubkey pinned in tauri.conf.json means a compromised feed can withhold
+  but never forge. Quiet launch check (~15s, silent when current or
+  unreachable) + a tray "check for updates" that answers either way; both
+  ask before installing. The private key lives outside the repo
+  (`~/.tauri/chordial-updater.key`) — backed up or updates die with it.
+- **The device token graduates to the OS keychain** (macOS Keychain /
+  Windows Credential Manager via the shell's `credential_*` commands) in
+  packaged builds; dev keeps localStorage (an unsigned debug binary changes
+  identity every rebuild — macOS would prompt for each). First packaged run
+  migrates a localStorage-era token in and deletes the plaintext copy; a
+  refusing keychain degrades to localStorage with a warning rather than
+  bricking linking. The deer's cross-window change signal rides a bare rev
+  counter in localStorage — the storage event still fires, no secret rides
+  it. (The stronghold plugin noted earlier was passed over deliberately:
+  it wants a password-derived snapshot; the OS keychain is the thing
+  actually meant.)
+- **Deferred, not faked:** Windows and linux boxes are compile-checked but
+  unrun (collector still macOS-only); macOS code-signing/notarization —
+  the .app runs locally unsigned, gatekeeper handling is 7c ops; presence
+  from the deer window alone (deer-open-main-closed reads absent).
+
 ---
 
 ## 11. data & vocabulary
@@ -821,7 +866,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) · ✓ 7b built: the box — frozen sidecar spawned/supervised by the shell, signed self-update feed off the server itself, token in the OS keychain (§10 as-built, `docs/PACKAGING.md`) |
 
 ### explicitly deferred
 
