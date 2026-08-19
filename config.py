@@ -157,6 +157,12 @@ class Config:
     # portfolio desktop show focus.exe in a window.
     WEB_FRAME_ANCESTORS = os.getenv("WEB_FRAME_ANCESTORS", "'self'")
 
+    # the desktop app's update feed (phase 7b: the box): a directory of
+    # signed bundles + latest.json, served read-only at /app/updates/ so
+    # the deployment stays single-origin (the tauri updater polls the same
+    # host the app already talks to). unset = the route doesn't exist.
+    APP_UPDATES_DIR = os.getenv("APP_UPDATES_DIR")
+
     @classmethod
     def web_auth_enabled(cls) -> bool:
         return cls.WEB_PUBLIC_URL is not None

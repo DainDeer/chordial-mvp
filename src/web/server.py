@@ -198,6 +198,19 @@ class WebService:
                             self._api_room_send_by_uuid)
         app.router.add_get("/api/v1/ws", self._api_ws)
         app.router.add_static("/static", STATIC_DIR)
+        # the desktop app's update feed (phase 7b): latest.json + signed
+        # bundles, public read-only static files - the updater polls before
+        # any device auth exists, and the artifacts are signed, so secrecy
+        # buys nothing. a configured-but-missing dir is a warning, not a
+        # crash: updates being down must never take the council with it.
+        if Config.APP_UPDATES_DIR:
+            if Path(Config.APP_UPDATES_DIR).is_dir():
+                app.router.add_static("/app/updates", Config.APP_UPDATES_DIR,
+                                      show_index=False)
+            else:
+                logger.warning(
+                    "APP_UPDATES_DIR %s does not exist - the update feed "
+                    "route was not mounted", Config.APP_UPDATES_DIR)
         app.on_startup.append(self._start_flow_sweep)
         app.on_cleanup.append(self._stop_flow_sweep)
         return app

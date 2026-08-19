@@ -704,3 +704,49 @@ def test_archived_transcript_reads_and_tenancy(env):
                                 headers=headers)
         assert resp.status == 200
     _run(_with_service(_service(), flow))
+
+
+# --- the app update feed (phase 7b: the box) -----------------------------------
+
+
+def test_update_feed_serves_latest_json_when_configured(env, monkeypatch,
+                                                        tmp_path):
+    updates = tmp_path / "updates"
+    updates.mkdir()
+    (updates / "latest.json").write_text('{"version": "0.2.0"}')
+    from config import Config
+    monkeypatch.setattr(Config, "APP_UPDATES_DIR", str(updates))
+
+    async def flow(client):
+        resp = await client.get("/app/updates/latest.json")
+        assert resp.status == 200
+        assert (await resp.json())["version"] == "0.2.0"
+
+        # read-only files, no listing: the feed is public but not a browser
+        resp = await client.get("/app/updates/")
+        assert resp.status == 403
+    _run(_with_service(_service(), flow))
+
+
+def test_update_feed_absent_without_configuration(env, monkeypatch):
+    from config import Config
+    monkeypatch.setattr(Config, "APP_UPDATES_DIR", None)
+
+    async def flow(client):
+        resp = await client.get("/app/updates/latest.json")
+        assert resp.status == 404
+    _run(_with_service(_service(), flow))
+
+
+def test_update_feed_missing_dir_warns_instead_of_crashing(env, monkeypatch,
+                                                           tmp_path):
+    """a configured-but-absent directory must never take the council down
+    with it: the app builds, the feed just isn't there."""
+    from config import Config
+    monkeypatch.setattr(Config, "APP_UPDATES_DIR",
+                        str(tmp_path / "never-made"))
+
+    async def flow(client):
+        resp = await client.get("/app/updates/latest.json")
+        assert resp.status == 404
+    _run(_with_service(_service(), flow))
