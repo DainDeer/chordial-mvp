@@ -28,6 +28,12 @@ const STABLE_UPTIME: Duration = Duration::from_secs(60);
 /// costs one respawn every 30s, never a hot loop
 const BACKOFF_SECS: [u64; 5] = [1, 2, 5, 15, 30];
 
+/// how often the watchdog re-probes an ADOPTED sidecar (sol's 7b round:
+/// adoption must be a watched state, not a terminal one - the adopted
+/// process belongs to someone else and can vanish, e.g. the other app
+/// instance of a simultaneous launch quitting and killing its child)
+const ADOPT_PROBE_SECS: u64 = 15;
+
 pub struct SidecarState {
     child: Mutex<Option<CommandChild>>,
     quitting: AtomicBool,
@@ -82,6 +88,27 @@ pub fn shutdown(app: &AppHandle) {
     }
 }
 
+/// keep an eye on a sidecar this shell didn't spawn: when it stops
+/// answering, take over. taking over re-enters spawn_supervised, which
+/// re-probes - so a NEW foreign sidecar appearing in the gap just gets
+/// adopted (and watched) again, never fought.
+fn watch_adopted(app: AppHandle, port: u16) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(ADOPT_PROBE_SECS));
+        if app.state::<SidecarState>().quitting.load(Ordering::SeqCst) {
+            return;
+        }
+        if !already_up(port) {
+            eprintln!(
+                "[sidecar] the adopted sidecar on port {port} went away - \
+                 taking over"
+            );
+            spawn_supervised(app, 0);
+            return;
+        }
+    });
+}
+
 fn spawn_supervised(app: AppHandle, attempt: usize) {
     let state = app.state::<SidecarState>();
     if state.quitting.load(Ordering::SeqCst) {
@@ -89,7 +116,11 @@ fn spawn_supervised(app: AppHandle, attempt: usize) {
     }
     let port = port();
     if already_up(port) {
-        eprintln!("[sidecar] adopting the sidecar already on port {port}");
+        eprintln!(
+            "[sidecar] adopting the sidecar already on port {port} - \
+             watching it"
+        );
+        watch_adopted(app, port);
         return;
     }
 

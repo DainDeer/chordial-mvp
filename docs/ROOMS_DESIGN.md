@@ -754,7 +754,12 @@ plus a signed self-update feed. Runbook: `docs/PACKAGING.md`.
   launch, dev terminal) rather than fighting for it; spawns with
   `SIDECAR_DB` pointed at tauri's own app-data dir; respawns on death with
   a capped backoff ladder (a run that lived a stable minute resets it); kills
-  the child on every exit path via the run-event hook.
+  the child on every exit path via the run-event hook. Adoption is a
+  **watched state, not a terminal one** (Sol's 7b round): a 15s watchdog
+  re-probes the adopted process — it belongs to someone else and can
+  vanish, e.g. the other half of a simultaneous launch quitting — and
+  takes over when it goes; taking over re-probes, so a new foreign
+  sidecar just gets adopted (and watched) again.
 - **The updater polls the chordial server itself** — `/app/updates/`
   (latest.json + bundles) served read-only when `APP_UPDATES_DIR` is set;
   single origin, no third-party host, and a misconfigured dir warns instead
@@ -762,7 +767,14 @@ plus a signed self-update feed. Runbook: `docs/PACKAGING.md`.
   pubkey pinned in tauri.conf.json means a compromised feed can withhold
   but never forge. Quiet launch check (~15s, silent when current or
   unreachable) + a tray "check for updates" that answers either way; both
-  ask before installing. The private key lives outside the repo
+  ask before installing, and checks are **single-flight** (Sol's 7b
+  round: the launch check and impatient tray clicks must never run two
+  installers over the same .app). The feed builder **verifies the bytes
+  against the manifest's claims** before shipping (Info.plist version +
+  mach-o arch of the main executable; a stale or wrong-arch bundle would
+  be correctly signed and correctly poisonous — endless prompts, or an
+  app the machine can't run), and another platform's leftover never wins
+  the slot on mtime. The private key lives outside the repo
   (`~/.tauri/chordial-updater.key`) — backed up or updates die with it.
 - **The device token graduates to the OS keychain** (macOS Keychain /
   Windows Credential Manager via the shell's `credential_*` commands) in
@@ -770,7 +782,13 @@ plus a signed self-update feed. Runbook: `docs/PACKAGING.md`.
   identity every rebuild — macOS would prompt for each). First packaged run
   migrates a localStorage-era token in and deletes the plaintext copy; a
   refusing keychain degrades to localStorage with a warning rather than
-  bricking linking. The deer's cross-window change signal rides a bare rev
+  bricking linking. Two rules keep the degradation honest (Sol's 7b
+  round — a flaky keychain must never resurrect a revoked token): a
+  localStorage token always beats the keychain value on load (it only
+  exists when the keychain missed a newer write) and moves home; and a
+  clear the keychain refused leaves a pending marker so the stuck value
+  is never served before the clear finally lands. The deer's cross-window
+  change signal rides a bare rev
   counter in localStorage — the storage event still fires, no secret rides
   it. (The stronghold plugin noted earlier was passed over deliberately:
   it wants a password-derived snapshot; the OS keychain is the thing

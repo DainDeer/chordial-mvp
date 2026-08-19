@@ -87,17 +87,27 @@ updates but never forge one.
 
 Details that keep this honest:
 
-- **Spawn is adopt-first**: the shell probes `127.0.0.1:8485/v1/state`
-  before spawning; a sidecar already up (second app launch, a dev
-  terminal's) is adopted, never fought over the port. The onefile binary
-  takes ~6–8s from spawn to the port binding (self-extraction) — the deer
-  window's reconnect backoff already covers it.
+- **Spawn is adopt-first, and adoption is watched**: the shell probes
+  `127.0.0.1:8485/v1/state` before spawning; a sidecar already up (second
+  app launch, a dev terminal's) is adopted, never fought over the port —
+  and a 15s watchdog takes over if that foreign process later vanishes.
+  The onefile binary takes ~6–8s from spawn to the port binding
+  (self-extraction) — the deer window's reconnect backoff already covers
+  it.
 - **Keychain graduation is one-way**: on first packaged run, a token from
   the localStorage era moves into the keychain and the plaintext copy is
   removed. A keychain that refuses degrades to localStorage with a console
-  warning rather than bricking linking. The deer's cross-window "token
-  changed" signal rides a bare rev counter in localStorage — no secret in
-  the event.
+  warning rather than bricking linking — and can never resurrect a revoked
+  token: a localStorage token beats the keychain value on load (it only
+  exists when the keychain missed a newer write), and a refused clear
+  leaves a pending marker so the stuck value is never served. The deer's
+  cross-window "token changed" signal rides a bare rev counter in
+  localStorage — no secret in the event.
+- **Update checks are single-flight, and the feed builder verifies the
+  bytes**: `make_latest_json.py` refuses a bundle whose Info.plist version
+  or executable architecture doesn't match what the manifest would claim —
+  a stale-but-signed artifact means endless update prompts, a wrong-arch
+  one means an app the machine can't run.
 - **Windows is untested**: the collector is macOS-only (cfg-gated), the
   sidecar spec sets `console=False` for it, and the keyring/updater legs
   compile for it — but nobody has run the boxed app there yet.

@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  CLEAR_PENDING_KEY,
   clearSessionIn,
   loadSessionFrom,
   SESSION_REV_KEY,
@@ -71,10 +72,21 @@ describe("dev mode (no secret store)", () => {
 });
 
 describe("packaged mode (keychain)", () => {
-  it("reads the keychain, not localStorage", async () => {
+  it("reads the keychain when localStorage has nothing", async () => {
     const secrets = fakeSecrets("kc-token");
-    const local = fakeLocal({ [TOKEN_STORAGE_KEY]: "stale-plaintext" });
+    const local = fakeLocal();
     expect(await loadSessionFrom(secrets, local)).toBe("kc-token");
+  });
+
+  it("a localStorage token BEATS the keychain value and moves home",
+     async () => {
+    // both existing means the keychain missed a newer write (the
+    // fallback path) - the keychain's copy is the older, staler one
+    const secrets = fakeSecrets("older-kc-token");
+    const local = fakeLocal({ [TOKEN_STORAGE_KEY]: "newer-local-token" });
+    expect(await loadSessionFrom(secrets, local)).toBe("newer-local-token");
+    expect(secrets.held).toBe("newer-local-token");
+    expect(local.getItem(TOKEN_STORAGE_KEY)).toBeNull();
   });
 
   it("stores in the keychain and leaves no localStorage shadow", async () => {
@@ -103,6 +115,71 @@ describe("packaged mode (keychain)", () => {
     expect(secrets.held).toBeNull();
     expect(local.getItem(TOKEN_STORAGE_KEY)).toBeNull();
     expect(local.getItem(SESSION_REV_KEY)).toBe("1");
+  });
+});
+
+describe("a flaky keychain never resurrects a revoked token (sol 7b)", () => {
+  it("the full repro: failed clear + failed relink set, then it heals",
+     async () => {
+    // the keychain holds token A; the device gets revoked while the
+    // keychain is refusing everything
+    const secrets = fakeSecrets("revoked-A");
+    let refusing = true;
+    const flaky: SecretStore = {
+      get: async () => {
+        if (refusing) throw new Error("no");
+        return secrets.get();
+      },
+      set: async (v) => {
+        if (refusing) throw new Error("no");
+        return secrets.set(v);
+      },
+      clear: async () => {
+        if (refusing) throw new Error("no");
+        return secrets.clear();
+      },
+    };
+    const local = fakeLocal();
+
+    await clearSessionIn(flaky, local); // revocation: clear refused
+    expect(local.getItem(CLEAR_PENDING_KEY)).not.toBeNull();
+
+    // relink: the set is refused too, token B falls back to localStorage
+    await storeSessionIn(flaky, local, "fresh-B", "dev-1");
+    expect(local.getItem(TOKEN_STORAGE_KEY)).toBe("fresh-B");
+    expect(secrets.held).toBe("revoked-A"); // the ghost is still in there
+
+    // next launch, keychain healthy again: B wins, A dies, B moves home
+    refusing = false;
+    expect(await loadSessionFrom(flaky, local)).toBe("fresh-B");
+    expect(secrets.held).toBe("fresh-B");
+    expect(local.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+    expect(local.getItem(CLEAR_PENDING_KEY)).toBeNull();
+  });
+
+  it("a pending clear hides the stuck value even before relinking",
+     async () => {
+    const secrets = fakeSecrets("revoked-A");
+    const local = fakeLocal({ [CLEAR_PENDING_KEY]: "1" });
+    // keychain works now: the owed clear lands first, nothing is served
+    expect(await loadSessionFrom(secrets, local)).toBeNull();
+    expect(secrets.held).toBeNull();
+    expect(local.getItem(CLEAR_PENDING_KEY)).toBeNull();
+  });
+
+  it("a still-broken keychain with a pending clear serves null, not the ghost",
+     async () => {
+    const local = fakeLocal({ [CLEAR_PENDING_KEY]: "1" });
+    expect(await loadSessionFrom(broken, local)).toBeNull();
+    expect(local.getItem(CLEAR_PENDING_KEY)).not.toBeNull(); // still owed
+  });
+
+  it("a successful relink set supersedes the owed clear", async () => {
+    const secrets = fakeSecrets("revoked-A");
+    const local = fakeLocal({ [CLEAR_PENDING_KEY]: "1" });
+    await storeSessionIn(secrets, local, "fresh-B", "dev-1");
+    expect(secrets.held).toBe("fresh-B");
+    expect(local.getItem(CLEAR_PENDING_KEY)).toBeNull();
   });
 });
 

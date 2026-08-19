@@ -14,12 +14,20 @@
 //
 // a keychain that refuses (denied access, locked) degrades to localStorage
 // with a console warning: worse at-rest storage beats a person who cannot
-// link their own device at all.
+// link their own device at all. two rules keep that degradation honest
+// (sol's 7b round - a flaky keychain must never resurrect a revoked
+// token): a localStorage token always BEATS the keychain value on load
+// (it only exists when the keychain missed a newer write) and moves home;
+// and a clear the keychain refused leaves a pending marker so the stuck
+// value is never served before the clear finally lands.
 
 import { invoke } from "@tauri-apps/api/core";
 
 export const TOKEN_STORAGE_KEY = "chordial.device_token";
 export const SESSION_REV_KEY = "chordial.session_rev";
+// a clear the keychain refused is still OWED (sol's 7b round): the value
+// in there is revoked, and until the clear lands it must never be served
+export const CLEAR_PENDING_KEY = "chordial.keychain_clear_pending";
 const DEVICE_KEY = "chordial.device_id";
 
 /** the shell's keychain as the frontend sees it; null = this build keeps
@@ -57,20 +65,30 @@ export async function loadSessionFrom(
   local: Storage,
 ): Promise<string | null> {
   if (!secrets) return local.getItem(TOKEN_STORAGE_KEY);
+  // read once up front: it is also the answer whenever the keychain throws
+  const localToken = local.getItem(TOKEN_STORAGE_KEY);
   try {
-    const held = await secrets.get();
-    if (held !== null) return held;
-    // graduation day: a token from the localStorage era moves into the
-    // keychain and leaves no plaintext copy behind
-    const legacy = local.getItem(TOKEN_STORAGE_KEY);
-    if (legacy !== null) {
-      await secrets.set(legacy);
-      local.removeItem(TOKEN_STORAGE_KEY);
+    if (local.getItem(CLEAR_PENDING_KEY) !== null) {
+      // finish a clear the keychain refused earlier - the value in there
+      // is revoked and must never come back to life (sol's 7b round). if
+      // this throws, the catch serves localStorage/null, never the ghost.
+      await secrets.clear();
+      local.removeItem(CLEAR_PENDING_KEY);
     }
-    return legacy;
+    // a localStorage token in keychain mode is either the pre-keychain
+    // era (keychain empty) or a fallback write from a keychain that
+    // refused a set - in which case the keychain holds an OLDER, possibly
+    // revoked value. either way localStorage is the newest truth: it
+    // wins, and moves home so no plaintext copy lingers.
+    if (localToken !== null) {
+      await secrets.set(localToken);
+      local.removeItem(TOKEN_STORAGE_KEY);
+      return localToken;
+    }
+    return await secrets.get();
   } catch (e) {
     console.warn("keychain unavailable, reading localStorage:", e);
-    return local.getItem(TOKEN_STORAGE_KEY);
+    return localToken;
   }
 }
 
@@ -83,8 +101,10 @@ export async function storeSessionIn(
   if (secrets) {
     try {
       await secrets.set(token);
-      // never both: a keychain-held token leaves no localStorage shadow
+      // never both: a keychain-held token leaves no localStorage shadow,
+      // and the fresh value supersedes any clear still owed for the old
       local.removeItem(TOKEN_STORAGE_KEY);
+      local.removeItem(CLEAR_PENDING_KEY);
     } catch (e) {
       console.warn("keychain unavailable, storing in localStorage:", e);
       local.setItem(TOKEN_STORAGE_KEY, token);
@@ -103,8 +123,12 @@ export async function clearSessionIn(
   if (secrets) {
     try {
       await secrets.clear();
+      local.removeItem(CLEAR_PENDING_KEY);
     } catch (e) {
+      // the revoked token is stuck in the keychain: leave a marker so no
+      // future load serves it before the clear finally lands
       console.warn("keychain unavailable while clearing:", e);
+      local.setItem(CLEAR_PENDING_KEY, "1");
     }
   }
   local.removeItem(TOKEN_STORAGE_KEY);

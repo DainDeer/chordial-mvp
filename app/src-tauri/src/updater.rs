@@ -11,6 +11,7 @@
 //! answers either way). both ask before installing - the update is never
 //! the first thing that happens to someone's morning.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -19,6 +20,20 @@ use tauri_plugin_updater::UpdaterExt;
 
 /// launch check delay: let the windows open and the sidecar spawn first
 const LAUNCH_CHECK_DELAY: Duration = Duration::from_secs(15);
+
+/// exactly one check/install at a time (sol's 7b round): the launch check
+/// and impatient tray clicks must never run two installers over the same
+/// .app bundle
+static CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// releases the in-flight flag on EVERY exit path, early returns included
+struct InFlightGuard;
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        CHECK_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
 
 pub fn check_on_launch(app: &AppHandle) {
     if cfg!(debug_assertions) {
@@ -44,6 +59,21 @@ pub fn check_interactive(app: &AppHandle) {
 /// the whole conversation runs on its own thread: blocking dialogs block
 /// only this thread, and the async updater calls ride block_on
 fn check_flow(app: AppHandle, interactive: bool) {
+    if CHECK_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        eprintln!("[updater] a check is already running - not starting another");
+        if interactive {
+            app.dialog()
+                .message("already checking for updates - one moment.")
+                .title("chordial")
+                .blocking_show();
+        }
+        return;
+    }
+    let _in_flight = InFlightGuard;
+
     let updater = match app.updater() {
         Ok(u) => u,
         Err(e) => {
