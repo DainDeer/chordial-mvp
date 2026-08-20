@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,12 +46,30 @@ WS_REPLY_TIMEOUT = 15
 
 
 def _require_scratch(url: str) -> None:
-    """the whole safety story: this rig only ever speaks to a database
-    that announces itself as the drill's. no marker, no run."""
-    if "drill" not in url:
+    """the whole safety story: the DATABASE NAME must announce itself as
+    the drill's (sol's round: matching anywhere in the url was bypassable -
+    a password or query param containing 'drill' must never authorize a
+    production database)."""
+    from sqlalchemy.engine import make_url
+    try:
+        database = make_url(url).database or ""
+    except Exception:
+        raise SystemExit(f"refusing unparseable DATABASE_URL {url!r}")
+    # sqlite urls carry a path here; judge the filename, not its directories
+    name = database.replace("\\", "/").rsplit("/", 1)[-1]
+    if "drill" not in name:
         raise SystemExit(
             f"refusing DATABASE_URL {url!r} - the drill only runs against "
-            "a database whose url contains 'drill'")
+            f"a database whose name contains 'drill' (got {name!r})")
+
+
+def _expected_cap_applied(cap: int, batch_size: int) -> int:
+    """the quota is batch-atomic: a batch that would cross the cap is
+    rejected whole (nothing partial lands), so a probe pushing uniform
+    batches applies the largest batch-multiple under the cap - not the
+    cap itself unless it divides evenly (sol's round: --cap 25
+    --batch-size 10 legitimately lands 20)."""
+    return (cap // batch_size) * batch_size
 
 
 def _rig_env(db_url: str, cap: int, attempts: int) -> dict:
@@ -75,41 +94,47 @@ def _rig_env(db_url: str, cap: int, attempts: int) -> dict:
 def serve(args: argparse.Namespace) -> None:
     _require_scratch(os.environ.get("DATABASE_URL", ""))
     # imports live here so DATABASE_URL is set before config loads
+    from types import SimpleNamespace
+
     from aiohttp import web
 
     from src.managers.event_log import EventLog
-    from src.managers.user_manager import UserManager
     from src.providers.platforms.app import AppInterface
+    from src.services.chat_service import ChatService
     from src.web.server import WebService
 
-    class DrillChat:
-        """the chat seam minus the model: records the turn in the real
-        EventLog and delivers one line through the real AppInterface, so
-        receipts, fan-out, and delivery confirmation all exercise."""
+    class DrillOrchestrator:
+        """the orchestrator seam minus the model (sol's round: the REAL
+        ChatService gateway runs - per-user turn lock, budget seam, front
+        door, room resolution - and only generation is stubbed): real
+        EventLog writes, real AppInterface delivery, then the
+        ActivationResult shape _reply_for reads."""
 
         def __init__(self, app_interface):
-            self.user_manager = UserManager()
             self.app_interface = app_interface
 
-        async def process_message(self, unified):
-            log = EventLog(unified.platform_user_id)
+        async def handle(self, stimulus):
+            user_uuid = stimulus.extras["user_id"]
+            log = EventLog(user_uuid)
             await asyncio.to_thread(
-                log.append_message, "user", "user", unified.content,
+                log.append_message, "user", "user", stimulus.content,
                 platform="app")
-            text = f"heard: {unified.content}"
+            text = f"heard: {stimulus.content}"
             ok = await self.app_interface.send_message(
-                unified.platform_user_id, text, speaker="pip")
-            if not ok:
-                return "the council stepped out - try again in a moment"
-            await asyncio.to_thread(
-                log.append_message, "agent", "pip", text, platform="app")
-            return None
+                user_uuid, text, speaker="pip",
+                stream_id=stimulus.stream_id)
+            if ok:
+                await asyncio.to_thread(
+                    log.append_message, "agent", "pip", text,
+                    platform="app")
+            return SimpleNamespace(any_delivered=ok, lines=())
 
     async def _serve() -> None:
         app_interface = AppInterface()
         service = WebService(
             user_resolver=lambda: "drill-has-no-web-user",
-            chat_service=DrillChat(app_interface),
+            chat_service=ChatService(
+                orchestrator=DrillOrchestrator(app_interface)),
             app_interface=app_interface)
         runner = web.AppRunner(service.build_app())
         await runner.setup()
@@ -187,6 +212,11 @@ def run(args: argparse.Namespace) -> None:
         raise SystemExit(
             f"soak volume per user ({soak_per_user}) exceeds --cap "
             f"({args.cap}) - the soak would trip the quota it isn't probing")
+    if args.cap < args.batch_size:
+        raise SystemExit(
+            f"--cap ({args.cap}) below --batch-size ({args.batch_size}) - "
+            "the probe could never land a batch, so its retry check would "
+            "be meaningless")
 
     # rig env in THIS process too, before any src import: seeding and
     # link-code minting go straight to the scratch db
@@ -340,18 +370,35 @@ async def _drill(args, base, user_uuids, probe_uuid, codes, failures):
         ws_connect = Meter("ws connect")
         meters.append(ws_connect)
         sockets, listeners = [], []
+        # marker -> (t0, future) for latency; marker -> owning user forever
+        # (sol's round: tenant isolation is ASSERTED, not assumed - a reply
+        # surfacing on anyone else's socket is a hard failure even after
+        # its own turn resolved)
         waiting: dict[str, tuple[float, asyncio.Future]] = {}
+        turn_owner: dict[str, str] = {}
+        marker_re = re.compile(r"drill turn ([0-9a-f]{32})")
 
-        async def listen(ws):
+        async def listen(ws, listener_user):
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
                 frame = json.loads(msg.data)
                 if frame.get("type") != "message":
                     continue
-                for marker, (t0, fut) in list(waiting.items()):
-                    if marker in frame.get("content", "") and not fut.done():
-                        fut.set_result(time.monotonic() - t0)
+                match = marker_re.search(frame.get("content", ""))
+                if not match:
+                    continue
+                owner = turn_owner.get(match.group(1))
+                if owner is None:
+                    continue
+                if owner != listener_user:
+                    failures.append(
+                        f"CROSS-TENANT: {owner}'s reply arrived on "
+                        f"{listener_user}'s socket")
+                    continue
+                entry = waiting.get(match.group(1))
+                if entry and not entry[1].done():
+                    entry[1].set_result(time.monotonic() - entry[0])
 
         ws_connect.start()
         for u in user_uuids:
@@ -367,7 +414,7 @@ async def _drill(args, base, user_uuids, probe_uuid, codes, failures):
                     raise RuntimeError(f"expected hello, got {hello}")
                 ws_connect.ok(time.monotonic() - t0)
                 sockets.append(ws)
-                listeners.append(asyncio.create_task(listen(ws)))
+                listeners.append(asyncio.create_task(listen(ws, u)))
             except Exception as e:
                 ws_connect.fail(f"ws {u}: {type(e).__name__}: {e}")
         ws_connect.finish()
@@ -383,7 +430,8 @@ async def _drill(args, base, user_uuids, probe_uuid, codes, failures):
         async def do_turns(u):
             for _ in range(args.turns):
                 marker = uuid_mod.uuid4().hex
-                fut = asyncio.get_running_loop().create_future()
+                turn_owner[marker] = u      # never popped: isolation is
+                fut = asyncio.get_running_loop().create_future()  # forever
                 waiting[marker] = (time.monotonic(), fut)
                 body = await _timed(
                     turn, session.post(
@@ -444,9 +492,11 @@ async def _drill(args, base, user_uuids, probe_uuid, codes, failures):
                         probe.fail(f"cap probe b{b}: {resp.status} {body}")
             if not saw_429:
                 failures.append("cap probe never hit 429")
-            if applied_total != args.cap:
-                failures.append(f"cap probe applied {applied_total} "
-                                f"!= cap {args.cap}")
+            expected = _expected_cap_applied(args.cap, args.batch_size)
+            if applied_total != expected:
+                failures.append(f"cap probe applied {applied_total} != "
+                                f"expected {expected} (cap {args.cap}, "
+                                f"batch {args.batch_size})")
             async with session.post(f"{base}/api/v1/sync/events",
                                     headers=hdr(probe_uuid),
                                     json={"events": first_batch}) as resp:

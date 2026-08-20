@@ -85,12 +85,15 @@ Honesty notes:
 
 `scripts/drill.py` load-tests everything a real fleet does — linking
 devices, pushing outbox batches, holding websockets, taking turns —
-against a real `WebService` over real TCP, with a chat stub that does
-everything except call a model (real EventLog writes, real AppInterface
-fan-out, zero tokens). It reports client-observed p50/p95/p99 latencies
-per phase and *asserts* the contracts under load: ACK cursors exactly
-match what was pushed, every turn's reply arrives on the websocket, the
-sync quota 429s honestly at the cap, and a retry of an already-ACKed
+against a real `WebService` over real TCP. Turns run through the **real
+`ChatService` gateway** (per-user turn lock, budget seam, front door,
+daily-room resolution); only the orchestrator is stubbed (real EventLog
+writes, real AppInterface fan-out, zero tokens). It reports
+client-observed p50/p95/p99 latencies per phase and *asserts* the
+contracts under load: ACK cursors exactly match what was pushed, every
+turn's reply arrives on the sender's **own** websocket and never anyone
+else's (tenant isolation is checked for the whole run, not assumed),
+the sync quota 429s honestly at the cap, and a retry of an already-ACKed
 batch still ACKs at the cap (dedup-before-quota).
 
 ```
@@ -99,23 +102,25 @@ python scripts/drill.py run --users 100 --turns 5
 python scripts/drill.py run --db-url postgresql+psycopg://localhost/chordial_drill
 ```
 
-Safe by construction: it refuses any database url that doesn't contain
-`drill`, defaults to a throwaway sqlite file it deletes afterwards
-(`--keep` to inspect), and spawns its own server subprocess — it never
-speaks to a real deployment.
+Safe by construction: it refuses any database whose **name** doesn't
+contain `drill` (the name specifically — a password or query param
+containing the word doesn't count), defaults to a throwaway sqlite file
+it deletes afterwards (`--keep` to inspect), and spawns its own server
+subprocess — it never speaks to a real deployment.
 
 ### the numbers (2026-08-20, M-series laptop, localhost)
 
 All correctness checks pass at every scale tried, on both engines.
 
-- **100 users, sqlite (WAL)**: zero errors. Turns: 484 POSTs/s, p50
-  143ms; websocket delivery p50 94ms; 100 sockets held. Sync-push
-  throughput pins at **~28 pushes/s (~2,800 events/s)** — sqlite's
-  single writer — so a full-fleet outbox stampede queues: p50 3.2s per
-  push while all 100 devices flush at once, clearing in ~7s total.
-- **50 users, postgres (localhost)**: same shape, push ceiling **~17/s
-  (~1,700 events/s)** — each event costs a savepoint round-trip by
-  design (the race-safe landing). Turns p50 132ms.
+- **100 users, sqlite (WAL)**: zero errors. Turns through the full
+  gateway: 226 POSTs/s, p50 411ms under 100-way concurrency; websocket
+  delivery p50 342ms; 100 sockets held. Sync-push throughput pins at
+  **~27 pushes/s (~2,700 events/s)** — sqlite's single writer — so a
+  full-fleet outbox stampede queues: p50 3.3s per push while all 100
+  devices flush at once, clearing in ~7s total.
+- **50 users, postgres (localhost)**: same shape, push ceiling **~16/s
+  (~1,600 events/s)** — each event costs a savepoint round-trip by
+  design (the race-safe landing). Turns 120/s, p50 375ms.
 - Reading it honestly: the stampede is the worst case, not the steady
   state. Real sidecars emit a few derived events per minute; even the
   cap (5,000/day/user) is two minutes of drill traffic. At today's

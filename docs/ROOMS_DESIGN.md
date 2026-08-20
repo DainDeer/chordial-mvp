@@ -836,13 +836,16 @@ Runbook: `docs/OPERATIONS.md`.
 
 - **`scripts/drill.py`**: N simulated users doing everything a real fleet
   does — linking devices, pushing outbox batches, holding websockets,
-  taking turns — against a real `WebService` over real TCP, chat stubbed
-  at the orchestrator seam (real EventLog writes, real AppInterface
-  fan-out, zero tokens). It measures client-observed latencies *and
-  asserts the section-10 contracts under load*: exact ACK cursors,
-  websocket delivery for every turn, the honest 429 at the sync cap, and
-  dedup-before-quota (a retry at the cap still ACKs). Refuses any
-  database url without `drill` in it; numbers live in `OPERATIONS.md`.
+  taking turns — against a real `WebService` over real TCP. Turns run
+  the real `ChatService` gateway (per-user lock, budget seam, front
+  door, room resolution); only the orchestrator is stubbed (real
+  EventLog writes, real AppInterface fan-out, zero tokens). It measures
+  client-observed latencies *and asserts the section-10 contracts under
+  load*: exact ACK cursors, every reply on the sender's **own** socket
+  and never anyone else's (tenant isolation asserted for the whole run),
+  the honest 429 at the sync cap, and dedup-before-quota (a retry at
+  the cap still ACKs). Refuses any database whose *name* lacks `drill`;
+  numbers live in `OPERATIONS.md`.
 - **What it found on its first postgres run:** fresh postgres installs
   were broken — a boolean `server_default=text('0')` (invalid postgres
   DDL, broke create_all *and* `alembic upgrade head`) and a 68-char

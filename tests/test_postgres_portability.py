@@ -8,16 +8,18 @@ constraint name over postgres's 63-char identifier cap. these tests pin the
 whole class by compiling the model schema under the postgres dialect -
 no server needed, both failure modes are visible at compile time.
 
-(migration files' inline names aren't covered by model compilation; parity
-between models.py and the migration chain is the repo's standing convention,
-and the chain itself was applied end-to-end on scratch postgres when these
-landed.)
+the migration chain gets the same treatment (sol's #79 round): alembic's
+offline mode renders every migration's SQL through the postgres dialect
+without a server - identifier-length violations raise during rendering,
+and the rendered DDL is scanned for non-boolean boolean defaults.
 """
+import io
 import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 
 from sqlalchemy import Boolean
 from sqlalchemy.dialects import postgresql
@@ -59,3 +61,32 @@ def test_boolean_server_defaults_render_as_booleans():
                 f"renders as non-boolean DDL: {line.strip()!r}")
             checked += 1
     assert checked >= 1  # device_events.rejected at minimum
+
+
+def test_migration_chain_renders_under_postgres(monkeypatch):
+    """the whole alembic chain, base to head, rendered through the postgres
+    dialect in offline mode - no server, no connection. this is exactly
+    where both drill findings would have surfaced: the 68-char constraint
+    name raises IdentifierError during rendering, and the boolean-default
+    scan below catches text('0') smuggled onto a boolean column in a
+    migration (the model tests can't see migration files)."""
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+    from config import Config
+
+    # env.py reads Config.DATABASE_URL at exec time; offline mode never
+    # connects, so a fake postgres url is safe anywhere the suite runs
+    monkeypatch.setattr(Config, "DATABASE_URL",
+                        "postgresql+psycopg://nobody@nowhere/never_connects")
+    buf = io.StringIO()
+    cfg = AlembicConfig(str(REPO / "alembic.ini"), output_buffer=buf,
+                        stdout=io.StringIO())
+    cfg.set_main_option("script_location", str(REPO / "alembic"))
+    command.upgrade(cfg, "head", sql=True)
+    sql = buf.getvalue()
+    assert "CREATE TABLE" in sql  # the render actually happened
+    for line in sql.splitlines():
+        if "BOOLEAN" in line.upper():
+            assert not re.search(r"DEFAULT\s+'?0'?", line, re.IGNORECASE), (
+                f"boolean column with a non-boolean default in migration "
+                f"DDL: {line.strip()!r}")
