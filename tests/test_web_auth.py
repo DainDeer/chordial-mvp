@@ -242,6 +242,19 @@ def test_rate_limiter_window():
     assert limiter.allow("ip-2")  # other keys unaffected
 
 
+def test_limiter_shape_comes_from_config(monkeypatch):
+    """many legitimate devices behind one NAT ip (a classroom) need the
+    window widened without a code change - the knob must actually reach
+    the limiter the server constructs."""
+    from config import Config
+    from src.web.server import WebService
+    monkeypatch.setattr(Config, "LINK_RATE_ATTEMPTS", 75)
+    monkeypatch.setattr(Config, "LINK_RATE_WINDOW_SECONDS", 120)
+    service = WebService(user_resolver=lambda: U1)
+    assert service._limiter.attempts == 75
+    assert service._limiter.window == 120
+
+
 def test_redeem_is_rate_limited(env, public):
     async def flow(client):
         service_limiter = None

@@ -32,8 +32,13 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 # sqlite stores the old fk unnamed; a naming convention lets batch mode
-# address (and drop) it deterministically
+# address (and drop) it deterministically. the generated name is 68 chars -
+# over postgres's 63-char identifier cap - so on postgres this migration
+# addresses the server's own auto-generated fk name instead. (it could never
+# have applied on postgres before that branch existed, so editing it here
+# is safe: sqlite installs already ran the batch path unchanged.)
 _NAMING = {"fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"}
+_PG_FK = 'compressed_messages_conversation_history_id_fkey'
 
 
 def upgrade() -> None:
@@ -71,11 +76,14 @@ def upgrade() -> None:
     # 3. detach compressed_messages from the table we're about to drop
     #    (batch recreate needs the referenced table still present, so this
     #    runs before the drop)
-    with op.batch_alter_table('compressed_messages', schema=None, naming_convention=_NAMING) as batch_op:
-        batch_op.drop_constraint(
-            'fk_compressed_messages_conversation_history_id_conversation_history',
-            type_='foreignkey',
-        )
+    if op.get_bind().dialect.name == 'sqlite':
+        with op.batch_alter_table('compressed_messages', schema=None, naming_convention=_NAMING) as batch_op:
+            batch_op.drop_constraint(
+                'fk_compressed_messages_conversation_history_id_conversation_history',
+                type_='foreignkey',
+            )
+    else:
+        op.drop_constraint(_PG_FK, 'compressed_messages', type_='foreignkey')
 
     # 4. retire the old table
     op.drop_table('conversation_history')
@@ -90,7 +98,8 @@ def downgrade() -> None:
     sa.Column('role', sa.VARCHAR(), nullable=True),
     sa.Column('content', sa.VARCHAR(), nullable=True),
     sa.Column('message_type', sa.VARCHAR(), nullable=True),
-    sa.Column('created_at', sa.DATETIME(), nullable=True),
+    # DateTime, not the literal DATETIME keyword - postgres has no such type
+    sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_uuid'], ['users.uuid'], ),
     sa.PrimaryKeyConstraint('id'),
     sqlite_autoincrement=True
@@ -104,10 +113,18 @@ def downgrade() -> None:
         FROM conversation_events WHERE kind = 'message' ORDER BY id
     """)
 
-    with op.batch_alter_table('compressed_messages', schema=None, naming_convention=_NAMING) as batch_op:
-        batch_op.create_foreign_key(
-            'fk_compressed_messages_conversation_history_id_conversation_history',
-            'conversation_history', ['conversation_history_id'], ['id'],
+    if op.get_bind().dialect.name == 'sqlite':
+        with op.batch_alter_table('compressed_messages', schema=None, naming_convention=_NAMING) as batch_op:
+            batch_op.create_foreign_key(
+                'fk_compressed_messages_conversation_history_id_conversation_history',
+                'conversation_history', ['conversation_history_id'], ['id'],
+            )
+    else:
+        # unnamed on purpose: the server auto-names it exactly as the
+        # baseline's create_table did, so upgrade finds it again
+        op.create_foreign_key(
+            None, 'compressed_messages', 'conversation_history',
+            ['conversation_history_id'], ['id'],
         )
 
     with op.batch_alter_table('conversation_events', schema=None) as batch_op:

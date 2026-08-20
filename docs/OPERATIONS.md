@@ -81,11 +81,62 @@ Honesty notes:
 - **Sidecar sqlite** lives on each user's device and syncs derived events
   up; it is deliberately not the server's to back up.
 
-## the drill (not built yet)
+## the drill (built)
 
-Load testing against a scratch rig (N simulated users linking devices,
-syncing outboxes, holding websockets, taking turns) and the tuning that
-falls out of it. Next slice.
+`scripts/drill.py` load-tests everything a real fleet does — linking
+devices, pushing outbox batches, holding websockets, taking turns —
+against a real `WebService` over real TCP, with a chat stub that does
+everything except call a model (real EventLog writes, real AppInterface
+fan-out, zero tokens). It reports client-observed p50/p95/p99 latencies
+per phase and *asserts* the contracts under load: ACK cursors exactly
+match what was pushed, every turn's reply arrives on the websocket, the
+sync quota 429s honestly at the cap, and a retry of an already-ACKed
+batch still ACKs at the cap (dedup-before-quota).
+
+```
+python scripts/drill.py run                    # 25 users, defaults
+python scripts/drill.py run --users 100 --turns 5
+python scripts/drill.py run --db-url postgresql+psycopg://localhost/chordial_drill
+```
+
+Safe by construction: it refuses any database url that doesn't contain
+`drill`, defaults to a throwaway sqlite file it deletes afterwards
+(`--keep` to inspect), and spawns its own server subprocess — it never
+speaks to a real deployment.
+
+### the numbers (2026-08-20, M-series laptop, localhost)
+
+All correctness checks pass at every scale tried, on both engines.
+
+- **100 users, sqlite (WAL)**: zero errors. Turns: 484 POSTs/s, p50
+  143ms; websocket delivery p50 94ms; 100 sockets held. Sync-push
+  throughput pins at **~28 pushes/s (~2,800 events/s)** — sqlite's
+  single writer — so a full-fleet outbox stampede queues: p50 3.2s per
+  push while all 100 devices flush at once, clearing in ~7s total.
+- **50 users, postgres (localhost)**: same shape, push ceiling **~17/s
+  (~1,700 events/s)** — each event costs a savepoint round-trip by
+  design (the race-safe landing). Turns p50 132ms.
+- Reading it honestly: the stampede is the worst case, not the steady
+  state. Real sidecars emit a few derived events per minute; even the
+  cap (5,000/day/user) is two minutes of drill traffic. At today's
+  target scale the current shape has headroom; revisit past a few
+  hundred users, and prefer postgres for any real multi-user
+  deployment (concurrency, backups, no single-writer cliff).
+
+### the tuning that fell out
+
+- **Fresh postgres installs were broken** — found on the drill's first
+  postgres run, fixed in this slice. A boolean column default rendered
+  as integer `0` (invalid postgres DDL) broke *both* install paths
+  (`init_fresh_db.py`'s create_all and `alembic upgrade head`), and one
+  migration used a 68-char constraint name (postgres caps identifiers
+  at 63). `tests/test_postgres_portability.py` now compiles the whole
+  schema under the postgres dialect so the class stays dead. The full
+  migration chain was applied and round-tripped on scratch postgres.
+- **`LINK_RATE_ATTEMPTS` / `LINK_RATE_WINDOW_SECONDS`** (default
+  10/300s): the code-redemption limiter is per client ip, so many
+  legitimate devices behind one NAT ip (a classroom) need the window
+  widened without a code change.
 
 ## the gate (decision pending)
 

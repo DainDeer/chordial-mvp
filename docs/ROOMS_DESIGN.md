@@ -832,11 +832,35 @@ Runbook: `docs/OPERATIONS.md`.
   enforcement point **fails open** — a broken meter never silences
   anyone. The ledger carries (user, created_at) + (created_at) indexes
   now that it's a per-turn read path (migration `d4f8b2a6c917`).
-- **Still to come in 7c:** the drill (load testing + the tuning that falls
-  out of it) and the gate (macOS signing/notarization — an Apple Developer
-  membership decision). The vault mostly predates this phase
-  (`scripts/pg_backup.sh`; the one unrecoverable secret is the updater
-  signing key, per `PACKAGING.md`).
+### the drill, as built (phase 7c, second slice)
+
+- **`scripts/drill.py`**: N simulated users doing everything a real fleet
+  does — linking devices, pushing outbox batches, holding websockets,
+  taking turns — against a real `WebService` over real TCP, chat stubbed
+  at the orchestrator seam (real EventLog writes, real AppInterface
+  fan-out, zero tokens). It measures client-observed latencies *and
+  asserts the section-10 contracts under load*: exact ACK cursors,
+  websocket delivery for every turn, the honest 429 at the sync cap, and
+  dedup-before-quota (a retry at the cap still ACKs). Refuses any
+  database url without `drill` in it; numbers live in `OPERATIONS.md`.
+- **What it found on its first postgres run:** fresh postgres installs
+  were broken — a boolean `server_default=text('0')` (invalid postgres
+  DDL, broke create_all *and* `alembic upgrade head`) and a 68-char
+  constraint name (postgres caps identifiers at 63). Both fixed; the
+  edited migrations could never have applied on postgres, so editing
+  them strands no install. `tests/test_postgres_portability.py` compiles
+  the whole schema under the postgres dialect to keep the class dead.
+- **Capacity, honestly:** at 100 users everything holds; the ceiling is
+  sync-push throughput (~2,800 events/s sqlite, ~1,700/s localhost
+  postgres — the race-safe per-event savepoint), which only queues
+  during a full-fleet outbox stampede. Real traffic sits orders of
+  magnitude below it. The redemption limiter grew config knobs
+  (`LINK_RATE_ATTEMPTS`/`LINK_RATE_WINDOW_SECONDS`) for many-devices-
+  one-NAT deployments.
+- **Still to come in 7c:** the gate (macOS signing/notarization — an
+  Apple Developer membership decision). The vault mostly predates this
+  phase (`scripts/pg_backup.sh`; the one unrecoverable secret is the
+  updater signing key, per `PACKAGING.md`).
 
 ---
 
@@ -924,7 +948,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) · ✓ 7b built: the box — frozen sidecar spawned/supervised by the shell, signed self-update feed off the server itself, token in the OS keychain (§10 as-built, `docs/PACKAGING.md`) · 7c started: the meter — per-user token budgets (soft quiets outreach, hard refuses turns honestly) + the `/ops` usage dashboard (§10 as-built, `docs/OPERATIONS.md`) |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) · ✓ 7b built: the box — frozen sidecar spawned/supervised by the shell, signed self-update feed off the server itself, token in the OS keychain (§10 as-built, `docs/PACKAGING.md`) · 7c started: the meter — per-user token budgets (soft quiets outreach, hard refuses turns honestly) + the `/ops` usage dashboard (§10 as-built, `docs/OPERATIONS.md`) · the drill — `scripts/drill.py` fleet load rig; contracts hold at 100 users, fresh-postgres installs fixed (§10 as-built) |
 
 ### explicitly deferred
 

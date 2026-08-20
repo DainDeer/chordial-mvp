@@ -53,8 +53,12 @@ def upgrade() -> None:
         sa.Column('payload', sa.JSON(), nullable=True),
         sa.Column('occurred_at', sa.DateTime(), nullable=True),
         sa.Column('applied_at', sa.DateTime(), nullable=False),
+        # sa.false() compiles per-dialect; the original sa.text('0') was
+        # invalid DDL for a postgres boolean, so this migration could never
+        # have applied there - editing it is safe precisely because of that
+        # (sqlite installs already got '0', which false() also renders)
         sa.Column('rejected', sa.Boolean(), nullable=False,
-                  server_default=sa.text('0')),
+                  server_default=sa.false()),
         sa.Column('error', sa.String(), nullable=True),
         sa.UniqueConstraint('event_uuid'),
         sa.UniqueConstraint('device_id', 'seq',

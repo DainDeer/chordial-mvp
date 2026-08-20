@@ -131,7 +131,9 @@ class WebService:
         # first one's lines. weak values, same pattern as ChatService's locks.
         self._send_locks: WeakValueDictionary[str, asyncio.Lock] = \
             WeakValueDictionary()
-        self._limiter = auth.RateLimiter()
+        self._limiter = auth.RateLimiter(
+            attempts=Config.LINK_RATE_ATTEMPTS,
+            window_seconds=Config.LINK_RATE_WINDOW_SECONDS)
         self._runner: Optional[web.AppRunner] = None
         self._stop_event: Optional[asyncio.Event] = None
 
