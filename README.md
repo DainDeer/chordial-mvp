@@ -93,7 +93,7 @@ poetry run python main.py
 poetry run pytest
 ```
 
-the desktop app has its own dev runbook — sidecar, link codes, and the full four-terminal loop — in [app/README.md](app/README.md). building the installable app (frozen sidecar, signed update feed) is [docs/PACKAGING.md](docs/PACKAGING.md). database options live in [docs/DEV_DATABASE.md](docs/DEV_DATABASE.md) and [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md); telegram setup in [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
+the desktop app has its own dev runbook — sidecar, link codes, and the full four-terminal loop — in [app/README.md](app/README.md). building the installable app (frozen sidecar, signed update feed) is [docs/PACKAGING.md](docs/PACKAGING.md); running it for real (metering dashboard, token budgets, backups) is [docs/OPERATIONS.md](docs/OPERATIONS.md). database options live in [docs/DEV_DATABASE.md](docs/DEV_DATABASE.md) and [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md); telegram setup in [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
 
 ### design docs
 

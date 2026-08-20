@@ -798,6 +798,46 @@ plus a signed self-update feed. Runbook: `docs/PACKAGING.md`.
   the .app runs locally unsigned, gatekeeper handling is 7c ops; presence
   from the deer window alone (deer-open-main-closed reads absent).
 
+### the meter, as built (phase 7c, first slice)
+
+Operational maturity, started where the promises were oldest: the usage
+ledger (`usage_log`, one row per model call since v3) finally has readers.
+Runbook: `docs/OPERATIONS.md`.
+
+- **The operator dashboard** (`/ops` + `/api/ops/usage`, `OPS_TOKEN`-gated,
+  routes absent when unset — same pattern as the update feed): per-day,
+  per-user, per-model, per-role token aggregates, plus each user's live
+  trailing-24h standing against the budget knobs. The dashboard runs the
+  same arithmetic the gates enforce (`src/services/metering.py`), so it
+  can never disagree with the behavior.
+- **The token budgets** ("per-user quotas and token budgets are enforced
+  at the gateway", above — now true): spend is a trailing-24h read of the
+  ledger (the sync cap's rolling shape — no midnight cliff, gradual
+  recovery). Budgeted spend counts **only the turn-driven roles**
+  (conversation, scheduled, decider — an allowlist; sol's 7c round): the
+  gates can't stop background work (curator, scorer, reconciler), so
+  counting it could push a user over the hard cap and *hold* them there.
+  Budgeted = input + output with openai's in-band cache hits normalized
+  out (openai reports cached tokens inside `input_tokens`; anthropic
+  keeps them separate — same round); cache traffic is reported, never
+  counted (punishing cache hits would punish the architecture that keeps
+  the council affordable). The **soft** budget silences proactive outreach
+  (a pulse gate, deliberately last in the stack — the ledger read only
+  runs when the cheap denials didn't); the **hard** budget refuses
+  conversational turns with honest ephemeral copy (never persisted, never
+  in the cached prefix), checked **inside the per-user turn lock** (same
+  round) so a burst of simultaneous messages can't all pass on one stale
+  read — each serialized check sees the spend its predecessor recorded.
+  Both off by default: an unmetered rig is byte-identical. Every
+  enforcement point **fails open** — a broken meter never silences
+  anyone. The ledger carries (user, created_at) + (created_at) indexes
+  now that it's a per-turn read path (migration `d4f8b2a6c917`).
+- **Still to come in 7c:** the drill (load testing + the tuning that falls
+  out of it) and the gate (macOS signing/notarization — an Apple Developer
+  membership decision). The vault mostly predates this phase
+  (`scripts/pg_backup.sh`; the one unrecoverable secret is the updater
+  signing key, per `PACKAGING.md`).
+
 ---
 
 ## 11. data & vocabulary
@@ -884,7 +924,7 @@ telegram plumbing, link codes, memory system, and cost guards all carry over.
 | **4 · the shell & the deer** | react app in dev mode: home, daily room, presence strip; port the antler mvp: deer window, rust collectors, sidecar ambient engine with local sqlite, focus sessions; no bundling yet — `tauri dev` + local python side by side | |
 | **5 · the vertical slice** | cycle fields (theme, capacity) + commitment rows with stable ids + baseline snapshots + scope-change projection (§6); a completed focus block flows device → sync contract → pip observation → cycle view moves → next-action artifact. **the milestone:** enter today's room, do one block with the deer, watch shared state move, revisit the archived day | |
 | **6 · edwin & the cycle rooms** | port the scorer pattern (proven in cadenza); scorecards; retrospective + planning room types; the arc's taper arithmetic starts accumulating honest data | ✓ 6a built: deterministic scorecard + evidence-checked findings + exactly-once filing (§8 as-built) · ✓ 6b built: retro + planning rooms, edwin presents the card (§4 as-built) · ✓ 6c built: the taper — steady scorecards stretch the check-in beat, capped at the sentinel (§7 as-built). **phase 6 complete** |
-| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) · ✓ 7b built: the box — frozen sidecar spawned/supervised by the shell, signed self-update feed off the server itself, token in the OS keychain (§10 as-built, `docs/PACKAGING.md`) |
+| **7 · the tether & the box** | single-bot telegram bridge with inline attribution + presence-aware routing (per-helper bot ensemble deleted, not ported); then packaging (pyinstaller sidecar bundle, updater) — deliberately last; then operational maturity: load testing, metering dashboards, backups, tuning (the multi-user *invariants* landed in phases 1–2) | ✓ 7a built: the tether — one bot, whole council, inline attribution, presence-aware routing, the desktop mirror (§9 as-built) · ✓ 7b built: the box — frozen sidecar spawned/supervised by the shell, signed self-update feed off the server itself, token in the OS keychain (§10 as-built, `docs/PACKAGING.md`) · 7c started: the meter — per-user token budgets (soft quiets outreach, hard refuses turns honestly) + the `/ops` usage dashboard (§10 as-built, `docs/OPERATIONS.md`) |
 
 ### explicitly deferred
 

@@ -324,8 +324,13 @@ class UsageLog(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # the meter (phase 7c) made this table a per-turn read path: the
+    # composite serves budget_verdict's (user, trailing-24h) sum, the
+    # single column serves the ops report's window scans
     __table_args__ = (
-        {'sqlite_autoincrement': True}
+        Index('ix_usage_log_user_created', 'user_uuid', 'created_at'),
+        Index('ix_usage_log_created', 'created_at'),
+        {'sqlite_autoincrement': True},
     )
 
 

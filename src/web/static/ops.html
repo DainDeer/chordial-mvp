@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>chordial · the meter</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧮</text></svg>">
+  <style>
+    /* the operator's room: self-contained on purpose (this page is for
+       whoever runs the server, not the person the council keeps) */
+    :root {
+      --bg: #1c1720; --panel: #262030; --line: #3a3346;
+      --ink: #e8e2ef; --dim: #9b93a8; --amber: #e6b45c;
+      --ok: #8fbf8f; --soft: #e6b45c; --hard: #d98a8a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+      padding: 2rem 1.5rem 4rem;
+    }
+    main { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .25rem; }
+    h1 .accent { color: var(--amber); }
+    .sub { color: var(--dim); margin: 0 0 1.5rem; font-size: .85rem; }
+    h2 { font-size: .8rem; font-weight: 600; color: var(--dim);
+         text-transform: uppercase; letter-spacing: .08em; margin: 2rem 0 .5rem; }
+    .cards { display: flex; gap: .75rem; flex-wrap: wrap; }
+    .card { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 8px; padding: .75rem 1rem; min-width: 10rem; }
+    .card .big { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+    .card .label { color: var(--dim); font-size: .75rem; }
+    .scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%;
+            font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: .35rem .6rem; white-space: nowrap;
+             border-bottom: 1px solid var(--line); }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--dim); font-weight: 500; font-size: .75rem; }
+    td { font-size: .85rem; }
+    .chip { display: inline-block; padding: 0 .5em; border-radius: 999px;
+            font-size: .75rem; border: 1px solid var(--line); }
+    .chip.clear { color: var(--ok); }
+    .chip.soft { color: var(--soft); }
+    .chip.hard { color: var(--hard); }
+    .gate { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 8px; padding: 1.25rem; max-width: 26rem;
+            margin: 4rem auto; }
+    .gate input { width: 100%; margin-top: .5rem; padding: .5rem .6rem;
+                  background: var(--bg); color: var(--ink);
+                  border: 1px solid var(--line); border-radius: 6px;
+                  font: inherit; }
+    .gate button, .toolbar button {
+      margin-top: .75rem; padding: .45rem 1rem; border-radius: 6px;
+      border: 1px solid var(--amber); background: transparent;
+      color: var(--amber); font: inherit; cursor: pointer; }
+    .toolbar { display: flex; gap: .5rem; align-items: baseline; }
+    .toolbar button { margin-top: 0; padding: .2rem .7rem; font-size: .8rem; }
+    .toolbar .when { color: var(--dim); font-size: .75rem; margin-left: auto; }
+    .err { color: var(--hard); margin-top: .5rem; font-size: .85rem; }
+    .note { color: var(--dim); font-size: .75rem; margin-top: .5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="gate" class="gate hidden">
+      <h1>the <span class="accent">meter</span></h1>
+      <p class="sub">operator access — paste the OPS_TOKEN from the server's env.</p>
+      <input id="token-input" type="password" placeholder="ops token"
+             autocomplete="off">
+      <button id="token-go">open</button>
+      <p id="gate-err" class="err hidden"></p>
+      <p class="note">held in sessionStorage only — closing the tab forgets it.</p>
+    </div>
+
+    <div id="board" class="hidden">
+      <h1>the <span class="accent">meter</span></h1>
+      <p class="sub">token spend across the council — utc days, trailing-24h budgets.</p>
+      <div class="toolbar">
+        <button data-days="7">7d</button>
+        <button data-days="14">14d</button>
+        <button data-days="30">30d</button>
+        <span class="when" id="generated-at"></span>
+      </div>
+
+      <h2>right now</h2>
+      <div class="cards" id="cards"></div>
+
+      <h2>people</h2>
+      <div class="scroll"><table id="users">
+        <thead><tr><th>who</th><th>24h spend</th><th>budget</th>
+          <th>input</th><th>output</th><th>cache r/w</th>
+          <th>calls</th><th>last call (utc)</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+
+      <h2>days</h2>
+      <div class="scroll"><table id="days">
+        <thead><tr><th>utc day</th><th>input</th><th>output</th>
+          <th>cache read</th><th>cache write</th><th>calls</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+
+      <h2>models</h2>
+      <div class="scroll"><table id="models">
+        <thead><tr><th>model</th><th>input</th><th>output</th>
+          <th>cache read</th><th>cache write</th><th>calls</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+
+      <h2>roles</h2>
+      <div class="scroll"><table id="roles">
+        <thead><tr><th>role</th><th>input</th><th>output</th>
+          <th>cache read</th><th>cache write</th><th>calls</th></tr></thead>
+      <tbody></tbody>
+      </table></div>
+    </div>
+  </main>
+
+  <script>
+    const KEY = "chordial.ops_token";
+    const $ = (id) => document.getElementById(id);
+    let days = 14;
+
+    const fmt = (n) => (n ?? 0).toLocaleString("en-US");
+    const cell = (t) => { const td = document.createElement("td");
+                          td.textContent = t; return td; };
+
+    function rows(tableId, entries, cols) {
+      const body = $(tableId).querySelector("tbody");
+      body.replaceChildren();
+      for (const e of entries) {
+        const tr = document.createElement("tr");
+        for (const c of cols) tr.appendChild(c(e));
+        body.appendChild(tr);
+      }
+    }
+
+    function budgetChip(u) {
+      const td = document.createElement("td");
+      const chip = document.createElement("span");
+      chip.className = "chip " + u.budget_state;
+      chip.textContent = u.budget_state;
+      td.appendChild(chip);
+      return td;
+    }
+
+    function render(r) {
+      $("generated-at").textContent =
+        `window ${r.days}d · generated ${r.generated_at}`;
+
+      const totals = r.by_day.reduce((acc, d) => ({
+        input: acc.input + d.input, output: acc.output + d.output,
+        calls: acc.calls + d.calls,
+      }), { input: 0, output: 0, calls: 0 });
+      const budgets = r.budgets.soft || r.budgets.hard
+        ? `soft ${fmt(r.budgets.soft)} · hard ${fmt(r.budgets.hard)}`
+        : "off";
+      $("cards").replaceChildren(...[
+        [fmt(totals.input + totals.output), `tokens, ${r.days}d`],
+        [fmt(totals.calls), `model calls, ${r.days}d`],
+        [String(r.users.length), "people in window"],
+        [budgets, "budgets (24h)"],
+      ].map(([big, label]) => {
+        const div = document.createElement("div");
+        div.className = "card";
+        const b = document.createElement("div");
+        b.className = "big"; b.textContent = big;
+        const l = document.createElement("div");
+        l.className = "label"; l.textContent = label;
+        div.append(b, l);
+        return div;
+      }));
+
+      rows("users", r.users, [
+        (u) => cell(u.name || (u.user_uuid
+                 ? u.user_uuid.slice(0, 8) : "(unattributed)")),
+        (u) => cell(fmt(u.spent_24h)),
+        budgetChip,
+        (u) => cell(fmt(u.input)), (u) => cell(fmt(u.output)),
+        (u) => cell(`${fmt(u.cache_read)} / ${fmt(u.cache_write)}`),
+        (u) => cell(fmt(u.calls)),
+        (u) => cell(u.last_call_at ? u.last_call_at.slice(0, 16)
+                                       .replace("T", " ") : "—"),
+      ]);
+      const plain = (key) => [
+        (e) => cell(e[key]),
+        (e) => cell(fmt(e.input)), (e) => cell(fmt(e.output)),
+        (e) => cell(fmt(e.cache_read)), (e) => cell(fmt(e.cache_write)),
+        (e) => cell(fmt(e.calls)),
+      ];
+      rows("days", r.by_day, plain("date"));
+      rows("models", r.by_model, plain("model"));
+      rows("roles", r.by_role, plain("role"));
+    }
+
+    async function load() {
+      const token = sessionStorage.getItem(KEY);
+      if (!token) return showGate();
+      const res = await fetch(`/api/ops/usage?days=${days}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => null);
+      if (!res || res.status === 401) {
+        sessionStorage.removeItem(KEY);
+        return showGate(res ? "that token was refused." : "server unreachable.");
+      }
+      render(await res.json());
+      $("gate").classList.add("hidden");
+      $("board").classList.remove("hidden");
+    }
+
+    function showGate(err) {
+      $("board").classList.add("hidden");
+      $("gate").classList.remove("hidden");
+      const e = $("gate-err");
+      e.textContent = err || "";
+      e.classList.toggle("hidden", !err);
+    }
+
+    $("token-go").addEventListener("click", () => {
+      const v = $("token-input").value.trim();
+      if (!v) return;
+      sessionStorage.setItem(KEY, v);
+      $("token-input").value = "";
+      load();
+    });
+    $("token-input").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") $("token-go").click();
+    });
+    for (const b of document.querySelectorAll(".toolbar button")) {
+      b.addEventListener("click", () => { days = Number(b.dataset.days); load(); });
+    }
+    load();
+  </script>
+</body>
+</html>

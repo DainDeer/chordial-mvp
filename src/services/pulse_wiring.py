@@ -50,6 +50,7 @@ from src.managers.event_log import EventLog
 from src.managers.event_store_adapter import SqlEventStore, SqlUserEvents
 from src.managers.user_manager import UserManager
 from src.personas import CHAIR_ID
+from src.services.metering import BudgetGate
 from src.services.orchestration import chordial_visibility
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,10 @@ def build_pulse(
             proactive_message_type="scheduled",
             window=Config.MAX_HISTORY_MESSAGES,
         )),
+        # the meter's soft gate (phase 7c): past the soft budget, proactive
+        # outreach waits. deliberately LAST - the only gate that reads the
+        # ledger, so the cheap denials win first. off by default (knobs 0).
+        ScheduledOnly(BudgetGate()),
     ]
     return Pulse(
         source=ChordialPulseSource(user_manager, curator=curator,

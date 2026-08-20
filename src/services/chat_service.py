@@ -42,6 +42,14 @@ ERROR_REPLY = "i'm having a little trouble reaching my thoughts right now — mi
 # put retro talk in the wrong room, which is worse than saying no).
 CLOSED_ROOM_REPLY = "that room has settled — today's room is always open 💛"
 
+# the hard token budget's honest refusal (phase 7c, the meter). ephemeral
+# like every refusal - never persisted, so it can't pollute the transcript
+# or the cached prefix. the window is trailing-24h, so the voice comes back
+# a little at a time rather than at a midnight bell.
+BUDGET_REPLY = ("the council has said a lot today and is resting its "
+                "voice — it comes back a little at a time. your clocks "
+                "and notes keep working 💛")
+
 
 def _still_introducing(chordial_status: str, user_name: Optional[str]) -> bool:
     """should this dm turn run the front-door introduction, or is it an
@@ -71,10 +79,17 @@ class ChatService:
         self,
         orchestrator=None,
         user_manager=None,
+        budget_verdict=None,
     ):
         self.orchestrator = orchestrator
         self.user_manager = user_manager or UserManager()
         self.helper_states = HelperStateManager()
+        # the meter's hard gate (phase 7c): sync callable user_uuid ->
+        # BudgetVerdict, injected for tests. default = the real meter.
+        if budget_verdict is None:
+            from src.services.metering import budget_verdict as _real
+            budget_verdict = _real
+        self._budget_verdict = budget_verdict
         # Serialize a user's complete turn across every platform/helper while
         # still allowing different users to run concurrently. Weak values keep
         # this registry from growing forever as one-off users come and go; a
@@ -121,6 +136,25 @@ class ChatService:
                 platform, platform_user_id, username
             )
             async with self._lock_for_user(user_uuid):
+                # the meter's hard gate (phase 7c): a user past the hard
+                # budget gets honest ephemeral copy instead of a model turn.
+                # INSIDE the lock on purpose (sol's 7c round): turns are
+                # serialized per user, so each check sees the spend the
+                # previous turn just recorded - a burst of simultaneous
+                # messages can't all pass on the same stale read and then
+                # generate anyway. failure-open: a broken meter never
+                # silences a conversation.
+                try:
+                    verdict = await asyncio.to_thread(
+                        self._budget_verdict, user_uuid)
+                    if verdict.state == "hard":
+                        logger.info(
+                            "hard token budget refused a turn for %s "
+                            "(%d in 24h, hard %d)",
+                            user_uuid, verdict.spent, verdict.hard)
+                        return BUDGET_REPLY
+                except Exception:
+                    logger.exception("budget read failed; allowing the turn")
                 # Refresh inside the lock: an earlier queued turn may have
                 # learned the user's name or timezone while this turn waited.
                 (
