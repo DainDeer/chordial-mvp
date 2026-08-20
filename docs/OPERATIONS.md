@@ -41,18 +41,28 @@ unmetered and byte-identical:
 
 Spend is measured over a **trailing 24h window** (the same rolling shape
 as `SYNC_DAILY_EVENT_CAP`): no midnight cliff to time a burst against,
-and the voice comes back gradually rather than at a bell. Budgeted
-tokens = input + output; cache reads/writes are surfaced in the dashboard
-but deliberately never counted — a budget that punished cache hits would
-punish exactly the architecture that keeps the council affordable.
+and the voice comes back gradually rather than at a bell. What counts:
+
+- **Only the turn-driven roles** (conversation, scheduled outreach, and
+  the decider that rides a turn) — the spend the gates can actually
+  stop. Background work (curator, scorer, reconciler) is the system's
+  own cost; counting it would let spend the user can't influence push
+  them over the hard cap and hold them there. The budgeted set is an
+  allowlist, so a future background role is exempt by default.
+- **Input + output tokens, cache traffic never** — with openai's
+  in-band cache hits normalized out (openai reports cached tokens
+  *inside* `input_tokens`; anthropic keeps them in a separate field).
+  A budget that punished cache hits would punish exactly the
+  architecture that keeps the council affordable.
 
 Honesty notes:
 
 - Every enforcement point **fails open**: a broken meter never silences a
   check-in or a conversation (it logs and allows).
-- Background utility work (curator, scorer) is bounded and rare and stays
-  exempt; the decider rides the conversational turn it serves, so the
-  hard gate already covers it.
+- The hard check runs **inside the per-user turn lock**: turns are
+  serialized, so each check sees the spend the previous turn just
+  recorded — a burst of simultaneous messages can't all pass on one
+  stale read.
 - The refusal copy is ephemeral — never persisted, never in the cached
   prefix.
 - Sensible shapes: `hard` comfortably above `soft` (soft is the quiet

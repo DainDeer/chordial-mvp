@@ -57,10 +57,10 @@ NOW = datetime(2026, 8, 19, 12, 0, 0)
 
 def _log(session_factory, user_uuid, *, when, input_tokens=0,
          output_tokens=0, cache_read=0, cache_write=0,
-         role="conversation", model="m"):
+         role="conversation", model="m", provider="anthropic"):
     with session_factory() as s:
         s.add(UsageLog(user_uuid=user_uuid, platform="app",
-                       provider="anthropic", model=model, role=role,
+                       provider=provider, model=model, role=role,
                        input_tokens=input_tokens,
                        output_tokens=output_tokens,
                        cache_read_tokens=cache_read,
@@ -125,6 +125,50 @@ def test_soft_only_and_hard_only_knobs_work_alone(db, monkeypatch):
     monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_SOFT_24H", 0)
     monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_HARD_24H", 100)
     assert budget_verdict("u1", NOW).state == "hard"
+
+
+def test_background_work_never_counts_against_the_user(db, monkeypatch):
+    """sol's 7c round: curator/scorer/reconciler spend is the system's own
+    cost. counting it wouldn't just miscount - the gates can't stop it,
+    so it could push a user over the hard cap and HOLD them there, a
+    silence with no escape. the turn-driven roles (conversation,
+    scheduled, decider) are the whole budget."""
+    monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_SOFT_24H", 50)
+    monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_HARD_24H", 100)
+    for role in ("curator", "scorer", "reconciler", "some_future_role"):
+        _log(db, "u1", when=NOW - timedelta(hours=1),
+             input_tokens=100_000, role=role)
+    assert spend_last_24h("u1", NOW).budgeted == 0
+    assert budget_verdict("u1", NOW).state == "clear"
+
+    # the turn-driven roles all count
+    _log(db, "u1", when=NOW - timedelta(hours=1), input_tokens=20,
+         role="conversation")
+    _log(db, "u1", when=NOW - timedelta(hours=1), input_tokens=20,
+         role="scheduled")
+    _log(db, "u1", when=NOW - timedelta(hours=1), input_tokens=20,
+         role="decider")
+    assert spend_last_24h("u1", NOW).budgeted == 60
+
+
+def test_openai_cache_hits_are_normalized_out(db, monkeypatch):
+    """sol's 7c round: openai reports cached tokens INSIDE input_tokens
+    (anthropic keeps them in a separate field), so budgeting raw
+    input+output would charge openai users for exactly the cache hits
+    the budget promises never to count."""
+    monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_SOFT_24H", 0)
+    monkeypatch.setattr(Config, "USER_TOKEN_BUDGET_HARD_24H", 500)
+    # openai shape: 1000 input of which 900 were cache hits, 50 out
+    _log(db, "u1", when=NOW - timedelta(hours=1), provider="openai",
+         input_tokens=1000, output_tokens=50, cache_read=900)
+    # anthropic shape: 200 (uncached) input, 300 cache reads besides
+    _log(db, "u1", when=NOW - timedelta(hours=2), provider="anthropic",
+         input_tokens=200, output_tokens=30, cache_read=300)
+
+    spend = spend_last_24h("u1", NOW)
+    # openai: 1000 - 900 + 50 = 150; anthropic: 200 + 30 = 230
+    assert spend.budgeted == 380
+    assert budget_verdict("u1", NOW).state == "clear"
 
 
 # --- the soft gate (pulse) ---------------------------------------------------
@@ -228,6 +272,52 @@ def test_budget_refusal_is_ephemeral(db):
     run(chat.process_message(_msg()))
     with db() as s:
         assert s.query(UsageLog).count() == 0
+
+
+def test_concurrent_burst_cannot_bypass_the_hard_cap(db):
+    """sol's 7c round: the check runs INSIDE the per-user lock. turns are
+    serialized, so each check sees the spend its predecessor just
+    recorded - a burst of simultaneous messages can't all pass on the
+    same stale read and then generate anyway. here the first turn's
+    spend crosses the cap: exactly one turn may run."""
+    from dainframe.core import ActivationResult, LineResult
+
+    class CountingOrchestrator:
+        def __init__(self):
+            self.calls = 0
+
+        async def handle(self, stimulus):
+            self.calls += 1
+            return ActivationResult(
+                activation_id=f"act-{self.calls}", stream_id="s",
+                inbound_event_id=None, status="completed",
+                status_reason=None,
+                lines=(LineResult(line_id="l", speaker="vel",
+                                  status="delivered"),))
+
+    orchestrator = CountingOrchestrator()
+
+    def verdict(user_uuid):
+        # stands in for the ledger: once one turn has generated, its
+        # recorded spend is past the hard cap
+        state = "hard" if orchestrator.calls >= 1 else "clear"
+        return BudgetVerdict(state, orchestrator.calls * 999, 100, 500)
+
+    async def burst():
+        chat = ChatService(orchestrator=orchestrator,
+                           user_manager=UserManager(),
+                           budget_verdict=verdict)
+        user_uuid, _ = await chat.user_manager.get_or_create_user(
+            "discord", "123", "tester")
+        await HelperStateManager().set_status(user_uuid, "vel", "active")
+        await chat.user_manager.update_user_preferences(
+            user_uuid, {"preferred_name": "tester"})
+        return await asyncio.gather(*(
+            chat.process_message(_msg(f"m{i}")) for i in range(3)))
+
+    replies = run(burst())
+    assert orchestrator.calls == 1
+    assert sum(1 for r in replies if r == BUDGET_REPLY) == 2
 
 
 # --- the report --------------------------------------------------------------

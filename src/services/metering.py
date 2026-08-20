@@ -18,12 +18,20 @@ READS it. two consumers:
         with honest ephemeral copy (chat_service.BUDGET_REPLY). clocks,
         sync, and every non-model surface keep working.
 
-  budgeted tokens = input + output. cache reads/writes are surfaced in
-  the report but deliberately don't count - a budget that punished cache
-  hits would punish exactly the architecture that keeps the council
-  affordable. background utility work (curator, scorer) is bounded and
-  rare and stays exempt; the decider rides the conversational turn it
-  serves, so the hard gate already covers it.
+  budgeted spend counts ONLY what the gates can stop (sol's 7c round):
+  the turn-driven roles (conversation, scheduled, decider - the decider
+  rides the turn the hard gate blocks). background work (curator, scorer,
+  reconciler, whatever comes next) is the system's own cost - counting it
+  would let spend the user can't influence push them over the hard cap
+  and HOLD them there, a silence with no escape. an allowlist, not a
+  blocklist, so a future background role is exempt by default.
+
+  budgeted tokens = input + output, with openai's cache hits normalized
+  out (openai reports cached tokens INSIDE input_tokens; anthropic keeps
+  them in a separate field - sol's 7c round). cache traffic is surfaced
+  in the report but deliberately never counted - a budget that punished
+  cache hits would punish exactly the architecture that keeps the
+  council affordable.
 
 - the report: usage_report() aggregates the ledger for the operator
   dashboard (/ops, gated by OPS_TOKEN). days are UTC calendar days -
@@ -42,7 +50,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from config import Config
 from src.database.database import get_db
@@ -51,19 +59,30 @@ from src.utils.timezone_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
+# the spend the budgets see: only roles whose generation the gates can
+# actually stop. hard blocks conversation (the decider rides that turn);
+# soft blocks scheduled outreach. everything else is background - exempt
+# by construction, so a role added later never counts by accident.
+BUDGETED_ROLES = ("conversation", "scheduled", "decider")
+
 
 @dataclass(frozen=True)
 class Spend:
-    """one user's trailing-24h ledger sums."""
+    """one user's trailing-24h ledger sums, budget-shaped: BUDGETED_ROLES
+    only, and openai's in-band cached tokens carried separately so
+    `budgeted` can subtract them (openai's input_tokens CONTAINS its
+    cache hits; anthropic's excludes them)."""
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     calls: int = 0
+    openai_cached_input: int = 0
 
     @property
     def budgeted(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return (self.input_tokens + self.output_tokens
+                - self.openai_cached_input)
 
 
 @dataclass(frozen=True)
@@ -78,7 +97,9 @@ class BudgetVerdict:
 
 
 def spend_last_24h(user_uuid: str, now: Optional[datetime] = None) -> Spend:
-    """ledger sums for the trailing 24h window (naive-utc, like the rows)."""
+    """budget-shaped ledger sums for the trailing 24h window (naive-utc,
+    like the rows): BUDGETED_ROLES only, openai cache hits carried for
+    subtraction."""
     since = (now or utc_now()) - timedelta(hours=24)
     with get_db() as db:
         row = db.query(
@@ -87,13 +108,18 @@ def spend_last_24h(user_uuid: str, now: Optional[datetime] = None) -> Spend:
             func.coalesce(func.sum(UsageLog.cache_read_tokens), 0),
             func.coalesce(func.sum(UsageLog.cache_write_tokens), 0),
             func.count(UsageLog.id),
+            func.coalesce(func.sum(case(
+                (UsageLog.provider == "openai",
+                 UsageLog.cache_read_tokens),
+                else_=0)), 0),
         ).filter(
             UsageLog.user_uuid == user_uuid,
             UsageLog.created_at >= since,
+            UsageLog.role.in_(BUDGETED_ROLES),
         ).one()
     return Spend(input_tokens=row[0], output_tokens=row[1],
                  cache_read_tokens=row[2], cache_write_tokens=row[3],
-                 calls=row[4])
+                 calls=row[4], openai_cached_input=row[5])
 
 
 def budget_verdict(user_uuid: str,

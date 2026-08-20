@@ -135,22 +135,26 @@ class ChatService:
             user_uuid, _ = await self.user_manager.get_or_create_user(
                 platform, platform_user_id, username
             )
-            # the meter's hard gate (phase 7c): a user past the hard budget
-            # gets honest ephemeral copy instead of a model turn. checked
-            # before the lock (no reason to queue a turn we'd refuse) and
-            # failure-open - a broken meter never silences a conversation.
-            try:
-                verdict = await asyncio.to_thread(
-                    self._budget_verdict, user_uuid)
-                if verdict.state == "hard":
-                    logger.info(
-                        "hard token budget refused a turn for %s "
-                        "(%d in 24h, hard %d)",
-                        user_uuid, verdict.spent, verdict.hard)
-                    return BUDGET_REPLY
-            except Exception:
-                logger.exception("budget read failed; allowing the turn")
             async with self._lock_for_user(user_uuid):
+                # the meter's hard gate (phase 7c): a user past the hard
+                # budget gets honest ephemeral copy instead of a model turn.
+                # INSIDE the lock on purpose (sol's 7c round): turns are
+                # serialized per user, so each check sees the spend the
+                # previous turn just recorded - a burst of simultaneous
+                # messages can't all pass on the same stale read and then
+                # generate anyway. failure-open: a broken meter never
+                # silences a conversation.
+                try:
+                    verdict = await asyncio.to_thread(
+                        self._budget_verdict, user_uuid)
+                    if verdict.state == "hard":
+                        logger.info(
+                            "hard token budget refused a turn for %s "
+                            "(%d in 24h, hard %d)",
+                            user_uuid, verdict.spent, verdict.hard)
+                        return BUDGET_REPLY
+                except Exception:
+                    logger.exception("budget read failed; allowing the turn")
                 # Refresh inside the lock: an earlier queued turn may have
                 # learned the user's name or timezone while this turn waited.
                 (

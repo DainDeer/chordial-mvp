@@ -813,17 +813,25 @@ Runbook: `docs/OPERATIONS.md`.
 - **The token budgets** ("per-user quotas and token budgets are enforced
   at the gateway", above — now true): spend is a trailing-24h read of the
   ledger (the sync cap's rolling shape — no midnight cliff, gradual
-  recovery). Budgeted = input + output; cache traffic is reported, never
+  recovery). Budgeted spend counts **only the turn-driven roles**
+  (conversation, scheduled, decider — an allowlist; sol's 7c round): the
+  gates can't stop background work (curator, scorer, reconciler), so
+  counting it could push a user over the hard cap and *hold* them there.
+  Budgeted = input + output with openai's in-band cache hits normalized
+  out (openai reports cached tokens inside `input_tokens`; anthropic
+  keeps them separate — same round); cache traffic is reported, never
   counted (punishing cache hits would punish the architecture that keeps
   the council affordable). The **soft** budget silences proactive outreach
   (a pulse gate, deliberately last in the stack — the ledger read only
   runs when the cheap denials didn't); the **hard** budget refuses
   conversational turns with honest ephemeral copy (never persisted, never
-  in the cached prefix). Both off by default: an unmetered rig is
-  byte-identical. Every enforcement point **fails open** — a broken meter
-  never silences anyone. Utility work (curator, scorer) stays exempt
-  (bounded and rare); the decider rides the turn the hard gate already
-  covers.
+  in the cached prefix), checked **inside the per-user turn lock** (same
+  round) so a burst of simultaneous messages can't all pass on one stale
+  read — each serialized check sees the spend its predecessor recorded.
+  Both off by default: an unmetered rig is byte-identical. Every
+  enforcement point **fails open** — a broken meter never silences
+  anyone. The ledger carries (user, created_at) + (created_at) indexes
+  now that it's a per-turn read path (migration `d4f8b2a6c917`).
 - **Still to come in 7c:** the drill (load testing + the tuning that falls
   out of it) and the gate (macOS signing/notarization — an Apple Developer
   membership decision). The vault mostly predates this phase
