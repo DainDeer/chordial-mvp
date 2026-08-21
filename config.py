@@ -112,6 +112,12 @@ class Config:
     )
     # how long a platform link code stays redeemable
     LINK_CODE_TTL_MINUTES = int(os.getenv("LINK_CODE_TTL_MINUTES", "15"))
+    # code-redemption attempts per client ip (login redeem + device link share
+    # one sliding window). the default suits a household; a deployment where
+    # many legitimate devices share one NAT ip (a classroom) raises it - the
+    # code space stays the real defense either way.
+    LINK_RATE_ATTEMPTS = int(os.getenv("LINK_RATE_ATTEMPTS", "10"))
+    LINK_RATE_WINDOW_SECONDS = int(os.getenv("LINK_RATE_WINDOW_SECONDS", "300"))
 
     @classmethod
     def telegram_linking_enabled(cls) -> bool:

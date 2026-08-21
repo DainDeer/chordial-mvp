@@ -11,7 +11,7 @@ Create Date: 2026-07-28
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -24,9 +24,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    bind = op.get_bind()
-    if sa.inspect(bind).has_table('task_focus'):
-        return
+    # the inspect guard covers divergent live installs; an offline render
+    # follows the canonical chain, where the table doesn't exist yet
+    if not context.is_offline_mode():
+        bind = op.get_bind()
+        if sa.inspect(bind).has_table('task_focus'):
+            return
     op.create_table(
         'task_focus',
         sa.Column('id', sa.Integer(), nullable=False),

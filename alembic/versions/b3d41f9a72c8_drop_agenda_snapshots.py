@@ -12,7 +12,7 @@ Create Date: 2026-07-25
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -25,6 +25,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # the inspect guard covers divergent live installs; an offline render
+    # (sql generation, no connection) follows the canonical chain, where
+    # the table exists at this point by construction
+    if context.is_offline_mode():
+        op.drop_table('agenda_snapshots')
+        return
     bind = op.get_bind()
     if sa.inspect(bind).has_table('agenda_snapshots'):
         op.drop_table('agenda_snapshots')

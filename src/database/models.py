@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Date, JSON, Boolean, ForeignKey, Integer, Float, Index, UniqueConstraint, text
+from sqlalchemy import Column, String, DateTime, Date, JSON, Boolean, ForeignKey, Integer, Float, Index, UniqueConstraint, false, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -811,8 +811,11 @@ class DeviceEvent(Base):
     # payload shape) still CONSUMES its (device, seq) so the ACK cursor can
     # pass it - a rejected event must never pin the outbox forever. the error
     # is preserved for debugging; processors skip rejected rows.
+    # false() compiles per-dialect (sqlite '0', postgres 'false') - a literal
+    # text('0') is invalid DDL for a postgres boolean, which broke every
+    # fresh-postgres install path until the drill caught it (phase 7c)
     rejected = Column(Boolean, nullable=False, default=False,
-                      server_default=text('0'))
+                      server_default=false())
     error = Column(String, nullable=True)
 
     # stamped by the focus-flow processor (src/services/focus_flow.py) once
