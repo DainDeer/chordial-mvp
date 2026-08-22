@@ -106,6 +106,15 @@ Details that keep this honest:
   The onefile binary takes ~6–8s from spawn to the port binding
   (self-extraction) — the deer window's reconnect backoff already covers
   it.
+- **The sidecar follows the shell out**: the process the shell spawns
+  (and kills on exit) is PyInstaller's onefile *bootloader*, whose own
+  child is the real interpreter — a kill on the bootloader doesn't reach
+  it, and a force-quit of the shell reaches nothing (the first boxed
+  launch left an orphan holding port 8485 after quit). So the shell hands
+  its pid down (`CHORDIAL_SHELL_PID`) and the sidecar polls it — plus,
+  on unix, its own parent changing — and shuts down cleanly within ~2s of
+  the shell being gone. A dev-terminal sidecar gets no pid and owns
+  itself; an adopted sidecar was never handed one.
 - **Keychain graduation is one-way**: on first packaged run, a token from
   the localStorage era moves into the keychain and the plaintext copy is
   removed. A keychain that refuses degrades to localStorage with a console

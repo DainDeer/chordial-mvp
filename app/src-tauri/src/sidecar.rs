@@ -140,7 +140,13 @@ fn spawn_supervised(app: AppHandle, attempt: usize) {
     let command = match app.shell().sidecar("chordial-sidecar") {
         Ok(cmd) => cmd
             .env("SIDECAR_DB", db.to_string_lossy().to_string())
-            .env("SIDECAR_PORT", port.to_string()),
+            .env("SIDECAR_PORT", port.to_string())
+            // the sidecar follows THIS process out (src/sidecar/parent.py):
+            // our kill below only reaches pyinstaller's onefile bootloader,
+            // and a force-quit reaches nothing - the python interpreter
+            // behind it would outlive us either way (found on the first
+            // boxed launch: an orphan holding the port after quit)
+            .env("CHORDIAL_SHELL_PID", std::process::id().to_string()),
         Err(e) => {
             eprintln!("[sidecar] bundled binary unresolvable: {e}");
             return;
