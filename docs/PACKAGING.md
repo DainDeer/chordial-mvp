@@ -76,6 +76,18 @@ before installing; the bundle signature is verified against the pinned
 pubkey before anything is applied — a compromised feed can withhold
 updates but never forge one.
 
+## first launch, and where the windows go
+
+On a launch with nothing remembered, the deer takes the bottom-right
+corner of the work area and the main window sits beside her (flush left
+on a screen too narrow for both) — never the deer over the link-code
+field. She is undecorated and always-on-top, so **she is her own handle**:
+drag the deer herself, the strip above her, or any gap in her window.
+After that, both windows remember size and position across launches
+(`.window-state.json` in the app's config dir — delete it to get the
+first-launch layout back). Visibility is deliberately *not* remembered:
+hiding the deer from the tray is for the day, and she's back next launch.
+
 ## how the pieces run, packaged vs dev
 
 |                       | dev (`tauri dev`, debug)                 | packaged (release)                                  |

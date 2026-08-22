@@ -76,6 +76,12 @@
   line-height: 1;
   margin-top: 6px;
   transition: transform 0.4s ease;
+  /* she is the handle: drag the deer to move the window */
+  cursor: grab;
+}
+
+.deer-self:active {
+  cursor: grabbing;
 }
 
 .deer-self.loafing {

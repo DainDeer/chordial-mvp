@@ -1,5 +1,6 @@
 mod collector;
 mod credentials;
+mod placement;
 mod sidecar;
 mod updater;
 
@@ -8,6 +9,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager, RunEvent,
 };
+use tauri_plugin_window_state::StateFlags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +17,15 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // windows remember where the person put them (size + position,
+        // restored on creation, saved on exit). visibility is deliberately
+        // NOT remembered: a deer tucked away from the tray at quit still
+        // greets the next launch - hiding is for the day, not forever.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                .build(),
+        )
         .manage(sidecar::SidecarState::new())
         .invoke_handler(tauri::generate_handler![
             credentials::credential_get,
@@ -29,6 +40,11 @@ pub fn run() {
             // the box (7b): release builds spawn and supervise the bundled
             // sidecar; debug builds leave it to the dev loop's terminal
             sidecar::spawn(app.handle());
+
+            // first launch only: deer to the bottom-right corner, main
+            // window beside her - never the deer on top of the link field.
+            // afterwards the window-state plugin remembers their places.
+            placement::apply_first_launch(app.handle());
 
             // a quiet look at the update feed once the windows are up
             updater::check_on_launch(app.handle());
