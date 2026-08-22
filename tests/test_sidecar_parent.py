@@ -103,3 +103,28 @@ def test_watch_checks_the_pid_it_was_given():
 
     _run(parent.watch(777, lambda: None, alive=alive, interval=0))
     assert seen == [777]
+
+
+# --- the shell can see who a sidecar follows -----------------------------------
+
+def test_state_reports_the_shell_pid(tmp_path):
+    # a new shell probing the port reads shell_pid to tell a departing
+    # sidecar (its shell gone) from one worth adopting; a dev-terminal
+    # sidecar reports null
+    from aiohttp.test_utils import TestClient, TestServer
+    from src.sidecar.server import SidecarService
+    from src.sidecar.store import SidecarStore
+
+    async def flow():
+        for pid in (None, 4242):
+            store = SidecarStore(tmp_path / f"s{pid}.db")
+            service = SidecarService(store, shell_pid=pid)
+            client = TestClient(TestServer(service.build_app()))
+            await client.start_server()
+            try:
+                state = await (await client.get("/v1/state")).json()
+                assert state["shell_pid"] == pid
+            finally:
+                await client.close()
+                store.close()
+    _run(flow())

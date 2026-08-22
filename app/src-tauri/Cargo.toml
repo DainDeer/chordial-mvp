@@ -45,11 +45,17 @@ keyring = { version = "3", features = ["apple-native"] }
 version = "3"
 features = ["windows-native"]
 
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # idle seconds via GetLastInputInfo - a counter read, no hooks, no
 # permissions (rewind's windows leg; docs/REWIND_DESIGN.md section 9)
 windows-sys = { version = "0.59", features = [
     "Win32_System_SystemInformation",
     "Win32_UI_Input_KeyboardAndMouse",
+    # sidecar.rs: is the shell behind a found sidecar still alive?
+    "Win32_Foundation",
+    "Win32_System_Threading",
 ] }
 

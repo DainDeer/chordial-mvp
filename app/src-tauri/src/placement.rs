@@ -9,7 +9,15 @@
 //! the work area, main window centred in the room to her left (or flush
 //! left when the screen is too narrow for both - she's on top and
 //! draggable, so an overlap is a nudge away). after that the window-state
-//! plugin remembers wherever the person put them; this never runs again.
+//! plugin remembers wherever the person put them.
+//!
+//! "remembered" is decided PER WINDOW from what the state file actually
+//! says (sol's #80 round): a file that is corrupt, empty, or missing a
+//! window's entry remembers nothing for that window, so the placement
+//! runs for it - a bad file can never pin the centred-overlap layout in
+//! place. a window that IS remembered is left exactly where it was; an
+//! unremembered main window is placed relative to wherever the deer
+//! really is (remembered or just placed), not to an assumed corner.
 
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
@@ -26,56 +34,91 @@ pub struct Rect {
     pub h: i32,
 }
 
-/// where the two windows go: (x, y) origins in physical pixels
+/// where the two windows go: (x, y) origins in physical pixels (the
+/// composed first-launch layout, kept for the tests that pin it - the
+/// live path places per window via place_deer / place_main)
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub main: (i32, i32),
     pub deer: (i32, i32),
 }
 
-/// the arithmetic, pure so it can be pinned: `work` is the monitor's work
-/// area (screen minus dock / taskbar), the sizes are outer window sizes.
-pub fn place(work: Rect, main: (i32, i32), deer: (i32, i32), margin: i32) -> Placement {
-    let (main_w, main_h) = main;
+/// the deer: bottom-right corner of the work area, a margin in from both
+/// edges, never pushed off the top/left on a tiny screen
+pub fn place_deer(work: Rect, deer: (i32, i32), margin: i32) -> (i32, i32) {
     let (deer_w, deer_h) = deer;
+    (
+        (work.x + work.w - deer_w - margin).max(work.x),
+        (work.y + work.h - deer_h - margin).max(work.y),
+    )
+}
 
-    // the deer: bottom-right corner, a margin in from both edges, never
-    // pushed off the top/left of the work area on a tiny screen
-    let deer_x = (work.x + work.w - deer_w - margin).max(work.x);
-    let deer_y = (work.y + work.h - deer_h - margin).max(work.y);
-
-    // the main window: centred in the strip to the deer's left when that
-    // strip fits it; otherwise flush left, which minimises the overlap
-    let strip_w = work.w - deer_w - 2 * margin;
-    let main_x = if strip_w >= main_w {
-        work.x + (strip_w - main_w) / 2
+/// the main window, given where the deer actually is: centred in the
+/// wider of the two strips beside her (left or right) when that strip
+/// fits it; otherwise flush left, which minimises the overlap
+pub fn place_main(work: Rect, main: (i32, i32), deer: Rect, margin: i32) -> (i32, i32) {
+    let (main_w, main_h) = main;
+    let left_w = deer.x - work.x - margin;
+    let right_x = deer.x + deer.w + margin;
+    let right_w = work.x + work.w - right_x;
+    let main_x = if left_w >= right_w && left_w >= main_w {
+        work.x + (left_w - main_w) / 2
+    } else if right_w > left_w && right_w >= main_w {
+        right_x + (right_w - main_w) / 2
     } else {
         work.x + margin
     };
     let main_y = work.y + ((work.h - main_h) / 2).max(0);
+    (main_x, main_y)
+}
 
+/// the whole first-launch layout, pure so it can be pinned: `work` is the
+/// monitor's work area (screen minus dock / taskbar), the sizes are outer
+/// window sizes
+#[cfg(test)]
+pub fn place(work: Rect, main: (i32, i32), deer: (i32, i32), margin: i32) -> Placement {
+    let deer_pos = place_deer(work, deer, margin);
+    let deer_rect = Rect { x: deer_pos.0, y: deer_pos.1, w: deer.0, h: deer.1 };
     Placement {
-        main: (main_x, main_y),
-        deer: (deer_x, deer_y),
+        main: place_main(work, main, deer_rect, margin),
+        deer: deer_pos,
     }
 }
 
-/// true when the window-state plugin has nothing remembered yet - i.e.
-/// this is the first launch (or the state file was removed on purpose)
-pub fn is_first_launch(app: &AppHandle) -> bool {
-    match app.path().app_config_dir() {
-        Ok(dir) => !dir
-            .join(tauri_plugin_window_state::DEFAULT_FILENAME)
-            .exists(),
-        // no config dir at all is the same answer: nothing remembered
-        Err(_) => true,
-    }
+/// does the window-state file remember a position for this window? only
+/// a parseable object with an entry for the label carrying numeric x and
+/// y counts - anything else (no file, corrupt json, the wrong shape, the
+/// label missing, an entry without a position) is "not remembered", and
+/// the placement runs for that window.
+pub fn window_remembered(state_json: Option<&str>, label: &str) -> bool {
+    let Some(text) = state_json else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let Some(entry) = value.get(label) else {
+        return false;
+    };
+    entry.get("x").and_then(|v| v.as_i64()).is_some()
+        && entry.get("y").and_then(|v| v.as_i64()).is_some()
 }
 
-/// place the pair on a first launch. every failure here is cosmetic (the
-/// windows simply stay where the config put them), so nothing is fatal.
+/// the state file's text, if there is one (None = nothing remembered)
+fn state_file_text(app: &AppHandle) -> Option<String> {
+    let dir = app.path().app_config_dir().ok()?;
+    std::fs::read_to_string(dir.join(tauri_plugin_window_state::DEFAULT_FILENAME)).ok()
+}
+
+/// place whatever the state file doesn't remember. every failure here is
+/// cosmetic (the windows simply stay where the config put them), so
+/// nothing is fatal.
 pub fn apply_first_launch(app: &AppHandle) {
-    if !is_first_launch(app) {
+    let text = state_file_text(app);
+    let main_remembered = window_remembered(text.as_deref(), "main");
+    let deer_remembered = window_remembered(text.as_deref(), "deer");
+    if main_remembered && deer_remembered {
         return;
     }
     let (Some(main), Some(deer)) = (
@@ -97,20 +140,29 @@ pub fn apply_first_launch(app: &AppHandle) {
     let (Ok(main_size), Ok(deer_size)) = (main.outer_size(), deer.outer_size()) else {
         return;
     };
-    let placement = place(
-        work,
-        (main_size.width as i32, main_size.height as i32),
-        (deer_size.width as i32, deer_size.height as i32),
-        MARGIN,
-    );
-    let _ = main.set_position(PhysicalPosition::new(
-        placement.main.0,
-        placement.main.1,
-    ));
-    let _ = deer.set_position(PhysicalPosition::new(
-        placement.deer.0,
-        placement.deer.1,
-    ));
+    let deer_dims = (deer_size.width as i32, deer_size.height as i32);
+
+    // the deer first: her real rectangle is what main is placed against
+    let deer_rect = if deer_remembered {
+        let Ok(pos) = deer.outer_position() else {
+            return;
+        };
+        Rect { x: pos.x, y: pos.y, w: deer_dims.0, h: deer_dims.1 }
+    } else {
+        let (x, y) = place_deer(work, deer_dims, MARGIN);
+        let _ = deer.set_position(PhysicalPosition::new(x, y));
+        Rect { x, y, w: deer_dims.0, h: deer_dims.1 }
+    };
+
+    if !main_remembered {
+        let (x, y) = place_main(
+            work,
+            (main_size.width as i32, main_size.height as i32),
+            deer_rect,
+            MARGIN,
+        );
+        let _ = main.set_position(PhysicalPosition::new(x, y));
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +220,59 @@ mod tests {
         let p = place(tiny, MAIN, DEER, MARGIN);
         assert_eq!(p.deer, (0, 0));
         assert_eq!(p.main, (MARGIN, 0));
+    }
+
+    #[test]
+    fn main_goes_to_the_wider_side_of_a_remembered_deer() {
+        // the deer was parked bottom-LEFT by the person; a fresh main
+        // window (state entry missing) centres in the room to her right
+        let wide = Rect { x: 0, y: 50, w: 5120, h: 2830 };
+        let deer = Rect { x: 16, y: 1864, w: 540, h: 1000 };
+        let (x, _) = place_main(wide, MAIN, deer, MARGIN);
+        let right_x = 16 + 540 + 16;
+        let right_w = 5120 - right_x;
+        assert_eq!(x, right_x + (right_w - 2200) / 2);
+        assert!(x >= deer.x + deer.w, "main overlaps the parked deer");
+    }
+
+    // --- what counts as remembered (sol's #80 round) ---
+
+    #[test]
+    fn no_file_remembers_nothing() {
+        assert!(!window_remembered(None, "deer"));
+    }
+
+    #[test]
+    fn corrupt_or_wrong_shape_remembers_nothing() {
+        for bad in ["", "{", "[]", "null", "42", "\"deer\""] {
+            assert!(!window_remembered(Some(bad), "deer"), "{bad:?}");
+            assert!(!window_remembered(Some(bad), "main"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn remembered_is_per_window() {
+        // main saved, deer missing: the deer is placed, main is left alone
+        let only_main = r#"{"main":{"width":2200,"height":1440,"x":100,"y":120,
+            "prev_x":0,"prev_y":0,"maximized":false,"visible":true,
+            "decorated":true,"fullscreen":false}}"#;
+        assert!(window_remembered(Some(only_main), "main"));
+        assert!(!window_remembered(Some(only_main), "deer"));
+    }
+
+    #[test]
+    fn an_entry_without_a_position_is_not_remembered() {
+        let no_pos = r#"{"deer":{"width":540,"height":1000}}"#;
+        assert!(!window_remembered(Some(no_pos), "deer"));
+        let half = r#"{"deer":{"x":10}}"#;
+        assert!(!window_remembered(Some(half), "deer"));
+    }
+
+    #[test]
+    fn both_remembered_is_the_steady_state() {
+        let both = r#"{"main":{"x":1,"y":2},"deer":{"x":3,"y":4}}"#;
+        assert!(window_remembered(Some(both), "main"));
+        assert!(window_remembered(Some(both), "deer"));
     }
 
     #[test]

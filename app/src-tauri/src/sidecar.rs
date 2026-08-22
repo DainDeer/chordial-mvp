@@ -31,8 +31,15 @@ const BACKOFF_SECS: [u64; 5] = [1, 2, 5, 15, 30];
 /// how often the watchdog re-probes an ADOPTED sidecar (sol's 7b round:
 /// adoption must be a watched state, not a terminal one - the adopted
 /// process belongs to someone else and can vanish, e.g. the other app
-/// instance of a simultaneous launch quitting and killing its child)
-const ADOPT_PROBE_SECS: u64 = 15;
+/// instance of a simultaneous launch quitting and killing its child).
+/// a loopback GET every few seconds is free; the price of a long interval
+/// is a deer-less gap after the other shell leaves (sol's #80 round).
+const ADOPT_PROBE_SECS: u64 = 5;
+
+/// how long to wait for a DEPARTING sidecar (one whose shell is already
+/// gone) to release the port before spawning our own: its parent watch
+/// polls every 2s and then shuts down cleanly, so this is generous
+const DEPARTURE_GRACE: Duration = Duration::from_secs(8);
 
 pub struct SidecarState {
     child: Mutex<Option<CommandChild>>,
@@ -55,15 +62,124 @@ fn port() -> u16 {
         .unwrap_or(8485)
 }
 
+/// what answers on the loopback port
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// nothing answering: the port is ours to take
+    Down,
+    /// a sidecar is up; `shell_pid` is the shell it follows (None for a
+    /// dev-terminal sidecar, which follows nobody)
+    Up { shell_pid: Option<u32> },
+}
+
+/// what to do about it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// spawn our own
+    Spawn,
+    /// somebody else's live sidecar: adopt it and watch it
+    Adopt,
+    /// a sidecar whose shell is already gone - it is mid-departure (an
+    /// update restart: the old shell quit, its sidecar has up to 2s to
+    /// notice). adopting a ghost would mean a deer-less gap of a watchdog
+    /// interval plus a boot; wait for it to leave the port, then spawn.
+    WaitThenSpawn,
+}
+
+/// the adopt-or-spawn call, pure so it can be pinned: `shell_alive`
+/// answers whether the pid a found sidecar follows still exists.
+pub(crate) fn decide(
+    probe: Probe,
+    our_pid: u32,
+    shell_alive: impl Fn(u32) -> bool,
+) -> Decision {
+    match probe {
+        Probe::Down => Decision::Spawn,
+        // a sidecar following THIS shell (a re-probe after our own child's
+        // death raced its port release) or following nobody: adopt
+        Probe::Up { shell_pid: None } => Decision::Adopt,
+        Probe::Up { shell_pid: Some(pid) } if pid == our_pid => Decision::Adopt,
+        Probe::Up { shell_pid: Some(pid) } => {
+            if shell_alive(pid) {
+                Decision::Adopt
+            } else {
+                Decision::WaitThenSpawn
+            }
+        }
+    }
+}
+
 /// somebody already answering /v1/state on the loopback port IS a sidecar;
-/// spawning a second one would just lose the port race and crash-loop
-fn already_up(port: u16) -> bool {
-    ureq::AgentBuilder::new()
+/// spawning a second one would just lose the port race and crash-loop.
+/// the state payload carries `shell_pid` (src/sidecar/server.py) - absent
+/// or unparseable reads as "follows nobody", the safe (adopt) reading.
+fn probe(port: u16) -> Probe {
+    let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_millis(500))
         .build()
         .get(&format!("http://127.0.0.1:{port}/v1/state"))
-        .call()
-        .is_ok()
+        .call();
+    match response {
+        Err(_) => Probe::Down,
+        Ok(resp) => {
+            let shell_pid = resp
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| v.get("shell_pid").and_then(|p| p.as_u64()))
+                .map(|p| p as u32);
+            Probe::Up { shell_pid }
+        }
+    }
+}
+
+fn already_up(port: u16) -> bool {
+    probe(port) != Probe::Down
+}
+
+/// is there a live process with this pid? a liveness probe (the same
+/// shape as the sidecar's own parent watch), not an identity check
+#[cfg(unix)]
+fn shell_alive(pid: u32) -> bool {
+    // kill(pid, 0): 0 = exists and ours to signal; EPERM = exists, not
+    // ours; ESRCH = gone
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn shell_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        // PROCESS_SYNCHRONIZE (0x00100000): the one right that lets us
+        // wait on the process without touching it
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        // signalled = exited (a handle to an exited process still opens)
+        let alive = WaitForSingleObject(handle, 0) != WAIT_OBJECT_0;
+        CloseHandle(handle);
+        alive
+    }
+}
+
+/// wait for a departing sidecar to release the port (poll, bounded);
+/// true when it left, false when the grace ran out
+fn wait_for_departure(port: u16, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(250));
+        if probe(port) == Probe::Down {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn spawn(app: &AppHandle) {
@@ -115,13 +231,32 @@ fn spawn_supervised(app: AppHandle, attempt: usize) {
         return;
     }
     let port = port();
-    if already_up(port) {
-        eprintln!(
-            "[sidecar] adopting the sidecar already on port {port} - \
-             watching it"
-        );
-        watch_adopted(app, port);
-        return;
+    match decide(probe(port), std::process::id(), shell_alive) {
+        Decision::Spawn => {}
+        Decision::Adopt => {
+            eprintln!(
+                "[sidecar] adopting the sidecar already on port {port} - \
+                 watching it"
+            );
+            watch_adopted(app, port);
+            return;
+        }
+        Decision::WaitThenSpawn => {
+            eprintln!(
+                "[sidecar] the sidecar on port {port} follows a shell that \
+                 is gone - waiting for it to leave, then spawning our own"
+            );
+            if !wait_for_departure(port, DEPARTURE_GRACE) {
+                // it didn't leave: treat it as somebody else's after all
+                // (the watchdog takes over the moment it finally goes)
+                eprintln!(
+                    "[sidecar] still on port {port} after the grace - \
+                     adopting and watching it"
+                );
+                watch_adopted(app, port);
+                return;
+            }
+        }
     }
 
     let data_dir = match app.path().app_data_dir() {
@@ -200,4 +335,59 @@ fn spawn_supervised(app: AppHandle, attempt: usize) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const US: u32 = 1000;
+
+    #[test]
+    fn nothing_on_the_port_means_spawn() {
+        assert_eq!(decide(Probe::Down, US, |_| true), Decision::Spawn);
+    }
+
+    #[test]
+    fn a_dev_terminal_sidecar_is_adopted() {
+        // follows nobody: a `python -m src.sidecar` in a terminal
+        assert_eq!(
+            decide(Probe::Up { shell_pid: None }, US, |_| false),
+            Decision::Adopt
+        );
+    }
+
+    #[test]
+    fn another_live_shells_sidecar_is_adopted() {
+        // a second app instance launched at the same time
+        assert_eq!(
+            decide(Probe::Up { shell_pid: Some(77) }, US, |pid| pid == 77),
+            Decision::Adopt
+        );
+    }
+
+    #[test]
+    fn a_departing_sidecar_is_waited_out_not_adopted() {
+        // sol's #80 round: an update restart - the old shell is gone, its
+        // sidecar has up to 2s left. adopting it would cost a watchdog
+        // interval + a boot of deer-less time; wait for it instead
+        assert_eq!(
+            decide(Probe::Up { shell_pid: Some(77) }, US, |_| false),
+            Decision::WaitThenSpawn
+        );
+    }
+
+    #[test]
+    fn our_own_sidecar_is_adopted_even_if_we_look_dead_to_the_probe() {
+        // a sidecar following THIS pid answering a re-probe: ours
+        assert_eq!(
+            decide(Probe::Up { shell_pid: Some(US) }, US, |_| false),
+            Decision::Adopt
+        );
+    }
+
+    #[test]
+    fn our_own_pid_is_alive() {
+        assert!(shell_alive(std::process::id()));
+    }
 }

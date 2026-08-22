@@ -85,8 +85,12 @@ field. She is undecorated and always-on-top, so **she is her own handle**:
 drag the deer herself, the strip above her, or any gap in her window.
 After that, both windows remember size and position across launches
 (`.window-state.json` in the app's config dir — delete it to get the
-first-launch layout back). Visibility is deliberately *not* remembered:
-hiding the deer from the tray is for the day, and she's back next launch.
+first-launch layout back). "Remembered" is judged **per window from the
+file's contents**: a corrupt file, or one missing a window's entry,
+remembers nothing for that window, so the placement runs for it (and a
+fresh main window is placed beside wherever the deer *actually* is).
+Visibility is deliberately *not* remembered: hiding the deer from the
+tray is for the day, and she's back next launch.
 
 ## how the pieces run, packaged vs dev
 
@@ -102,7 +106,7 @@ Details that keep this honest:
 - **Spawn is adopt-first, and adoption is watched**: the shell probes
   `127.0.0.1:8485/v1/state` before spawning; a sidecar already up (second
   app launch, a dev terminal's) is adopted, never fought over the port —
-  and a 15s watchdog takes over if that foreign process later vanishes.
+  and a 5s watchdog takes over if that foreign process later vanishes.
   The onefile binary takes ~6–8s from spawn to the port binding
   (self-extraction) — the deer window's reconnect backoff already covers
   it.
@@ -114,7 +118,13 @@ Details that keep this honest:
   its pid down (`CHORDIAL_SHELL_PID`) and the sidecar polls it — plus,
   on unix, its own parent changing — and shuts down cleanly within ~2s of
   the shell being gone. A dev-terminal sidecar gets no pid and owns
-  itself; an adopted sidecar was never handed one.
+  itself; an adopted sidecar was never handed one. The sidecar reports
+  the pid it follows in `/v1/state`, and a probing shell uses it: a
+  sidecar whose shell is already gone is **mid-departure** (an update
+  restart), so the new shell waits for it to leave the port (≤8s) and
+  spawns its own rather than adopting a ghost and eating a watchdog
+  interval plus a boot of deer-less time. Live foreign sidecars are still
+  adopted and re-probed every 5s.
 - **Keychain graduation is one-way**: on first packaged run, a token from
   the localStorage era moves into the keychain and the plaintext copy is
   removed. A keychain that refuses degrades to localStorage with a console

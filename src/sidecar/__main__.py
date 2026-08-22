@@ -46,7 +46,8 @@ async def main() -> None:
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
         logging.getLogger().addHandler(handler)
     store = SidecarStore(db_path)
-    service = SidecarService(store)
+    shell_pid = parent.shell_pid_from_env(os.environ)
+    service = SidecarService(store, shell_pid=shell_pid)
     runner = web.AppRunner(service.build_app())
     await runner.setup()
     site = web.TCPSite(runner, SIDECAR_HOST, SIDECAR_PORT)
@@ -54,7 +55,6 @@ async def main() -> None:
     logger.info("sidecar on http://%s:%s, state in %s (the deer is home)",
                 SIDECAR_HOST, SIDECAR_PORT, db_path)
     stop = asyncio.Event()
-    shell_pid = parent.shell_pid_from_env(os.environ)
     if shell_pid is not None:
         # the box: follow the shell out (its kill stops at the bootloader)
         logger.info("watching the shell (pid %s)", shell_pid)
