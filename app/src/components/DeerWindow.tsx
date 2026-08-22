@@ -452,7 +452,15 @@ export default function DeerWindow() {
   }
 
   return (
-    <div className="deer-window">
+    // the whole window is a handle: the deer is undecorated, so dragging
+    // her anywhere that isn't a control (the gaps, the deer herself) moves
+    // the window. tauri only honours the attribute on the element under
+    // the pointer, so it sits on the root, the strip, AND the deer - a
+    // button or chip inside keeps its click. needs
+    // core:window:allow-start-dragging in capabilities/default.json (the
+    // core:default set doesn't include it - found on the first boxed run,
+    // when she couldn't be moved at all).
+    <div className="deer-window" data-tauri-drag-region="true">
       {celebrating && <Confetti onDone={() => setCelebrating(false)} />}
 
       <div className="deer-drag" data-tauri-drag-region="true">
@@ -473,6 +481,7 @@ export default function DeerWindow() {
           overtime ? " perked" : ""
         }${activity?.blocked ? " hushed" : ""}`}
         aria-hidden="true"
+        data-tauri-drag-region="true"
       >
         🦌
       </div>

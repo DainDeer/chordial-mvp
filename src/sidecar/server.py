@@ -11,7 +11,7 @@ surface (all JSON):
                             sidecar its device credential once; a NEW
                             device uuid rebases the outbox (fresh server
                             cursor) and un-parks the sync pump
-    GET  /v1/state          {focus, line, linked, sync_error}
+    GET  /v1/state          {focus, line, linked, sync_error, shell_pid}
     POST /v1/focus/start    {task_id?, label?, target_minutes?} - start or
                             SWITCH (a running clock on another task pauses
                             and banks first)
@@ -63,8 +63,13 @@ class SidecarService:
                  pump: Optional[OutboxPump] = None,
                  activity: Optional[ActivityState] = None,
                  drift: Optional[DriftWatch] = None,
-                 gates: Optional[SpeechGates] = None):
+                 gates: Optional[SpeechGates] = None,
+                 shell_pid: Optional[int] = None):
         self.store = store
+        # the shell this sidecar follows (src/sidecar/parent.py), surfaced
+        # in /v1/state so a NEW shell probing the port can tell a sidecar
+        # that is mid-departure (its shell gone) from one worth adopting
+        self.shell_pid = shell_pid
         self.engine = engine or FocusEngine(store)
         self.pump = pump or OutboxPump(store)
         self.activity = activity or ActivityState()
@@ -275,6 +280,7 @@ class SidecarService:
             "line": self._last_line,
             "linked": bool(self.store.get("device_token")),
             "sync_error": self.store.get("sync_error") or None,
+            "shell_pid": self.shell_pid,
         })
 
     async def _activity(self, request: web.Request) -> web.Response:
